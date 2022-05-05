@@ -1,0 +1,6 @@
+# All py dependencies come here
+
+pandas
+requests
+urllib3
+ccxt
