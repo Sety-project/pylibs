@@ -3,7 +3,7 @@ from pylibs.staticdata.generator.book_field import BookField
 from pylibs.staticdata.generator.book_type_map import BookTypes
 import datetime, dateutil, pytz, json, requests
 from pylibs.staticdata.generator.cex_drivers.pillar_driver import FundingPillars
-from pylibs.staticdata.generator.cex_drivers.index_driver import IndexDriver
+# from pylibs.staticdata.generator.cex_drivers.index_driver import IndexDriver
 
 class FTXusDriver(Driver):
 
