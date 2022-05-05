@@ -1030,7 +1030,5 @@ class StaticDataGenerator:
         print('new books total nb :', len(self.get_bookids()))
         print(f"\nnb of exchanges parsed : {len(self.get_drivers())} \n")
 
-        # return self.load_static_from_file_by_id(self.construct_static_data_for_export())
-
     def get_new_static(self):
         return self.construct_static_data_for_export()
