@@ -49,10 +49,10 @@ class StaticDataGenerator:
 
     def set_static_paths(self):
         home = str(Path.home())
-        self.staticdata_path = os.path.join(home, 'Static', 'StaticData')
-        self.staticchecker_path = os.path.join(home, 'Static', 'StaticChecker')
-        self.staticdata_logs_path = os.path.join(home, 'Static', 'StaticData', 'Logs')
-        self.staticdatachecker_logs_path = os.path.join(home, 'Static', 'StaticChecker', 'Logs')
+        self.staticdata_path = os.path.join(home, 'static', 'staticdata')
+        self.staticchecker_path = os.path.join(home, 'static', 'staticchecker')
+        self.staticdata_logs_path = os.path.join(home, 'static', 'staticdata', 'Logs')
+        self.staticdatachecker_logs_path = os.path.join(home, 'static', 'staticchecker', 'Logs')
 
     def get_file_name(self):
         time_date_stamp = time.strftime("%Y%m%d_%H%M%S")
