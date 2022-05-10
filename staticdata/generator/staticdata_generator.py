@@ -54,13 +54,14 @@ class StaticDataGenerator:
         self.staticdata_logs_path = os.path.join(home, 'static', 'staticdata', 'Logs')
         self.staticdatachecker_logs_path = os.path.join(home, 'static', 'staticchecker', 'Logs')
 
-    def get_file_name(self):
+    def set_file_name(self):
         time_date_stamp = time.strftime("%Y%m%d_%H%M%S")
+        self.file_name_main = "static_main.json"
         self.file_name = os.path.join(self.staticdata_path, 'static_file_' + time_date_stamp + '.json')
         self.check_file_name = os.path.join(self.staticchecker_path, 'static_file_by_id_' + time_date_stamp + '.json')
         return self.file_name
 
-    def get_log_name(self):
+    def set_log_name(self):
         time_date_stamp = time.strftime("%Y%m%d_%H%M%S")
         self.log_name = os.path.join(self.staticdata_logs_path, 'log_from_static_' + time_date_stamp + '.txt')
         self.check_log_name = os.path.join(self.staticdatachecker_logs_path, 'log_from_static_' + time_date_stamp + '.txt')
@@ -1015,8 +1016,8 @@ class StaticDataGenerator:
                         self.log_insertion(proposed_book)
 
         # self.clean_bookname_duplicates(exchangeid)
-        self.get_file_name()
-        self.get_log_name()
+        self.set_file_name()
+        self.set_log_name()
 
         # Dump the static
         self.dump_log_static_data()
