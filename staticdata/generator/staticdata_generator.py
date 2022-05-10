@@ -704,8 +704,11 @@ class StaticDataGenerator:
 
     def dump_file_static_data(self):
         Path(self.staticdata_path).mkdir(parents=True, exist_ok=True)
+        static_to_dump = self.construct_static_data_for_export()
         with open(self.file_name, 'w', encoding='utf-8') as f:
-            json.dump(self.construct_static_data_for_export(), f, ensure_ascii=False, indent=4)
+            json.dump(static_to_dump, f, ensure_ascii=False, indent=4)
+        with open(self.file_name_main, 'w', encoding='utf-8') as f:
+            json.dump(static_to_dump, f, ensure_ascii=False, indent=4)
 
     def dump_static_for_checks_and_dashboard(self):
         Path(self.staticchecker_path).mkdir(parents=True, exist_ok=True)
