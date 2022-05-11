@@ -56,7 +56,7 @@ class StaticDataGenerator:
 
     def set_file_name(self):
         time_date_stamp = time.strftime("%Y%m%d_%H%M%S")
-        self.file_name_main = "static_main.json"
+        self.file_name_main = os.path.join(self.staticdata_path, "static_main.json")
         self.file_name = os.path.join(self.staticdata_path, 'static_file_' + time_date_stamp + '.json')
         self.check_file_name = os.path.join(self.staticchecker_path, 'static_file_by_id_' + time_date_stamp + '.json')
         return self.file_name
