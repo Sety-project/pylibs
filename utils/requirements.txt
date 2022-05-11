@@ -1,0 +1,4 @@
+# requirements for histfeed app
+
+testresources  # For ccxt to install without warning
+ccxt
