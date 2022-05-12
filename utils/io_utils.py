@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-from async_utils import *
+from utils.async_utils import *
 import sys,os,shutil,platform
 import json
 import pandas as pd
 import numpy as np
-import pyarrow,pyarrow.parquet,s3fs
+
+import pyarrow, pyarrow.parquet,s3fs
 
 # this is for jupyter
 import cufflinks as cf
 cf.go_offline()
 cf.set_config_file(offline=False, world_readable=True)
+
 
 if not 'Runtime' in os.listdir('.'):
     # notebooks run one level down...
