@@ -1,4 +1,13 @@
 # requirements for histfeed app
 
 testresources  # For ccxt to install without warning
+dateutil  #python-dateutil
 ccxt
+scipy
+aiofiles
+numpy
+pandas
+pyarrow
+s3fs
+openpyxl
+cufflinks # For Jupyter only

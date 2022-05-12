@@ -1,12 +1,14 @@
 from utils.ftx_utils import *
 from utils.io_utils import *
 import pandas as pd
+import os
+from pathlib import Path
 
 history_start = datetime(2019, 11, 26)
 
 # all rates annualized, all volumes daily in usd
 async def get_history(futures, start_or_nb_hours, end = datetime.now(tz=None).replace(minute=0,second=0,microsecond=0),
-        dirname = 'Runtime/Mktdata_database'):
+        dirname = os.path.join(Path.home(), 'mktdata')):
     data = pd.concat(await safe_gather((
             [async_from_parquet(dirname+'/'+f+'_funding.parquet')
              for f in futures[futures['type'] == 'perpetual'].index] +
@@ -27,33 +29,33 @@ async def get_history(futures, start_or_nb_hours, end = datetime.now(tz=None).re
 
 async def build_history(futures,exchange,
         end = (datetime.now(tz=None).replace(minute=0,second=0,microsecond=0)),
-        dirname = 'Runtime/Mktdata_database'):
+        dirname = os.path.join(Path.home(), 'mktdata')): # Runtime/Mktdata_database
     '''for now, increments local files and then uploads to s3'''
 
     coroutines = []
     for _, f in futures[futures['type'] == 'perpetual'].iterrows():
-        parquet_name = dirname + '/' + f.name + '_funding.parquet'
+        parquet_name = os.path.join(dirname, f.name + '_funding.parquet')
         parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
         start = max(parquet.index)+timedelta(hours=1) if parquet is not None else history_start
         if start < end:
             coroutines.append(funding_history(f, exchange, start, end, dirname))
 
     for _, f in futures.iterrows():
-        parquet_name = dirname + '/' + f.name + '_futures.parquet'
+        parquet_name = os.path.join(dirname, f.name + '_futures.parquet')
         parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
         start = max(parquet.index) + timedelta(hours=1) if parquet is not None else history_start
         if start < end:
             coroutines.append(rate_history(f, exchange, end, start, '1h', dirname))
 
     for f in futures['underlying'].unique():
-        parquet_name = dirname + '/' + f + '_price.parquet'
+        parquet_name = os.path.join(dirname, f + '_price.parquet')
         parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
         start = max(parquet.index) + timedelta(hours=1) if parquet is not None else history_start
         if start < end:
             coroutines.append(spot_history(f + '/USD', exchange, end, start , '1h', dirname))
 
     for f in list(futures.loc[futures['spotMargin'] == True, 'underlying'].unique()) + ['USD']:
-        parquet_name = dirname + '/' + f + '_borrow.parquet'
+        parquet_name = os.path.join(dirname, f + '_borrow.parquet')
         parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
         start = max(parquet.index) + timedelta(hours=1) if parquet is not None else history_start
         if start < end:
@@ -63,28 +65,28 @@ async def build_history(futures,exchange,
     await safe_gather(coroutines)
 
     # static values for non spot Margin underlyings
-    otc_file = pd.read_excel('Runtime/configs/static_params.xlsx',sheet_name='used').set_index('coin')
+    otc_file = pd.read_excel(os.path.join(Path.home(), 'mktdata', 'static_params.xlsx'),sheet_name='used').set_index('coin')
     for f in list(futures.loc[futures['spotMargin'] == False, 'underlying'].unique()):
-        spot_parquet = from_parquet(dirname + '/' + f + '_price.parquet')
+        spot_parquet = from_parquet(os.path.join(dirname, f + '_price.parquet'))
         to_parquet(pd.DataFrame(index=spot_parquet.index, columns=[f + '/rate/borrow'],
                                 data=otc_file.loc[f,'borrow'] if futures.loc[f+'-PERP','spotMargin'] == 'OTC' else 999
-                                ),dirname + '/' + f + '_borrow.parquet',mode='a')
+                                ),os.path.join(dirname, f +'_borrow.parquet'),mode='a')
         to_parquet(pd.DataFrame(index=spot_parquet.index, columns=[f + '/rate/size'],
                                 data=otc_file.loc[f,'size'] if futures.loc[f+'-PERP','spotMargin'] == 'OTC' else 0
-                                ),dirname + '/' + f + '_borrow.parquet',mode='a')
+                                ),os.path.join(dirname, f + '_borrow.parquet'),mode='a')
 
     #os.system("aws s3 sync Runtime/Mktdata_database/ s3://hourlyftx/Mktdata_database")
 
-async def correct_history(futures,exchange,hy_history,dirname = 'Runtime/Mktdata_database'):
+async def correct_history(futures,exchange,hy_history,dirname=os.path.join(Path.home(), 'mktdata')):
     '''for now, increments local files and then uploads to s3'''
 
     coroutines = []
     for _, f in futures[futures['type'] == 'perpetual'].iterrows():
-        parquet_name = dirname + '/' + f.name + '_funding.parquet'
+        parquet_name = os.path.join(dirname, f.name, '_funding.parquet')
         coroutines.append(async_to_parquet(hy_history[[exchange.market(f['symbol'])['id'] + '/rate/funding']],parquet_name))
 
     for _, f in futures.iterrows():
-        parquet_name = dirname + '/' + f.name + '_futures.parquet'
+        parquet_name = os.path.join(dirname, f.name, '_futures.parquet')
         future_id = exchange.market(f['symbol'])['id']
         column_names = [future_id + '/mark/' + field for field in ['o', 'h', 'l', 'c', 'volume']]
         column_names += [future_id + '/indexes/' + field for field in ['o', 'h', 'l', 'c', 'volume']]
@@ -92,23 +94,24 @@ async def correct_history(futures,exchange,hy_history,dirname = 'Runtime/Mktdata
         coroutines.append(async_to_parquet(hy_history[column_names], parquet_name))
 
     for f in futures['underlying'].unique():
-        parquet_name = dirname + '/' + f + '_price.parquet'
+        parquet_name = os.path.join(dirname, f, '_price.parquet')
         column_names = [f + '/price/' + field for field in ['o', 'h', 'l', 'c', 'volume']]
         coroutines.append(async_to_parquet(hy_history[column_names], parquet_name))
 
     for f in list(futures.loc[futures['spotMargin'] == True, 'underlying'].unique()) + ['USD']:
-        parquet_name = dirname + '/' + f + '_borrow.parquet'
-        column_names = [f + '/rate/' + field for field in ['borrow','size']]
+        parquet_name = os.path.join(dirname, f, '_borrow.parquet')
+        column_names = [f + '/rate/' + field for field in ['borrow', 'size']]
         coroutines.append(async_to_parquet(hy_history[column_names], parquet_name))
 
     # run all coroutines
     await safe_gather(coroutines)
 
 ### only perps, only borrow and funding, only hourly
-async def borrow_history(coin,exchange,
-                 end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
-                 start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
-                   dirname=''):
+async def borrow_history(coin,
+                         exchange,
+                         end=(datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
+                         start=(datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
+                         dirname=''):
     max_funding_data = int(500)  # in hour. limit is 500 :(
     resolution = exchange.describe()['timeframes']['1h']
 
@@ -129,22 +132,24 @@ async def borrow_history(coin,exchange,
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     data=data[~data.index.duplicated()].sort_index()
 
-    if dirname != '': await async_to_parquet(data,dirname + '/' + coin + '_borrow.parquet',mode='a')
+    if dirname != '': await async_to_parquet(data, os.path.join(dirname, coin + '_borrow.parquet'),mode='a')
 
     return data
 
 ######### annualized funding for perps
-async def funding_history(future,exchange,
-                 start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
-                    end=(datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)),
-                    dirname=''):
+async def funding_history(future,
+                          exchange,
+                          start=(datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
+                          end=(datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)),
+                          dirname=''):
+
     max_funding_data = int(500)  # in hour. limit is 500 :(
     resolution = exchange.describe()['timeframes']['1h']
 
     e = end.timestamp()
     s = start.timestamp()
     f = max_funding_data * int(resolution)
-    start_times=[s+k*f for k in range(1+int((e-s)/f)) if s+k*f<e]
+    start_times=[int(round(s+k*f)) for k in range(1+int((e-s)/f)) if s+k*f<e]
 
     lists = await safe_gather([
         exchange.fetch_funding_rate_history(exchange.market(future['symbol'])['symbol'], params={'start_time':start_time, 'end_time':start_time+f})
@@ -161,7 +166,9 @@ async def funding_history(future,exchange,
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     data = data[~data.index.duplicated()].sort_index()
 
-    if dirname != '': await async_to_parquet(data,dirname + '/' + exchange.market(future['symbol'])['id'] + '_funding.parquet',mode='a')
+    if dirname != '': await async_to_parquet(data, os.path.join(dirname,
+                                                                exchange.market(future['symbol'])['id'] + '_funding.parquet'),
+                                             mode='a')
 
     return data
 
@@ -216,7 +223,7 @@ async def fetch_trades_history(symbol,exchange,
     #data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     vwap = vwap[~vwap.index.duplicated()].sort_index().ffill()
 
-    parquet_filename = dirname + '/' + symbol.split('/USD')[0] + "_trades.parquet"
+    parquet_filename = os.path.join(dirname, symbol.split('/USD')[0] + "_trades.parquet")
     if dirname != '': vwap.to_parquet(parquet_filename)
 
     return {'symbol':exchange.market(symbol)['symbol'],'coin':exchange.market(symbol)['base'],'vwap':vwap}
@@ -235,7 +242,7 @@ async def rate_history(future,exchange,
     e = end.timestamp()
     s = start.timestamp()
     f = max_mark_data * int(resolution)
-    start_times=[s+k*f for k in range(1+int((e-s)/f)) if s+k*f<e]
+    start_times=[int(round(s+k*f)) for k in range(1+int((e-s)/f)) if s+k*f<e]
 
     mark_indexes = await safe_gather([
         exchange.fetch_ohlcv(exchange.market(future['symbol'])['symbol'], timeframe=timeframe, params=params) # volume is for max_mark_data*resolution
@@ -291,7 +298,10 @@ async def rate_history(future,exchange,
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     data = data[~data.index.duplicated()].sort_index()
 
-    if dirname != '': await async_to_parquet(data,dirname + '/' + exchange.market(future['symbol'])['id'] + '_futures.parquet',mode='a')
+    if dirname != '': await async_to_parquet(data,
+                                             os.path.join(dirname,
+                                                          exchange.market(future['symbol'])['id'] + '_futures.parquet'),
+                                             mode='a')
 
     return data
 
@@ -308,7 +318,7 @@ async def spot_history(symbol, exchange,
     e = end.timestamp()
     s = start.timestamp()
     f = max_mark_data * int(resolution)
-    start_times=[s+k*f for k in range(1+int((e-s)/f)) if s+k*f<e]
+    start_times=[int(round(s+k*f)) for k in range(1+int((e-s)/f)) if s+k*f<e]
 
     spot_lists = await safe_gather([
         exchange.fetch_ohlcv(symbol, timeframe=timeframe, params={'start_time':start_time, 'end_time':start_time+f-int(resolution)})
@@ -325,19 +335,24 @@ async def spot_history(symbol, exchange,
     data.columns = [symbol.replace('/USD','') + '/price/' + column for column in data.columns]
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     data = data[~data.index.duplicated()].sort_index()
-    if dirname!='': await async_to_parquet(data,dirname + '/' + symbol.replace('/USD', '') + '_price.parquet',mode='a')
+    if dirname!='': await async_to_parquet(data,
+                                           os.path.join(dirname,
+                                                        symbol.replace('/USD', '') + '_price.parquet'),
+                                           mode='a')
 
     return data
 
 async def ftx_history_main_wrapper(*argv):
-    exchange= await open_exchange(argv[2],'')
+    exchange = await open_exchange(argv[2],'')
     futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=True)).set_index('name')
     await exchange.load_markets()
 
     #argv[1] is either 'all', either a universe name, or a list of currencies
     filename = 'Runtime/configs/universe.xlsx'
+    filename = '/universe.xlsx'
+    filename = os.path.join(Path.home(), 'mktdata', 'universe.xlsx')
     try:
-        universe_list=pd.read_excel(filename,sheet_name='screening_params',index_col=0).columns
+        universe_list=pd.read_excel(filename, sheet_name='screening_params', index_col=0).columns
     except:
         universe_list=pd.DataFrame()
 

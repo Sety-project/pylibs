@@ -1,8 +1,15 @@
-from ccxt_utilities import *
+from utils.ccxt_utilities import *
+import pandas as pd
+import os
+from pathlib import Path
 
 #index_list=['DEFI_PERP','SHIT_PERP','ALT_PERP','MID_PERP','DRGN_PERP','PRIV_PERP']
 #publicGetIndexesIndexNameWeights()GET /indexes/{index_name}/weights
 #index_table=pd.DataFrame()
+
+# C'est pour contribuer a ccxt, pour normaliser leur data
+# ouvrir un objet exchange ccxt pour faire okex
+# appeler fetch_candles
 
 def getUnderlyingType(coin_detail_item):
     if coin_detail_item['usdFungible'] == True:
@@ -187,7 +194,7 @@ async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params=
     fetched = await exchange.fetch_markets()
     expired = await exchange.publicGetExpiredFutures(params) if includeExpired==True else []
     coin_details = await fetch_coin_details(exchange)
-    otc_file = pd.read_excel('Runtime/configs/static_params.xlsx',sheet_name='used').set_index('coin')
+    otc_file = pd.read_excel(os.path.join(Path.home(), 'mktdata', 'static_params.xlsx'), sheet_name='used').set_index('coin')
 
     #### for IM calc
     account_leverage = (await exchange.privateGetAccount())['result']

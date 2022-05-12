@@ -6,7 +6,7 @@ import functools
 if platform.system()=='Windows':
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-safe_gather_limit = 50
+safe_gather_limit = 5
 
 def async_wrap(f):
     @functools.wraps(f)
@@ -17,7 +17,7 @@ def async_wrap(f):
         return await loop.run_in_executor(executor, p)
     return run
 
-async def safe_gather(tasks,n=safe_gather_limit,semaphore=None):
+async def safe_gather(tasks, n=safe_gather_limit, semaphore=None):
     semaphore = semaphore if semaphore else asyncio.Semaphore(n)
 
     async def sem_task(task):

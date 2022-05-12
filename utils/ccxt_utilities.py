@@ -1,21 +1,45 @@
 #!/usr/bin/env python3
-from async_utils import *
-import sys,os,shutil
+from utils.async_utils import *
+import sys, os, shutil
 import logging
 
 from datetime import *
 import dateutil
 import numpy as np
-import pandas as pd
 import scipy
+import json
 
 from cryptography.fernet import Fernet
 import ccxt.async_support as ccxt
+from pathlib import Path
+import os
 
-api_params = pd.read_excel('Runtime/configs/static_params.xlsx',sheet_name='api',index_col='key')
-with open('Runtime/configs/api_param') as fp:
-    api_param = fp.read().encode()
-api_params  = api_params.applymap(lambda x: Fernet(api_param).decrypt(x.encode()).decode() if type(x)==str else ''.encode())
+def load_vault():
+    api_param_path = os.path.join(Path.home(), '.cache', 'setyvault', 'api_param')
+    with open(api_param_path) as fp:
+        api_param = fp.read().encode()
+    return api_param
+
+# def set_api_params(api_param):
+#     api_params = pd.read_excel('/home/vic/pylibs/SystematicCeFi/DerivativeArbitrage/Runtime/configs/static_params.xlsx', sheet_name='api', index_col='key')
+#     api_params = api_params.applymap(lambda x: Fernet(api_param).decrypt(x.encode()).decode() if type(x)==str else ''.encode())
+#     return api_params
+
+def decode_api_params(api_param):
+
+    api_keys_path = os.path.join(Path.home(), '.cache', 'setyvault', 'api_keys.json')
+    with open(api_keys_path) as json_file:
+        data = json.load(json_file)
+
+    clear_dict = {}
+    for exchange_name in data:
+        clear_dict[exchange_name] = {}
+        clear_dict[exchange_name]['key'] = Fernet(api_param).decrypt(data[exchange_name]['key'].encode()).decode()
+        clear_dict[exchange_name]['comment'] = Fernet(api_param).decrypt(data[exchange_name]['comment'].encode()).decode() if data[exchange_name]['comment'] != '' else ''
+
+    return clear_dict
+
+api_params = decode_api_params(load_vault()) #was returning a df before, now a list
 
 '''
 biz logic helpers
@@ -31,13 +55,13 @@ async def open_exchange(exchange_name,subaccount,config={}):
     '''
     ccxt exchange object factory.
     '''
-    if exchange_name=='ftx':
+    if exchange_name == 'ftx':
         exchange = ccxt.ftx(config={ ## David personnal
             'enableRateLimit': True,
             'apiKey': 'ZUWyqADqpXYFBjzzCQeUTSsxBZaMHeufPFgWYgQU',
-            'secret': api_params.loc[exchange_name,'value'],
+            'secret': api_params[exchange_name]['key'],  #[key_value['key'] for key_value in api_params if key_value['exchange']=='ftx'][0],  #sapi_params.loc[exchange_name,'value'], # api_params.loc[exchange_name,'value'],
             'asyncio_loop': config['asyncio_loop'] if 'asyncio_loop' in config else asyncio.get_running_loop()
-        }|config)
+        } | config)
         if subaccount!='': exchange.headers= {'FTX-SUBACCOUNT': subaccount}
 
     elif exchange_name == 'binance':
