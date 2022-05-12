@@ -12,12 +12,12 @@ import cufflinks as cf
 cf.go_offline()
 cf.set_config_file(offline=False, world_readable=True)
 
-
-if not 'Runtime' in os.listdir('.'):
-    # notebooks run one level down...
-    os.chdir('../')
-    if not 'Runtime' in os.listdir('.'):
-        raise Exception("This needs to run in DerivativesArbitrage, where Runtime/ is located")
+# Commented out to avoid histfeed failing to run...
+# if not 'Runtime' in os.listdir('.'):
+#     # notebooks run one level down...
+#     os.chdir('../')
+#     if not 'Runtime' in os.listdir('.'):
+#         raise Exception("This needs to run in DerivativesArbitrage, where Runtime/ is located")
 
 '''
 I/O helpers
