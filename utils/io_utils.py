@@ -59,7 +59,7 @@ async def async_from_parquet_s3(filename,columns=None):
 
 def from_parquet(filename):
     return pyarrow.parquet.read_table(filename).to_pandas()
-git add
+
 async def async_from_parquet(filename):
     coro = async_wrap(from_parquet)
     return await coro(filename)
