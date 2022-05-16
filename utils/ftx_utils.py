@@ -146,9 +146,6 @@ async def fetch_coin_details(exchange):
 
 # time in mili, rate annualized, size is an open interest in USD
 async def fetch_borrow_rate_history(exchange, coin,start_time,end_time,params={}):
-    start_time = datetime.now().timestamp() - 499 * 3600
-    end_time = datetime.now().timestamp()
-
     request = {
         'coin': coin,
         'start_time': start_time,
