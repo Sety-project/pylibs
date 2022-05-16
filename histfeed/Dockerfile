@@ -7,6 +7,10 @@ RUN DEBIAN_FRONTEND="noninteractive" apt-get install -y python3 python3-pip
 ENV USER=ec2-user
 RUN adduser -u 1026 $USER
 RUN usermod -a --group users $USER
+
+#Enriching PATH
+ENV PATH=$PATH:/home/$USER/.local/bin
+
 ENV PYLIBS_PATH=/home/$USER/pylibs
 ENV HISTFEED_PATH=$PYLIBS_PATH/histfeed
 ENV UTILS_PATH=$PYLIBS_PATH/utils
