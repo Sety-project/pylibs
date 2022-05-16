@@ -29,6 +29,7 @@ COPY --chown=$USER:$USER /utils $UTILS_PATH
 COPY --chown=$USER:$USER /histfeed $HISTFEED_PATH
 
 RUN pip3 install -Ur $HISTFEED_PATH/requirements.txt
+RUN pip3 install -Ur $UTILS_PATH/requirements.txt
 
 USER $USER
 CMD ["python3", "main.py"]
