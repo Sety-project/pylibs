@@ -370,11 +370,6 @@ async def fetch_trades_history(symbol,
 
     return {'symbol':exchange.market(symbol)['symbol'],'coin':exchange.market(symbol)['base'],'vwap':vwap}
 
-# run_type = Build or correct
-# run_type, exchange_name, universe
-# exchange_name, run_type, universe, *nb_of_days
-
-# async def ftx_history_main_wrapper(*argv):
 async def ftx_history_main_wrapper(exchange_name, run_type, universe, *nb_of_days):
 
     exchange = await open_exchange(exchange_name,'')
@@ -382,13 +377,7 @@ async def ftx_history_main_wrapper(exchange_name, run_type, universe, *nb_of_day
     await exchange.load_markets()
 
     #universe should be either 'all', either a universe name, or a list of currencies
-    # filename = os.path.join(Path.home(), 'mktdata', 'universe.xlsx')
     dir_name = os.path.join(Path.home(), 'mktdata', exchange_name)
-
-    # try:
-    #     universe_list=pd.read_excel(filename, sheet_name='screening_params', index_col=0).columns
-    # except:
-    #     universe_list=pd.DataFrame()
 
     # In case universe was not max, is_wide, is_institutional
     # universe = [id for id, data in exchange.markets_by_id.items() if data['base'] in [x.upper() for x in [universe]] and data['contract']]
@@ -399,19 +388,13 @@ async def ftx_history_main_wrapper(exchange_name, run_type, universe, *nb_of_day
 
     # Volume Screening
     if run_type == 'build':
-        # await build_history(futures, exchange)
         logger.info("Building history for build")
-        # [await build_history(futures.loc[[i]], exchange, dir_name) for i, _ in futures.iterrows()]
-        # [await build_history(fut, exchange, dir_name) for fut in futures]
         [await build_history(futures.loc[[i]], exchange, dir_name) for i, _ in futures.iterrows()]
     elif run_type == 'correct':
         logger.info("Building history for correct")
         hy_history = await get_history(dir_name, futures, history_start)
         end = datetime.now()-timedelta(days=nb_of_days)
         await correct_history(futures, exchange, hy_history[:end])
-        # await build_history(futures, exchange)
-        # [await build_history(futures.loc[[i]], exchange, dir_name) for i, _ in futures.iterrows()]
-        # [await build_history(fut, exchange, dir_name) for fut in futures]
         [await build_history(futures.loc[[i]], exchange, dir_name) for i, _ in futures.iterrows()]
     elif run_type == 'get':
         pass
@@ -441,6 +424,7 @@ def main(*args):
     RUN_TYPES = ["build", "correct", "get"]
     EXCHANGE_NAMES_AVAILABLE = ["ftx"]
 
+    args = list(*args)[1:]
     if len(args) < 3:
         logger.critical("Cannot run histfeed from the provided params.")
         logger.critical(f'Parameters passed are {[arg for arg in args]}]')
@@ -482,7 +466,7 @@ def main(*args):
 
         # Getting the nb_of_days, or defaulting to 100
         try:
-            nb_of_days = [x for x in args if type(x) is int][0]
+            nb_of_days = [x for x in args if x.isnumeric()][0]
         except IndexError:
             nb_of_days = 100
             logger.info("Cannot find the nb_of_days param. Defaulting to nb_of_days=100")
@@ -530,20 +514,3 @@ def get_universe(universe_filter):
     else:
         res = list(data.keys())
     return res
-
-
-    # if len(args > 3):
-    #     universe_filter = args[2]  #"is_wide or is_institutional"
-    # if universe_filter not in ["is_wide", "is_institutional", "all"]:
-    #     logger.info("Must provide a universe_parameter. Should be in ['is_wide', 'is_institutional', 'all']")
-    #     return -1
-
- # if len(argv) < 1:
-        #     argv.extend(['build'])  # build or correct
-        # if len(argv) < 2:
-        #     argv.extend(['max'])  # universe name, or list of currencies, or 'all'
-        # if len(argv) < 3:
-        #     argv.extend(['ftx'])  # exchange_name
-        #     exchange_name = argv[2]
-        # if len(argv) < 4:
-        #     argv.extend([100])  # nb days
