@@ -1,7 +1,7 @@
 # requirements for histfeed app
 
 testresources  # For ccxt to install without warning
-dateutil  #python-dateutil
+python-dateutil
 ccxt
 scipy
 aiofiles
