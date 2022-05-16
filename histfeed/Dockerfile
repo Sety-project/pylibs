@@ -10,16 +10,20 @@ RUN usermod -a --group users $USER
 ENV PYLIBS_PATH=/home/$USER/pylibs
 ENV HISTFEED_PATH=$PYLIBS_PATH/histfeed
 ENV UTILS_PATH=$PYLIBS_PATH/utils
+ENV LOGS_PATH=/tmp/histfeed
 
 RUN mkdir -p $PYLIBS_PATH
 RUN mkdir -p $HISTFEED_PATH
 RUN mkdir -p $UTILS_PATH
 RUN mkdir -p /home/$USER/mktdata
+RUN mkdir -p $LOGS_PATH
 
 RUN chown -R $USER /home/$USER/mktdata
 RUN chown -R $USER $PYLIBS_PATH
 RUN chown -R $USER $HISTFEED_PATH
 RUN chown -R $USER $UTILS_PATH
+RUN chown -R $USER $LOGS_PATH
+
 USER $USER
 WORKDIR $HISTFEED_PATH
 
