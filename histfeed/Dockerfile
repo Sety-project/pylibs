@@ -31,9 +31,10 @@ ENV PYTHONPATH=$PYLIBS_PATH:/home/$USER
 
 COPY --chown=$USER:$USER /utils $UTILS_PATH
 COPY --chown=$USER:$USER /histfeed $HISTFEED_PATH
+RUN chmod +x $HISTFEED_PATH/run.sh
 
 RUN pip3 install -Ur $HISTFEED_PATH/requirements.txt
 RUN pip3 install -Ur $UTILS_PATH/requirements.txt
 
 USER $USER
-CMD ["python3", "main.py"]
+ENTRYPOINT ["$HISTFEED_PATH/run.sh"]
