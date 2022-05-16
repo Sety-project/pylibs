@@ -41,4 +41,4 @@ RUN pip3 install -Ur $HISTFEED_PATH/requirements.txt
 RUN pip3 install -Ur $UTILS_PATH/requirements.txt
 
 USER $USER
-ENTRYPOINT ["$HISTFEED_PATH/run.sh"]
+ENTRYPOINT [ "sh", "-c", "$HISTFEED_PATH/run.sh" ]
