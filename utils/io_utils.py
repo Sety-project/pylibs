@@ -29,6 +29,7 @@ async def async_read_csv(*args,**kwargs):
 
 def to_csv(*args,**kwargs):
     return args[0].to_csv(*args[1:],**kwargs)
+
 async def async_to_csv(*args,**kwargs):
     coro = async_wrap(to_csv)
     return await coro(*args,**kwargs)
@@ -41,6 +42,7 @@ def to_parquet(df,filename,mode="w"):
     pq_df = pyarrow.Table.from_pandas(df)
     pyarrow.parquet.write_table(pq_df, filename)
     return None
+
 async def async_to_parquet(df,filename,mode="w"):
     coro = async_wrap(to_parquet)
     return await coro(df,filename,mode)
@@ -50,12 +52,14 @@ def from_parquets_s3(filenames,columns=None):
     filename = list'''
     kwargs = {'columns':columns} if columns else dict()
     return pyarrow.parquet.ParquetDataset(filenames,filesystem=s3fs.S3FileSystem()).read_pandas(**kwargs).to_pandas()
+
 async def async_from_parquet_s3(filename,columns=None):
     coro = async_wrap(from_parquets_s3)
     return await coro(filename,columns)
 
 def from_parquet(filename):
     return pyarrow.parquet.read_table(filename).to_pandas()
+git add
 async def async_from_parquet(filename):
     coro = async_wrap(from_parquet)
     return await coro(filename)
