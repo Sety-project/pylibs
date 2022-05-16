@@ -4,8 +4,6 @@ FROM ubuntu:focal
 RUN apt-get update
 RUN DEBIAN_FRONTEND="noninteractive" apt-get install -y python3.10 python3-pip
 
-python:3.10-slim-bullseye
-
 ENV USER=ec2-user
 RUN adduser -u 1026 $USER
 RUN usermod -a --group users $USER
