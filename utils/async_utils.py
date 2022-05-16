@@ -9,6 +9,9 @@ if platform.system()=='Windows':
 safe_gather_limit = 5
 
 def async_wrap(f):
+    '''
+    creates a coroutine that name is run
+    '''
     @functools.wraps(f)
     async def run(*args, loop=None, executor=None, **kwargs):
         if loop is None:
