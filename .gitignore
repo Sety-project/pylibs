@@ -8,3 +8,4 @@ dist/
 *$py.class
 utils/api_encrypt/
 .idea/
+.venv/
