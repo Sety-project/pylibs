@@ -160,7 +160,7 @@ async def borrow_history(coin,
 
     if dirname != '': await async_to_parquet(data, os.path.join(dirname, coin + '_borrow.parquet'),mode='a')
 
-    return data
+    # return data
 
 ######### annualized funding for perps
 async def funding_history(future,
@@ -196,7 +196,7 @@ async def funding_history(future,
                                                                 exchange.market(future['symbol'])['id'] + '_funding.parquet'),
                                              mode='a')
 
-    return data
+    # return data
 
 #### annualized rates for futures and perp, volumes are daily
 async def rate_history(future,exchange,
@@ -273,7 +273,7 @@ async def rate_history(future,exchange,
                                                           exchange.market(future['symbol'])['id'] + '_futures.parquet'),
                                              mode='a')
 
-    return data
+    # return data
 
 ## populates future_price or spot_price depending on type
 async def spot_history(symbol, exchange,
@@ -310,7 +310,7 @@ async def spot_history(symbol, exchange,
                                                         symbol.replace('/USD', '') + '_price.parquet'),
                                            mode='a')
 
-    return data
+    # return data
 
 async def fetch_trades_history(symbol,
                                exchange,
