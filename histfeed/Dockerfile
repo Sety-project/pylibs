@@ -1,8 +1,9 @@
 # syntax=docker/dockerfile:1
 
-FROM ubuntu:focal
+FROM python:3.10.4-slim-bullseye
 RUN apt-get update
-RUN DEBIAN_FRONTEND="noninteractive" apt-get install -y python3.10 python3-pip
+RUN DEBIAN_FRONTEND="noninteractive" apt-get install -y python3-pip
+RUN pip3 install --upgrade pip
 
 ENV USER=ec2-user
 RUN adduser -u 1026 $USER
