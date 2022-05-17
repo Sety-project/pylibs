@@ -18,6 +18,8 @@ ENV HISTFEED_PATH=$PYLIBS_PATH/histfeed
 ENV UTILS_PATH=$PYLIBS_PATH/utils
 ENV LOGS_PATH=/tmp/histfeed
 
+ENV PYTHONPATH=$PYLIBS_PATH:$HOME
+
 RUN mkdir -p $PYLIBS_PATH
 RUN mkdir -p $HISTFEED_PATH
 RUN mkdir -p $UTILS_PATH
@@ -31,8 +33,6 @@ RUN chown -R $USER $UTILS_PATH
 RUN chown -R $USER $LOGS_PATH
 
 WORKDIR $HISTFEED_PATH
-
-ENV PYTHONPATH=$PYLIBS_PATH:$HOME
 
 # Copy pip requirements before copying full project
 USER $USER
