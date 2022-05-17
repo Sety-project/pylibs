@@ -8,7 +8,6 @@ RUN pip3 install --upgrade pip
 
 ENV USER=ec2-user
 RUN adduser -u 1026 $USER
-RUN usermod -a --group 0 $USER         # Adding user to group root
 RUN usermod -a --group users $USER     # Adding user to group $USER
 
 #Enriching PATH
@@ -43,5 +42,5 @@ RUN chmod +x $HISTFEED_PATH/run.sh
 RUN pip3 install -Ur $HISTFEED_PATH/requirements.txt
 RUN pip3 install -Ur $UTILS_PATH/requirements.txt
 
-USER $USER
+USER root
 ENTRYPOINT [ "sh", "-c", "$HISTFEED_PATH/run.sh" ]
