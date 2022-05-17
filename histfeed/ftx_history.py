@@ -474,7 +474,8 @@ def main(*args):
         # Make sure the exchange repo exists in mktdata/, if not creates it
         mktdata_exchange_repo = os.path.join(Path.home(), 'mktdata', exchange_name)
         if not os.path.exists(mktdata_exchange_repo):
-            os.makedirs(mktdata_exchange_repo)
+            os.umask(0)
+            os.makedirs(mktdata_exchange_repo, mode=0o777)
         logger.info(f'histfeed running with params {[arg for arg in args]}')
         return asyncio.run(ftx_history_main_wrapper(exchange_name, run_type, universe, nb_of_days))
 
@@ -486,22 +487,25 @@ def set_logger():
     time_date_stamp = time.strftime("%Y%m%d_%H%M%S")
     filepath = os.path.join(os.sep, 'tmp', 'histfeed')
     if not os.path.exists(filepath):
-        os.makedirs(filepath)
+        os.umask(0)
+        os.makedirs(filepath, mode=0o777)
 
-    logging.basicConfig(filename=os.path.join(filepath, 'histfeed_' + time_date_stamp + '.log'),
-                        filemode='a',
-                        format='%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s',
-                        datefmt='%H:%M:%S',
-                        level=logging.DEBUG)
+    logging.basicConfig()
+    #filename=os.path.join(filepath, 'histfeed_' + time_date_stamp + '.log'),
+                        # filemode='a',
+                        # format='%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s',
+                        # datefmt='%H:%M:%S',
+                        # level=logging.DEBUG
 
     logger = logging.getLogger("ftx_history")
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
 
-    # create file handler which logs even debug messages
-    # filename=os.path.join(os.sep, 'tmp', 'histfeed', 'histfeed_' + time_date_stamp + '.log')
-    # fh = logging.FileHandler(filename)
-    # fh.setLevel(logging.DEBUG)
-    # logger.addHandler(fh)
+    # Create file handler which logs even debug messages
+    filename = os.path.join(filepath, 'histfeed_' + time_date_stamp + '.log')
+    fh = logging.FileHandler(filename)
+    fh.setFormatter(logging.Formatter('%(asctime)s %(name)s %(levelname)s %(message)s'))
+    fh.setLevel(logging.DEBUG)
+    logger.addHandler(fh)
 
     logger.info("Logger set")
 
