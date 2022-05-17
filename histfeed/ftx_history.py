@@ -466,7 +466,7 @@ def main(*args):
 
         # Getting the nb_of_days, or defaulting to 100
         try:
-            nb_of_days = [x for x in args if x.isnumeric()][0]
+            nb_of_days = [int(x) for x in args if x.isnumeric()][0]
         except IndexError:
             nb_of_days = 100
             logger.info("Cannot find the nb_of_days param. Defaulting to nb_of_days=100")
