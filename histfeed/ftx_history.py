@@ -389,20 +389,20 @@ async def ftx_history_main_wrapper(exchange_name, run_type, universe, *nb_of_day
     # Volume Screening
     if run_type == 'build':
         logger.info("Building history for build")
-        [await build_history(futures.loc[[i]], exchange, dir_name) for i, _ in futures.iterrows()]
+        await build_history(futures, exchange, dir_name)
+        await exchange.close()
     elif run_type == 'correct':
         logger.info("Building history for correct")
         hy_history = await get_history(dir_name, futures, history_start)
         end = datetime.now()-timedelta(days=nb_of_days)
         await correct_history(futures, exchange, hy_history[:end])
-        [await build_history(futures.loc[[i]], exchange, dir_name) for i, _ in futures.iterrows()]
+        await build_history(futures, exchange, dir_name)
+        await exchange.close()
     elif run_type == 'get':
-        pass
-
-    logger.info("Getting history...")
-    hy_history = await get_history(dir_name, futures, 24 * nb_of_days)
-    await exchange.close()
-    return hy_history
+        logger.info("Getting history...")
+        hy_history = await get_history(dir_name, futures, 24 * nb_of_days)
+        await exchange.close()
+        return hy_history
 
 def main(*args):
     '''
