@@ -1,14 +1,16 @@
 import logging
 
 import sys
-from utils.ftx_utils import *
-from utils.io_utils import *
 import pandas as pd
 import os
 from pathlib import Path
-import time
+from time import strftime
+from utils.ftx_utils import *
+from utils.io_utils import *
+from utils.mktdata import *
 
 history_start = datetime(2019, 11, 26)
+LOGGER_NAME = __name__
 
 # all rates annualized, all volumes daily in usd
 async def get_history(dirname,
@@ -39,7 +41,7 @@ async def build_history(futures,
                         dirname=os.path.join(Path.home(), 'mktdata'),
                         end=(datetime.now(tz=None).replace(minute=0,second=0,microsecond=0))): # Runtime/Mktdata_database
     '''for now, increments local files and then uploads to s3'''
-    logger = logging.getLogger("ftx_history")
+    logger = logging.getLogger(LOGGER_NAME)
     logger.info("BUILDING COROUTINES")
 
     coroutines = []
@@ -75,8 +77,12 @@ async def build_history(futures,
             logger.info("Adding coroutine " + parquet_name)
             coroutines.append(borrow_history(f, exchange, end, start, dirname))
 
-    # run all coroutines
-    await safe_gather(coroutines)
+    if coroutines:
+        # run all coroutines
+        logger.info(f"Gathered {len(coroutines)} coroutines, processing them")
+        await safe_gather(coroutines)
+    else:
+        logger.info("0 coroutines gathered, nothing to do")
 
     # static values for non spot Margin underlyings
     otc_file = pd.read_excel(os.path.join(Path.home(), 'mktdata', 'static_params.xlsx'),sheet_name='used').set_index('coin')
@@ -99,7 +105,7 @@ async def build_history(futures,
 async def correct_history(futures,exchange,hy_history,dirname=os.path.join(Path.home(), 'mktdata')):
     '''for now, increments local files and then uploads to s3'''
 
-    logger = logging.getLogger("ftx_history")
+    logger = logging.getLogger(LOGGER_NAME)
     logger.info("CORRECTING HISTORY")
 
     coroutines = []
@@ -152,8 +158,7 @@ async def borrow_history(coin,
     if len(data)==0:
         return pd.DataFrame(columns=[coin+'_rate_borrow',coin+'_rate_size'])
 
-    data = data.astype(dtype={'time': 'int64'}).set_index(
-        'time')[['rate','size']]
+    data = data.astype(dtype={'time': 'int64'}).set_index('time')[['rate','size']]
     data.rename(columns={'rate':coin+'_rate_borrow','size':coin+'_rate_size'},inplace=True)
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     data=data[~data.index.duplicated()].sort_index()
@@ -384,7 +389,7 @@ async def ftx_history_main_wrapper(exchange_name, run_type, universe, *nb_of_day
 
     futures = futures[futures.index.isin(universe)]
 
-    logger = logging.getLogger("ftx_history")
+    logger = logging.getLogger(LOGGER_NAME)
 
     # Volume Screening
     if run_type == 'build':
@@ -417,8 +422,8 @@ def main(*args):
             - main correct ftx all
    '''
 
-    set_logger()
-    logger = logging.getLogger("ftx_history")
+    set_logger('histfeed')
+    logger = logging.getLogger(LOGGER_NAME)
 
     UNIVERSES = ["all", "is_wide", "is_institutional"]
     RUN_TYPES = ["build", "correct", "get"]
@@ -476,16 +481,17 @@ def main(*args):
         if not os.path.exists(mktdata_exchange_repo):
             os.umask(0)
             os.makedirs(mktdata_exchange_repo, mode=0o777)
-        logger.info(f'histfeed running with params {[arg for arg in args]}')
-        return asyncio.run(ftx_history_main_wrapper(exchange_name, run_type, universe, nb_of_days))
 
+        # Running histfeed
+        logger.info(f'histfeed running with params {[arg for arg in args]}')
+        asyncio.run(ftx_history_main_wrapper(exchange_name, run_type, universe, nb_of_days))
         logger.info("histfeed terminated successfully...")
 
-def set_logger():
+def set_logger(app_name):
     ''' Function that sets a logger for the app, for debugging purposes '''
 
-    time_date_stamp = time.strftime("%Y%m%d_%H%M%S")
-    filepath = os.path.join(os.sep, 'tmp', 'histfeed')
+    time_date_stamp = strftime("%Y%m%d_%H%M%S")
+    filepath = os.path.join(os.sep, 'tmp', app_name)
     if not os.path.exists(filepath):
         os.umask(0)
         os.makedirs(filepath, mode=0o777)
@@ -497,24 +503,14 @@ def set_logger():
                         # datefmt='%H:%M:%S',
                         # level=logging.DEBUG
 
-    logger = logging.getLogger("ftx_history")
+    logger = logging.getLogger(LOGGER_NAME)
     logger.setLevel(logging.INFO)
 
     # Create file handler which logs even debug messages
-    filename = os.path.join(filepath, 'histfeed_' + time_date_stamp + '.log')
+    filename = os.path.join(filepath, app_name + '_' + time_date_stamp + '.log')
     fh = logging.FileHandler(filename)
     fh.setFormatter(logging.Formatter('%(asctime)s %(name)s %(levelname)s %(message)s'))
     fh.setLevel(logging.DEBUG)
     logger.addHandler(fh)
 
     logger.info("Logger set")
-
-def get_universe(universe_filter):
-    home = Path.home()
-    f = open(os.path.join(home, "mktdata", "universe.json"), "r")
-    data = json.loads(f.read())
-    if universe_filter != 'all':
-        res = [symbol_name for symbol_name in data if data[symbol_name][universe_filter]]
-    else:
-        res = list(data.keys())
-    return res
