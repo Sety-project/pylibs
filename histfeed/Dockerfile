@@ -30,19 +30,26 @@ RUN chown -R $USER $HISTFEED_PATH
 RUN chown -R $USER $UTILS_PATH
 RUN chown -R $USER $LOGS_PATH
 
-USER $USER
 WORKDIR $HISTFEED_PATH
 
 ENV PYTHONPATH=$PYLIBS_PATH:$HOME
 
-COPY --chown=$USER:$USER /utils $UTILS_PATH
-COPY --chown=$USER:$USER /histfeed $HISTFEED_PATH
-RUN chmod +x $HISTFEED_PATH/run.sh
+# Copy pip requirements before copying full project
+USER $USER
+COPY --chown=$USER:$USER /histfeed/requirements.txt $HISTFEED_PATH
+COPY --chown=$USER:$USER /utils/requirements.txt $UTILS_PATH
 
-# Pip install dependencies --> Need to install as root
+# Install Pip dependencies --> Need to install as root
 USER root
 RUN pip3 install -Ur $HISTFEED_PATH/requirements.txt
 RUN pip3 install -Ur $UTILS_PATH/requirements.txt
 
-# Run as root
-ENTRYPOINT [ "run.sh" ]
+# Now copy full project
+USER $USER
+COPY --chown=$USER:$USER /utils $UTILS_PATH
+COPY --chown=$USER:$USER /histfeed $HISTFEED_PATH
+RUN chmod +x $HISTFEED_PATH/run.sh
+
+# Run container as root to be able to create and write in folders
+USER root
+ENTRYPOINT [ "./run.sh" ]
