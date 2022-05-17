@@ -5,9 +5,11 @@ RUN apt-get update
 RUN DEBIAN_FRONTEND="noninteractive" apt-get install -y python3-pip
 RUN pip3 install --upgrade pip
 
+
 ENV USER=ec2-user
 RUN adduser -u 1026 $USER
-RUN usermod -a --group users $USER
+RUN usermod -a --group 0 $USER         # Adding user to group root
+RUN usermod -a --group users $USER     # Adding user to group $USER
 
 #Enriching PATH
 ENV PATH=$PATH:/home/$USER/.local/bin
