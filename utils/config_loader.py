@@ -4,34 +4,41 @@ from pathlib import Path
 
 class configLoader():
 
-    def __init__(self, env="dev"):
-        ''' Define base parameters for the configs '''
-        self.ROOT_CONFIG_FOLDER = "config"
-        self.home = Path.home()
-        self.env = env
+    __universe = None
+    __pfoptimizer_params = None
+    __home = Path.home()
+    __config_folder_path = os.path.join(__home, "config")
 
-        #These are the base config attributes
-        self._pfoptimizer_params = {}
-        self._universe = {}
+    @staticmethod
+    def set_universe():
+        f = open(os.path.join(configLoader.__config_folder_path, "universe.json"), "r")
+        configLoader.__universe = json.loads(f.read())
 
-        # Automatically sets the configs where possible
-        self.set_pfoptimizer_params()
+    @staticmethod
+    def set_pfoptimizer_params():
+        f = open(os.path.join(configLoader.__config_folder_path, "pfoptimizer_params.json"), "r")
+        configLoader.__pfoptimizer_params = json.loads(f.read())
 
-    def set_universe(self, universe_filter):
-        f = open(os.path.join(self.home, self.ROOT_CONFIG_FOLDER, self.env, "universe.json"), "r")
-        data = json.loads(f.read())
-        if universe_filter != 'all':
-            res = [symbol_name for symbol_name in data if data[symbol_name][universe_filter]]
+    @staticmethod
+    def get_universe():
+        if configLoader.__universe is None:            # Read only once, lazy
+            configLoader.set_universe()
+        return configLoader.__universe
+
+    @staticmethod
+    def get_pfoptimizer_params():
+        if configLoader.__pfoptimizer_params is None:   # Read only once, lazy
+            configLoader.set_pfoptimizer_params()
+        return configLoader.__pfoptimizer_params
+
+    @staticmethod
+    def get_bases(bases_filter):
+        if configLoader.__universe is None:             # Read only once, lazy
+            configLoader.set_universe()
+
+        if bases_filter != 'all':
+            res = [symbol_name for symbol_name in configLoader.__universe
+                   if configLoader.__universe[symbol_name]["tier"] == bases_filter]
         else:
-            res = list(data.keys())
-        self._universe = res
-
-    def set_pfoptimizer_params(self):
-        f = open(os.path.join(self.home, self.ROOT_CONFIG_FOLDER, self.env, "pfoptimizer_params.json"), "r")
-        self._pfoptimizer_params = json.loads(f.read())
-
-    def get_universe(self):
-        return self._universe
-
-    def get_pfoptimizer_params(self):
-        return self._pfoptimizer_params
+            res = list(configLoader.__universe.keys())
+        return res
