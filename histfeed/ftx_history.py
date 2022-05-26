@@ -416,9 +416,7 @@ def main(*args):
 
     set_logger('histfeed')
     logger = logging.getLogger(LOGGER_NAME)
-    config = configLoader()
 
-    UNIVERSES = ["max", "wide", "institutional"]
     RUN_TYPES = ["build", "correct", "get"]
     EXCHANGE_NAMES_AVAILABLE = ["ftx"]
 
@@ -447,15 +445,15 @@ def main(*args):
 
         # Getting the universe from the params passed
         try:
-            universe_filter = [x for x in args if x in UNIVERSES][0]
+            universe_filter = [x for x in args if x in configLoader.get_universe_pool()][0]
         except IndexError:
-            logger.critical(f"Cannot find the universe_filter param. The universe_filter param should be explicitly in {UNIVERSES}")
+            logger.critical(f"Cannot find the universe_filter param. The universe_filter param should be explicitly in {configLoader.get_universe_pool()}")
             logger.critical("---> Terminating...")
             sys.exit(1)
 
         # Try loading the config
         try:
-            universe = config.get_bases(universe_filter)
+            universe = configLoader.get_bases(universe_filter)
         except FileNotFoundError as err:
             logger.critical(err)
             logger.critical("---> Terminating...")

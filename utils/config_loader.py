@@ -7,6 +7,7 @@ class configLoader():
     _config_folder_path = os.path.join(_home, "config")
     _mktdata_folder_path = os.path.join(_home, "mktdata")
 
+    _universe_pool = ["max", "wide", "institutional"]
     _universe = None             # dict
     _pfoptimizer_params = None   # dict
     _static_params_used = None   # Dataframe
@@ -63,6 +64,10 @@ class configLoader():
         return configLoader._pfoptimizer_params_filename
 
     @staticmethod
+    def get_universe_pool():
+        return configLoader._universe_pool
+
+    @staticmethod
     def get_universe():
         if configLoader._universe is None:             # Read only once, lazy
             configLoader.set_universe()
@@ -79,25 +84,22 @@ class configLoader():
         if configLoader._universe is None:             # Read only once, lazy
             configLoader.set_universe()
 
-        if bases_filter != 'all':
+        if bases_filter != 'max':
             res = [symbol_name for symbol_name in configLoader._universe
                    if configLoader._universe[symbol_name]["tier"] == bases_filter]
         else:
+            # Need all records, only if filter is max
             res = list(configLoader._universe.keys())
         return res
 
     @staticmethod
     def get_static_params_used():   # Dataframe
-        if configLoader._static_params_used is None:
+        if configLoader._static_params_used is None:   # Read only once, lazy
             configLoader.set_static_params()
         return configLoader._static_params_used
 
     @staticmethod
     def get_static_params_saved():   # Dataframe
-        if configLoader._static_params_saved is None:
+        if configLoader._static_params_saved is None:  # Read only once, lazy
             configLoader.set_static_params()
         return configLoader._static_params_saved
-
-    @staticmethod
-    def get_static_params_saved():
-        __static_params_saved = None  # Dataframe
