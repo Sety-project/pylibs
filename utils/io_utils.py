@@ -8,9 +8,9 @@ import numpy as np
 import pyarrow, pyarrow.parquet,s3fs
 
 # this is for jupyter
-import cufflinks as cf
-cf.go_offline()
-cf.set_config_file(offline=False, world_readable=True)
+# import cufflinks as cf
+# cf.go_offline()
+# cf.set_config_file(offline=False, world_readable=True)
 
 # Commented out to avoid histfeed failing to run...
 # if not 'Runtime' in os.listdir('.'):
