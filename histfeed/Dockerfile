@@ -24,12 +24,14 @@ RUN mkdir -p $PYLIBS_PATH
 RUN mkdir -p $HISTFEED_PATH
 RUN mkdir -p $UTILS_PATH
 RUN mkdir -p $HOME/mktdata
+RUN mkdir -p $HOME/config
 RUN mkdir -p $LOGS_PATH
 
-RUN chown -R $USER $HOME/mktdata
 RUN chown -R $USER $PYLIBS_PATH
 RUN chown -R $USER $HISTFEED_PATH
 RUN chown -R $USER $UTILS_PATH
+RUN chown -R $USER $HOME/mktdata
+RUN chown -R $USER $HOME/config
 RUN chown -R $USER $LOGS_PATH
 
 WORKDIR $HISTFEED_PATH
