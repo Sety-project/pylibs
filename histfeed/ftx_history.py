@@ -7,7 +7,7 @@ from pathlib import Path
 from time import strftime
 from utils.ftx_utils import *
 from utils.io_utils import *
-from utils.mktdata import *
+from utils.config_loader import *
 
 history_start = datetime(2019, 11, 26)
 LOGGER_NAME = __name__
@@ -38,8 +38,8 @@ async def get_history(dirname,
 
 async def build_history(futures,
                         exchange,
-                        dirname=os.path.join(Path.home(), 'mktdata'),
-                        end=(datetime.now(tz=None).replace(minute=0,second=0,microsecond=0))): # Runtime/Mktdata_database
+                        dirname=configLoader.get_mktdata_folder_path(),
+                        end=datetime.now(tz=None).replace(minute=0,second=0,microsecond=0)): # Runtime/Mktdata_database
     '''for now, increments local files and then uploads to s3'''
     logger = logging.getLogger(LOGGER_NAME)
     logger.info("BUILDING COROUTINES")
@@ -85,7 +85,7 @@ async def build_history(futures,
         logger.info("0 coroutines gathered, nothing to do")
 
     # static values for non spot Margin underlyings
-    otc_file = pd.read_excel(os.path.join(Path.home(), 'mktdata', 'static_params.xlsx'),sheet_name='used').set_index('coin')
+    otc_file = configLoader.get_static_params_used()
     for f in list(futures.loc[futures['spotMargin'] == False, 'underlying'].unique()):
         spot_parquet = from_parquet(os.path.join(dirname, f + '_price.parquet'))
         to_parquet(pd.DataFrame(index=spot_parquet.index,
@@ -102,7 +102,7 @@ async def build_history(futures,
                    os.path.join(dirname, f + '_borrow.parquet'),
                    mode='a')
 
-async def correct_history(futures,exchange,hy_history,dirname=os.path.join(Path.home(), 'mktdata')):
+async def correct_history(futures,exchange,hy_history,dirname=configLoader.get_mktdata_folder_path()):
     '''for now, increments local files and then uploads to s3'''
 
     logger = logging.getLogger(LOGGER_NAME)
@@ -144,7 +144,7 @@ async def borrow_history(coin,
                          end=(datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
                          start=(datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
                          dirname=''):
-    max_funding_data = int(500)  # in hour. limit is 500 :(
+    max_funding_data = int(500)  # in hours, limit is 500 only
     resolution = exchange.describe()['timeframes']['1h']
 
     e = end.timestamp()
@@ -164,8 +164,6 @@ async def borrow_history(coin,
     data=data[~data.index.duplicated()].sort_index()
 
     if dirname != '': await async_to_parquet(data, os.path.join(dirname, coin + '_borrow.parquet'),mode='a')
-
-    # return data
 
 ######### annualized funding for perps
 async def funding_history(future,
@@ -200,8 +198,6 @@ async def funding_history(future,
     if dirname != '': await async_to_parquet(data, os.path.join(dirname,
                                                                 exchange.market(future['symbol'])['id'] + '_funding.parquet'),
                                              mode='a')
-
-    # return data
 
 #### annualized rates for futures and perp, volumes are daily
 async def rate_history(future,exchange,
@@ -278,8 +274,6 @@ async def rate_history(future,exchange,
                                                           exchange.market(future['symbol'])['id'] + '_futures.parquet'),
                                              mode='a')
 
-    # return data
-
 ## populates future_price or spot_price depending on type
 async def spot_history(symbol, exchange,
                        end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
@@ -314,8 +308,6 @@ async def spot_history(symbol, exchange,
                                            os.path.join(dirname,
                                                         symbol.replace('/USD', '') + '_price.parquet'),
                                            mode='a')
-
-    # return data
 
 async def fetch_trades_history(symbol,
                                exchange,
@@ -382,7 +374,7 @@ async def ftx_history_main_wrapper(exchange_name, run_type, universe, *nb_of_day
     await exchange.load_markets()
 
     #universe should be either 'all', either a universe name, or a list of currencies
-    dir_name = os.path.join(Path.home(), 'mktdata', exchange_name)
+    dir_name = configLoader.get_mktdata_folder_for_exchange(exchange_name)
 
     # In case universe was not max, is_wide, is_institutional
     # universe = [id for id, data in exchange.markets_by_id.items() if data['base'] in [x.upper() for x in [universe]] and data['contract']]
@@ -424,8 +416,9 @@ def main(*args):
 
     set_logger('histfeed')
     logger = logging.getLogger(LOGGER_NAME)
+    config = configLoader()
 
-    UNIVERSES = ["all", "is_wide", "is_institutional"]
+    UNIVERSES = ["max", "wide", "institutional"]
     RUN_TYPES = ["build", "correct", "get"]
     EXCHANGE_NAMES_AVAILABLE = ["ftx"]
 
@@ -452,12 +445,19 @@ def main(*args):
             logger.critical("---> Terminating...")
             sys.exit(1)
 
-        # Getting the universe
+        # Getting the universe from the params passed
         try:
             universe_filter = [x for x in args if x in UNIVERSES][0]
-            universe = get_universe(universe_filter)
         except IndexError:
-            logger.critical("Cannot find the universe_filter param. The universe_filter param should be passed explicitly : is_wide/is_institudional/all")
+            logger.critical(f"Cannot find the universe_filter param. The universe_filter param should be explicitly in {UNIVERSES}")
+            logger.critical("---> Terminating...")
+            sys.exit(1)
+
+        # Try loading the config
+        try:
+            universe = config.get_bases(universe_filter)
+        except FileNotFoundError as err:
+            logger.critical(err)
             logger.critical("---> Terminating...")
             sys.exit(1)
 
@@ -477,7 +477,7 @@ def main(*args):
             logger.info("Cannot find the nb_of_days param. Defaulting to nb_of_days=100")
 
         # Make sure the exchange repo exists in mktdata/, if not creates it
-        mktdata_exchange_repo = os.path.join(Path.home(), 'mktdata', exchange_name)
+        mktdata_exchange_repo = configLoader.get_mktdata_folder_for_exchange(exchange_name)
         if not os.path.exists(mktdata_exchange_repo):
             os.umask(0)
             os.makedirs(mktdata_exchange_repo, mode=0o777)

@@ -3,42 +3,101 @@ from utils.io_utils import *
 from pathlib import Path
 
 class configLoader():
+    _home = Path.home()
+    _config_folder_path = os.path.join(_home, "config")
+    _mktdata_folder_path = os.path.join(_home, "mktdata")
 
-    __universe = None
-    __pfoptimizer_params = None
-    __home = Path.home()
-    __config_folder_path = os.path.join(__home, "config")
+    _universe = None             # dict
+    _pfoptimizer_params = None   # dict
+    _static_params_used = None   # Dataframe
+    _static_params_saved = None  # Dataframe
 
+    _universe_filename = "universe.json"
+    _pfoptimizer_params_filename = "pfoptimizer_params.json"
+    _static_params_filename = "static_params.xlsx"
+
+    ### SETTERS ###
     @staticmethod
     def set_universe():
-        f = open(os.path.join(configLoader.__config_folder_path, "universe.json"), "r")
-        configLoader.__universe = json.loads(f.read())
+        try:
+            f = open(os.path.join(configLoader._config_folder_path, configLoader._universe_filename), "r")
+            configLoader._universe = json.loads(f.read())
+        except FileNotFoundError:
+            raise FileNotFoundError(f"File {os.path.join(configLoader._config_folder_path, configLoader._universe_filename)} not found")
 
     @staticmethod
     def set_pfoptimizer_params():
-        f = open(os.path.join(configLoader.__config_folder_path, "pfoptimizer_params.json"), "r")
-        configLoader.__pfoptimizer_params = json.loads(f.read())
+        try:
+            f = open(os.path.join(configLoader._config_folder_path, configLoader._pfoptimizer_params_filename), "r")
+            configLoader._pfoptimizer_params = json.loads(f.read())
+        except FileNotFoundError:
+            raise FileNotFoundError(f"File {os.path.join(configLoader._config_folder_path, configLoader._pfoptimizer_params_filename)} not found")
+
+    @staticmethod
+    def set_static_params():
+        try:
+            configLoader._static_params_used = pd.read_excel(os.path.join(configLoader._config_folder_path, configLoader._static_params_filename), sheet_name='used').set_index('coin')
+            configLoader._static_params_saved = pd.read_excel(os.path.join(configLoader._config_folder_path, configLoader._static_params_filename), sheet_name='saved').set_index('coin')
+        except FileNotFoundError:
+            raise FileNotFoundError(f"File {os.path.join(configLoader._config_folder_path, configLoader._static_params_filename)} not found")
+
+    ### GETTERS ###
+    @staticmethod
+    def get_config_folder_path():
+        return configLoader._config_folder_path
+
+    @staticmethod
+    def get_mktdata_folder_path():
+        return configLoader._mktdata_folder_path
+
+    @staticmethod
+    def get_mktdata_folder_for_exchange(exchange):
+        return os.path.join(configLoader._mktdata_folder_path, exchange)
+
+    @staticmethod
+    def get_universe_filename():
+        return configLoader._universe_filename
+
+    @staticmethod
+    def get_pfoptimizer_params_filename():
+        return configLoader._pfoptimizer_params_filename
 
     @staticmethod
     def get_universe():
-        if configLoader.__universe is None:            # Read only once, lazy
+        if configLoader._universe is None:             # Read only once, lazy
             configLoader.set_universe()
-        return configLoader.__universe
+        return configLoader._universe
 
     @staticmethod
     def get_pfoptimizer_params():
-        if configLoader.__pfoptimizer_params is None:   # Read only once, lazy
+        if configLoader._pfoptimizer_params is None:   # Read only once, lazy
             configLoader.set_pfoptimizer_params()
-        return configLoader.__pfoptimizer_params
+        return configLoader._pfoptimizer_params
 
     @staticmethod
     def get_bases(bases_filter):
-        if configLoader.__universe is None:             # Read only once, lazy
+        if configLoader._universe is None:             # Read only once, lazy
             configLoader.set_universe()
 
         if bases_filter != 'all':
-            res = [symbol_name for symbol_name in configLoader.__universe
-                   if configLoader.__universe[symbol_name]["tier"] == bases_filter]
+            res = [symbol_name for symbol_name in configLoader._universe
+                   if configLoader._universe[symbol_name]["tier"] == bases_filter]
         else:
-            res = list(configLoader.__universe.keys())
+            res = list(configLoader._universe.keys())
         return res
+
+    @staticmethod
+    def get_static_params_used():   # Dataframe
+        if configLoader._static_params_used is None:
+            configLoader.set_static_params()
+        return configLoader._static_params_used
+
+    @staticmethod
+    def get_static_params_saved():   # Dataframe
+        if configLoader._static_params_saved is None:
+            configLoader.set_static_params()
+        return configLoader._static_params_saved
+
+    @staticmethod
+    def get_static_params_saved():
+        __static_params_saved = None  # Dataframe
