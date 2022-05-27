@@ -9,11 +9,13 @@ class configLoader():
 
     _universe_pool = ["max", "wide", "institutional"]
     _universe = None             # dict
+    _universe_params = None      # dict
     _pfoptimizer_params = None   # dict
     _static_params_used = None   # Dataframe
     _static_params_saved = None  # Dataframe
 
     _universe_filename = "universe.json"
+    _universe_params_filename = "universe_params.json" # Used by pfoptimizer
     _pfoptimizer_params_filename = "pfoptimizer_params.json"
     _static_params_filename = "static_params.xlsx"
 
@@ -41,6 +43,14 @@ class configLoader():
             configLoader._static_params_saved = pd.read_excel(os.path.join(configLoader._config_folder_path, configLoader._static_params_filename), sheet_name='saved').set_index('coin')
         except FileNotFoundError:
             raise FileNotFoundError(f"File {os.path.join(configLoader._config_folder_path, configLoader._static_params_filename)} not found")
+
+    @staticmethod
+    def set_universe_params():
+        try:
+            f = open(os.path.join(configLoader._config_folder_path, configLoader._universe_params_filename), "r")
+            configLoader._universe_params = json.loads(f.read())
+        except FileNotFoundError:
+            raise FileNotFoundError(f"File {os.path.join(configLoader._config_folder_path, configLoader._universe_params_filename)} not found")
 
     ### GETTERS ###
     @staticmethod
@@ -103,3 +113,18 @@ class configLoader():
         if configLoader._static_params_saved is None:  # Read only once, lazy
             configLoader.set_static_params()
         return configLoader._static_params_saved
+
+    @staticmethod
+    def get_universe_params():   # Dataframe
+        if configLoader._universe_params is None:  # Read only once, lazy
+            configLoader.set_universe_params()
+        return configLoader._universe_params
+
+    # PERSIST params
+    @staticmethod
+    def persist_universe_params(new_params):
+        try:
+            with open(os.path.join(configLoader._config_folder_path, configLoader._universe_params_filename), "w") as outfile:
+                json.dump(new_params, outfile)
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Cannot write file {os.path.join(configLoader._config_folder_path, configLoader._universe_params_filename)}")
