@@ -1,5 +1,6 @@
 from utils.ccxt_utilities import *
 import pandas as pd
+from utils.config_loader import configLoader
 import os
 from pathlib import Path
 
@@ -51,7 +52,7 @@ async def mkt_at_size(exchange, symbol, side, target_depth=10000.):
     interpolator[float(target_depth)] = np.NaN
     interpolator.interpolate(method='index',inplace=True)
 
-    return {'mid':mid,'side':interpolator[target_depth],'slippage':interpolator[target_depth]/mid-1.0,'symbol':symbol}
+    return {'mid':mid, 'side':interpolator[target_depth], 'slippage':interpolator[target_depth]/mid-1.0, 'symbol':symbol}
 
 def sweep_price(exchange, symbol, size):
     ''' fast version of mkt_at_size for use in executer
@@ -191,7 +192,8 @@ async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params=
     fetched = await exchange.fetch_markets()
     expired = await exchange.publicGetExpiredFutures(params) if includeExpired==True else []
     coin_details = await fetch_coin_details(exchange)
-    otc_file = pd.read_excel(os.path.join(Path.home(), 'mktdata', 'static_params.xlsx'), sheet_name='used').set_index('coin')
+
+    otc_file = configLoader.get_static_params_used()
 
     #### for IM calc
     account_leverage = (await exchange.privateGetAccount())['result']
