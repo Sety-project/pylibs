@@ -1,4 +1,4 @@
-name: Deploy histfeed to ECR
+name: Deploy pfoptimizer to ECR
 
 on:
  
