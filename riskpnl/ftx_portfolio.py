@@ -1,21 +1,29 @@
-from ftx_utils import *
-from portfolio_optimizer_utils import *
+from utils.ftx_utils import *
+from utils.config_loader import *
 
 class MarginCalculator:
     '''low level class to compute margins
     weights is position size in usd
     '''
     def __init__(self, account_leverage, collateralWeight, imfFactor):  # imfFactor by symbol, collateralWeight by coin
+
+        # Load defaults params
+        pf_params = configLoader.get_pfoptimizer_params()
+        self.LONG_BLOWUP = pf_params['LONG_BLOWUP']['value']
+        self.SHORT_BLOWUP = pf_params['SHORT_BLOWUP']['value']
+        self.NB_BLOWUPS = pf_params['NB_BLOWUPS']['value']
+        self.OPEN_ORDERS_HEADROOM = pf_params['OPEN_ORDERS_HEADROOM']['value']
+
         self._account_leverage = account_leverage
         self._collateralWeight = collateralWeight
         self._imfFactor = imfFactor
         self._collateralWeightInitial = {coin: collateralWeightInitial({'underlying': coin, 'collateralWeight': data})
                                          for coin, data in collateralWeight.items()}
-        self.estimated_IM = None #dict
-        self.estimated_MM = None # dict
-        self.actual_futures_IM = None #dict, keys by id not symbol
-        self.actual_IM = None #float
-        self.actual_MM = None #float
+        self.estimated_IM = None        # dict
+        self.estimated_MM = None        # dict
+        self.actual_futures_IM = None   # dict, keys by id not symbol
+        self.actual_IM = None           # float
+        self.actual_MM = None           # float
 
     @staticmethod
     def add_pending_orders(exchange,spot_weight,future_weight):
@@ -147,12 +155,20 @@ class BasisMarginCalculator(MarginCalculator):
     spot_marks, future_marks'''
     def __init__(self, account_leverage, collateralWeight, imfFactor,
                  equity, spot_marks, future_marks,
-                 long_blowup=LONG_BLOWUP,short_blowup=SHORT_BLOWUP,nb_blowups=NB_BLOWUPS):
+                 long_blowup=None,short_blowup=None,nb_blowups=None):
         super().__init__(account_leverage, collateralWeight, imfFactor)
+
+        if long_blowup is None:
+            long_blowup = self.LONG_BLOWUP
+        if short_blowup is None:
+            short_blowup = self.SHORT_BLOWUP
+        if nb_blowups is None:
+            nb_blowups = self.NB_BLOWUPS
+
         self._equity = equity
         self.spot_marks = spot_marks
         self.future_marks = future_marks
-        self._long_blowup= float(long_blowup)
+        self._long_blowup = float(long_blowup)
         self._short_blowup = float(short_blowup)
         self._nb_blowups = int(nb_blowups)
 
@@ -179,43 +195,42 @@ class BasisMarginCalculator(MarginCalculator):
 
         # assume all coins go either LONG_BLOWUP or SHORT_BLOWUP..what is the margin impact incl future pnl ?
         # up...
-        future_up = {symbol: {'weight': data['weight'] * (1 + LONG_BLOWUP), 'mark': data['mark'] * (1 + LONG_BLOWUP)}
+        future_up = {symbol: {'weight': data['weight'] * (1 + self.LONG_BLOWUP), 'mark': data['mark'] * (1 + self.LONG_BLOWUP)}
                      for symbol, data in future_weights.items()}
-        spot_up = {coin: {'weight': data['weight'] * (1 + LONG_BLOWUP), 'mark': data['mark'] * (1 + LONG_BLOWUP)}
+        spot_up = {coin: {'weight': data['weight'] * (1 + self.LONG_BLOWUP), 'mark': data['mark'] * (1 + self.LONG_BLOWUP)}
                    for coin, data in spot_weights.items()}
         (collateral_up, im_short_up, mm_short_up) = self.spotMargins(spot_up)
         (im_fut_up, mm_fut_up) = self.futureMargins(future_up)
         sum_MM_up = sum(x for x in collateral_up.values()) - \
                     sum(x for x in mm_fut_up.values()) - \
                     sum(x for x in mm_short_up.values()) - \
-                    sum(x) * LONG_BLOWUP  # add futures pnl
+                    sum(x) * self.LONG_BLOWUP  # add futures pnl
 
         # down...
         future_down = {
-            symbol: {'weight': data['weight'] * (1 - SHORT_BLOWUP), 'mark': data['mark'] * (1 - SHORT_BLOWUP)}
+            symbol: {'weight': data['weight'] * (1 - self.SHORT_BLOWUP), 'mark': data['mark'] * (1 - self.SHORT_BLOWUP)}
             for symbol, data in future_weights.items()}
-        spot_down = {coin: {'weight': data['weight'] * (1 - SHORT_BLOWUP), 'mark': data['mark'] * (1 - SHORT_BLOWUP)}
+        spot_down = {coin: {'weight': data['weight'] * (1 - self.SHORT_BLOWUP), 'mark': data['mark'] * (1 - self.SHORT_BLOWUP)}
                      for coin, data in spot_weights.items()}
         (collateral_down, im_short_down, mm_short_down) = self.spotMargins(spot_down)
         (im_fut_down, mm_fut_down) = self.futureMargins(future_down)
         sum_MM_down = sum(x for x in collateral_down.values()) - \
                     sum(x for x in mm_fut_down.values()) - \
                     sum(x for x in mm_short_down.values()) + \
-                    sum(x) * SHORT_BLOWUP # add the futures pnl
+                    sum(x) * self.SHORT_BLOWUP # add the futures pnl
 
         # flat + a blowup_idx only shock
         (collateral, im_short, mm_short) = self.spotMargins(spot_weights)
         (im_fut, mm_fut) = self.futureMargins(future_weights)
         MM = pd.DataFrame([collateral]).T - pd.DataFrame([mm_short]).T
-        MM = MM.append(-pd.DataFrame([mm_fut]).T)
+        MM = pd.concat([MM, -pd.DataFrame([mm_fut]).T])   # MM.append(-pd.DataFrame([mm_fut]).T)
         sum_MM = sum(MM[0]) - sum(blowups)  # add the futures pnl
 
         # aggregate
         IM = pd.DataFrame([collateral]).T - pd.DataFrame([im_short]).T
-        IM = IM.append(-pd.DataFrame([im_fut]).T)
-        totalIM = self._equity - sum(x) - 0.1 * max([0, sum(x) - self._equity]) + sum(IM[0])  - self._equity*OPEN_ORDERS_HEADROOM
-        totalMM = self._equity - sum(x) - 0.03 * max([0, sum(x) - self._equity]) + min(
-            [sum_MM, sum_MM_up, sum_MM_down])
+        IM = pd.concat([IM, -pd.DataFrame([im_fut]).T])   # IM.append(-pd.DataFrame([im_fut]).T)
+        totalIM = self._equity - sum(x) - 0.1 * max([0, sum(x) - self._equity]) + sum(IM[0]) - self._equity * self.OPEN_ORDERS_HEADROOM
+        totalMM = self._equity - sum(x) - 0.03 * max([0, sum(x) - self._equity]) + min([sum_MM, sum_MM_up, sum_MM_down])
 
         return {'totalIM': totalIM,
                 'totalMM': totalMM,
@@ -497,11 +512,19 @@ async def fetch_portfolio(exchange,time):
     futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=True, includeIndex=True))
     futures=futures.set_index('name')
 
-    markets = pd.DataFrame([r['info'] for r in markets], dtype=float).set_index('name')
-    balances=pd.DataFrame(balances, dtype=float)
+    # explicitly converts to float64
+    markets = pd.DataFrame([r['info'] for r in markets]).set_index('name')
+    for col in markets.columns:
+        markets[col] = pd.to_numeric(markets[col], errors="ignore")
 
-    positions = pd.DataFrame([r['info'] for r in await exchange.fetch_positions(params={'showAvgPrice':True})],
-                             dtype=float)  # )
+    balances = pd.DataFrame(balances)
+    for col in balances.columns:
+        balances[col] = pd.to_numeric(balances[col], errors="ignore")
+
+    positions = pd.DataFrame([r['info'] for r in await exchange.fetch_positions(params={'showAvgPrice': True})])
+    for col in positions.columns:
+        positions[col] = pd.to_numeric(positions[col], errors="ignore")
+
     if not positions.empty:
         positions = positions[positions['netSize'] != 0.0].fillna(0.0)
         unrealizedPnL= positions['unrealizedPnl'].sum()
@@ -855,7 +878,7 @@ async def run_plex(exchange,dirname='Runtime/RiskPnL/'):
     pnl_history = pd.read_excel(filename, sheet_name='pnl', index_col=0)
     start_time = risk_history['time'].max()
     start_portfolio = risk_history[(risk_history['time']<start_time+timedelta(milliseconds= 1000)) \
-                &(risk_history['time']>start_time-timedelta(milliseconds= 1000))]#TODO: precision!
+                &(risk_history['time']>start_time-timedelta(milliseconds= 1000))] #TODO: precision!
 
     end_time = datetime.now() - timedelta(seconds=14)  # 16s is to avoid looking into the future to fetch prices
     end_portfolio = await fetch_portfolio(exchange, end_time) # it's live in fact, end_time just there for records
