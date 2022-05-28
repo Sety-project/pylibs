@@ -358,12 +358,12 @@ def main(*args):
         Parameters could be passed in any order
         @params:
            # For now, defaults to exchange_name = ftx
-           run_type = ["sysperp", "backtest", "depth"]
-           exchange = ["ftx"]
+           run_type = ["sysperp", "backtest", "depth"] (mandatory param)
+           exchange = ["ftx"] (mandatory param)
         @Example runs:
             - main (this will read the config from the config file, this is how docker will call)
             - main 2h 2d (this is when running local, to debug faster)
-            - main ftx [sysperp/backtest/depth] [signal_horizon] [holding_period]
+            - main ftx sysperp/backtest/depth [signal_horizon] [holding_period]
             - main ftx sysperp [signal_horizon] [holding_period], backtest, depth [signal_horizon] [holding_period]
    '''
 
