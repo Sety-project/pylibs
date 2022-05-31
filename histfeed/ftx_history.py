@@ -367,7 +367,7 @@ async def fetch_trades_history(symbol,
 
     return {'symbol':exchange.market(symbol)['symbol'],'coin':exchange.market(symbol)['base'],'vwap':vwap}
 
-async def ftx_history_main_wrapper(exchange_name, run_type, universe, *nb_of_days):
+async def ftx_history_main_wrapper(exchange_name, run_type, universe, nb_of_days):
 
     exchange = await open_exchange(exchange_name,'')
     futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=True)).set_index('name')
@@ -379,7 +379,8 @@ async def ftx_history_main_wrapper(exchange_name, run_type, universe, *nb_of_day
     # In case universe was not max, is_wide, is_institutional
     # universe = [id for id, data in exchange.markets_by_id.items() if data['base'] in [x.upper() for x in [universe]] and data['contract']]
 
-    futures = futures[futures.index.isin(universe)]
+    if universe != []:
+        futures = futures[futures.index.isin(universe)]
 
     logger = logging.getLogger(LOGGER_NAME)
 
@@ -445,15 +446,21 @@ def main(*args):
 
         # Getting the universe from the params passed
         try:
-            universe_filter = [x for x in args if x in configLoader.get_universe_pool()][0]
+            if 'all' in args:
+                universe_filter = 'all'
+            else:
+                universe_filter = [x for x in args if x in configLoader.get_universe_pool()][0]
         except IndexError:
-            logger.critical(f"Cannot find the universe_filter param. The universe_filter param should be explicitly in {configLoader.get_universe_pool()}")
+            logger.critical(f"Cannot find the universe_filter param. The universe_filter param should be 'all' or explicitly in {configLoader.get_universe_pool()}")
             logger.critical("---> Terminating...")
             sys.exit(1)
 
         # Try loading the config
         try:
-            universe = configLoader.get_bases(universe_filter)
+            if universe_filter == 'all':
+                universe = []
+            else:
+                universe = configLoader.get_bases(universe_filter)
         except FileNotFoundError as err:
             logger.critical(err)
             logger.critical("---> Terminating...")

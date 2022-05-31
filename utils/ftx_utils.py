@@ -210,6 +210,19 @@ async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params=
     for i in range(0, len(markets)):
         market = markets[i]
         underlying = exchange.safe_string(market, 'underlying')
+        ## eg ADA has no coin details
+        if (underlying in ['ROSE','SCRT','AMC']) \
+                or (exchange.safe_string(market,'tokenizedEquity') == True) \
+                or (exchange.safe_string(market,'type') in ['move','prediction']) \
+                or (exchange.safe_string(market,'enabled') == False):
+            continue
+        if not underlying in coin_details.index:
+            if not includeIndex: continue
+        try:## eg DMG-PERP doesn't exist (IncludeIndex = True)
+            symbol = exchange.market(exchange.safe_string(market, 'name'))['symbol']
+        except Exception as e:
+            continue
+
         mark =  exchange.safe_number(market, 'mark')
         imfFactor =  exchange.safe_number(market, 'imfFactor')
         expiryTime = dateutil.parser.isoparse(exchange.safe_string(market, 'expiry')).replace(tzinfo=None) if exchange.safe_string(market, 'type') == 'future' else np.NaN
@@ -219,15 +232,6 @@ async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params=
             future_carry = funding_rates[exchange.safe_string(market, 'name')]
         else:
             future_carry = 0
-
-        ## eg ADA has no coin details
-        if not underlying in coin_details.index:
-            if not includeIndex: continue
-        try:## eg DMG-PERP doesn't exist (IncludeIndex = True)
-            symbol = exchange.market(exchange.safe_string(market, 'name'))['symbol']
-        except Exception as e:
-            continue
-            #symbol=exchange.safe_string(market, 'name')#TODO: why ?
 
         result.append({
             'ask':  exchange.safe_number(market, 'ask'),
@@ -255,7 +259,7 @@ async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params=
             'underlying': exchange.safe_string(market, 'underlying'),
             'upperBound': exchange.safe_value(market, 'upperBound'),
             'type': exchange.safe_string(market, 'type'),
-         ### additionnals
+            ### additionnals
             'new_symbol': exchange.market(exchange.safe_string(market, 'name'))['symbol'],
             'openInterestUsd': exchange.safe_number(market,'openInterestUsd'),
             'account_leverage': float(account_leverage['leverage']),
@@ -269,6 +273,6 @@ async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params=
             'usdFungible':coin_details.loc[underlying,'usdFungible'] if underlying in coin_details.index else 'coin_details not found',
             'fiat':coin_details.loc[underlying,'fiat'] if underlying in coin_details.index else 'coin_details not found',
             'expiryTime':expiryTime
-            })
+        })
 
     return result
