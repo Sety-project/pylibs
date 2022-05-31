@@ -221,6 +221,10 @@ async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params=
             future_carry = 0
 
         ## eg ADA has no coin details
+        if underlying in ['ROSE','SCRT','AMC']:
+            continue
+        if exchange.safe_string(market,'type') in ['move','prediction']:
+            continue
         if not underlying in coin_details.index:
             if not includeIndex: continue
         try:## eg DMG-PERP doesn't exist (IncludeIndex = True)
