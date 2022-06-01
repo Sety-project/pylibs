@@ -1,5 +1,6 @@
 import asyncio
 import collections
+import logging.handlers
 import threading
 import time
 
@@ -248,31 +249,36 @@ class myFtx(ccxtpro.ftx):
             def filter(self, logRecord):
                 return logRecord.levelno <= self.__level
 
+        log_path = os.path.join(os.sep, "tmp", "tradeexecutor")
+        if not os.path.exists(log_path):
+            os.umask(0)
+            os.makedirs(log_path, mode=0o777)
+
         # logs
-        handler_warning = logging.FileHandler('Runtime/logs/ftx_ws_execute/warning.log', mode='w')
+        handler_warning = logging.FileHandler(os.path.join(log_path, 'oms_warning.log'), mode='w')
         handler_warning.setLevel(logging.WARNING)
         handler_warning.setFormatter(logging.Formatter(f"%(levelname)s: %(message)s"))
         self.myLogger.addHandler(handler_warning)
 
-        handler_info = logging.FileHandler('Runtime/logs/ftx_ws_execute/info.log', mode='w')
+        handler_info = logging.FileHandler(os.path.join(log_path, 'exec_info.log'), mode='w')
         handler_info.setLevel(logging.INFO)
         handler_info.setFormatter(logging.Formatter(f"%(levelname)s: %(message)s"))
         handler_info.addFilter(MyFilter(logging.INFO))
         self.myLogger.addHandler(handler_info)
 
-        handler_debug = logging.FileHandler('Runtime/logs/ftx_ws_execute/debug.log', mode='w')
+        handler_debug = logging.FileHandler(os.path.join(log_path, 'debug.log'), mode='w')
         handler_debug.setLevel(logging.DEBUG)
         handler_debug.setFormatter(logging.Formatter(f"%(levelname)s: %(message)s"))
         self.myLogger.addHandler(handler_debug)
 
-        handler_alert = logging.handlers.SMTPHandler(mailhost='smtp.google.com',
-                                                     fromaddr='david@pronoia.link',
-                                                     toaddrs=['david@pronoia.link'],
-                                                     subject='auto alert',
-                                                     credentials=('david@pronoia.link', ''),
-                                                     secure=None)
-        handler_alert.setLevel(logging.CRITICAL)
-        handler_alert.setFormatter(logging.Formatter(f"%(levelname)s: %(message)s"))
+        # handler_alert = logging.handlers.SMTPHandler(mailhost='smtp.google.com',
+        #                                              fromaddr='david@pronoia.link',
+        #                                              toaddrs=['david@pronoia.link'],
+        #                                              subject='auto alert',
+        #                                              credentials=('david@pronoia.link', ''),
+        #                                              secure=None)
+        # handler_alert.setLevel(logging.CRITICAL)
+        # handler_alert.setFormatter(logging.Formatter(f"%(levelname)s: %(message)s"))
         # self.myLogger.addHandler(handler_alert)
 
         self.myLogger.setLevel(logging.DEBUG)
@@ -549,21 +555,21 @@ class myFtx(ccxtpro.ftx):
         # 4) mine
         self.orders_lifecycle[clientOrderId] += [current]
 
-    async def lifecycle_to_json(self,filename = 'Runtime/logs/ftx_ws_execute/latest_events.json'):
+    async def lifecycle_to_json(self,filename = os.path.join(os.sep, "tmp", "tradeexecutor", 'latest_events.json')):
         '''asyncronous + has it's own lock'''
         lock = threading.Lock()
         with lock:
             async with aiofiles.open(filename,mode='w') as file:
                 await file.write(json.dumps(self.orders_lifecycle, cls=NpEncoder))
-            shutil.copy2(filename, 'Runtime/logs/ftx_ws_execute/'+datetime.utcfromtimestamp(self.exec_parameters['timestamp']/1000).replace(tzinfo=timezone.utc).strftime("%Y-%m-%d-%H-%M")+'_events.json')
+            shutil.copy2(filename, os.path.join(os.sep, "tmp", "tradeexecutor", datetime.utcfromtimestamp(self.exec_parameters['timestamp']/1000).replace(tzinfo=timezone.utc).strftime("%Y-%m-%d-%H-%M")+'_events.json'))
 
-    async def risk_reconciliation_to_json(self,filename = 'Runtime/logs/ftx_ws_execute/latest_risk_reconciliations.json'):
+    async def risk_reconciliation_to_json(self,filename = os.path.join(os.sep, "tmp", "tradeexecutor", 'latest_risk_reconciliations.json')):
         '''asyncronous + has it's own lock'''
         lock = threading.Lock()
         with lock:
             async with aiofiles.open(filename,mode='w') as file:
                 await file.write(json.dumps(self.risk_reconciliations, cls=NpEncoder))
-            shutil.copy2(filename, 'Runtime/logs/ftx_ws_execute/'+datetime.utcfromtimestamp(self.exec_parameters['timestamp']/1000).replace(tzinfo=timezone.utc).strftime("%Y-%m-%d-%H-%M")+'_risk_reconciliations.json')
+            shutil.copy2(filename, os.path.join(os.sep, "tmp", "tradeexecutor", datetime.utcfromtimestamp(self.exec_parameters['timestamp']/1000).replace(tzinfo=timezone.utc).strftime("%Y-%m-%d-%H-%M")+'_risk_reconciliations.json'))
 
     #@synchronized
     async def reconcile_fills(self):
@@ -741,13 +747,13 @@ class myFtx(ccxtpro.ftx):
         self.latest_exec_parameters_reconcile_timestamp = self.exec_parameters['timestamp']
         await self.reconcile()
 
-        with open('Runtime/logs/ftx_ws_execute/latest_request.json', 'w') as file:
+        with open(os.path.join(os.sep, "tmp", "tradeexecutor", 'latest_request.json'), 'w') as file:
             json.dump({'inception_time':self.exec_parameters['timestamp']}|
                       {symbol:data
                        for coin,coin_data in self.exec_parameters.items() if coin in self.currencies
                        for symbol,data in coin_data.items() if symbol in self.markets}, file, cls=NpEncoder)
-        shutil.copy2('Runtime/logs/ftx_ws_execute/latest_request.json','Runtime/logs/ftx_ws_execute/' + datetime.utcfromtimestamp(self.exec_parameters['timestamp'] / 1000).replace(tzinfo=timezone.utc).strftime(
-            "%Y-%m-%d-%H-%M") + '_request.json')
+        shutil.copy2(os.path.join(os.sep, "tmp", "tradeexecutor", 'latest_request.json'),os.path.join(os.sep, "tmp", "tradeexecutor",datetime.utcfromtimestamp(self.exec_parameters['timestamp'] / 1000).replace(tzinfo=timezone.utc).strftime(
+            "%Y-%m-%d-%H-%M") + '_request.json'))
 
     async def update_exec_parameters(self): # cut in 10):
         '''scales order placement params with time'''
@@ -1263,11 +1269,11 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
     allDone = False
     while not allDone:
         try:
-            exchange = myFtx({  ## David personnal
-                'enableRateLimit': True,
-                'apiKey': 'ZUWyqADqpXYFBjzzCQeUTSsxBZaMHeufPFgWYgQU',
-                'secret': api_params.loc['ftx', 'value'],
-                'newUpdates': True})
+            exchange = myFtx(config={ ## David personnal
+            'enableRateLimit': True,
+            'apiKey': 'ZUWyqADqpXYFBjzzCQeUTSsxBZaMHeufPFgWYgQU',
+            'secret': api_params['ftx']['key']
+            })
             exchange.verbose = False
             exchange.headers = {'FTX-SUBACCOUNT': argv[2]}
             exchange.authenticate()
@@ -1365,18 +1371,15 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
 
     return
 
-def ftx_ws_spread_main(*argv):
-    argv=list(argv)
-    if len(argv) == 0:
-        argv.extend(['unwind'])
-    if len(argv) < 3:
-        argv.extend(['ftx', 'SysPerp'])
-    logging.info(f'running {argv}')
-    if argv[0] in ['sysperp', 'flatten','unwind','spread']:
-        return asyncio.run(ftx_ws_spread_main_wrapper(*argv))
+def main(*args):
+    args = list(*args)[1:]
+    if len(args) == 0:
+        args.extend(['unwind'])
+    if len(args) < 3:
+        args.extend(['ftx', 'SysPerp'])
+    logging.info(f'running {args}')
+    if args[0] in ['sysperp', 'flatten','unwind','spread']:
+        return asyncio.run(ftx_ws_spread_main_wrapper(*args))
         log_reader()
     else:
         logging.info(f'commands: sysperp [ftx][debug], flatten [ftx][debug],unwind [ftx][debug], spread [ftx][debug][coin][cash in usd]')
-
-if __name__ == "__main__":
-    ftx_ws_spread_main(*sys.argv[1:])

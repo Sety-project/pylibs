@@ -321,8 +321,8 @@ async def fetch_trades_history(symbol,
 
     ### grab data per batch of 5000, try weekly
     trades=[]
-    end_time = (start + timedelta(hours=1)).timestamp()
     start_time = start.timestamp()
+    end_time = start_time + 15*30
 
     while start_time < end.timestamp():
         new_trades = (await exchange.publicGetMarketsMarketNameTrades(
@@ -337,8 +337,7 @@ async def fetch_trades_history(symbol,
             start_time = last_trade_time if len(new_trades)==max_trades_data else end_time
         else:
             start_time=end_time
-        end_time = (datetime.fromtimestamp(start_time) + timedelta(
-            hours=1)).timestamp()
+        end_time = start_time + 15*30
 
     if len(trades)==0:
         vwap=pd.DataFrame(columns=['size','volume','count','vwap'])
@@ -356,7 +355,7 @@ async def fetch_trades_history(symbol,
 
     vwap=data[['size','volume','square','count']].resample(frequency).sum()
     vwap['vwap']=vwap['volume']/vwap['size']
-    vwap['vwsp'] = np.sqrt(vwap['square'] / vwap['size']-vwap['vwap']*vwap['vwap'])
+    vwap['vwsp'] = (vwap['square'] / vwap['size']-vwap['vwap']*vwap['vwap']).apply(np.sqrt)
 
     vwap.columns = [symbol.split('/USD')[0] + '_trades_' + column for column in vwap.columns]
     #data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
@@ -365,7 +364,10 @@ async def fetch_trades_history(symbol,
     parquet_filename = os.path.join(dirname, symbol.split('/USD')[0] + "_trades.parquet")
     if dirname != '': vwap.to_parquet(parquet_filename)
 
-    return {'symbol':exchange.market(symbol)['symbol'],'coin':exchange.market(symbol)['base'],'vwap':vwap}
+    return {'symbol':exchange.market(symbol)['symbol'],
+            'coin':exchange.market(symbol)['base'],
+            'vwap':vwap[symbol.split('/USD')[0] + '_trades_vwap'],
+            'volume':vwap[symbol.split('/USD')[0] + '_trades_volume']}
 
 async def ftx_history_main_wrapper(exchange_name, run_type, universe, nb_of_days):
 
