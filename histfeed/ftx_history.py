@@ -412,9 +412,9 @@ def main(*args):
            run_type = Build or correct
            universe = [list of symbols to build the histFeed for]
         @Example runs:
-            - main build ftx is_wide 100
+            - main build ftx wide 100
             - main ftx 100 all
-            - main correct ftx all
+            - main correct ftx max
    '''
 
     set_logger('histfeed')
@@ -448,21 +448,15 @@ def main(*args):
 
         # Getting the universe from the params passed
         try:
-            if 'all' in args:
-                universe_filter = 'all'
-            else:
-                universe_filter = [x for x in args if x in configLoader.get_universe_pool()][0]
+            universe_filter = [x for x in args if x in configLoader.get_universe_pool()][0]
         except IndexError:
-            logger.critical(f"Cannot find the universe_filter param. The universe_filter param should be 'all' or explicitly in {configLoader.get_universe_pool()}")
+            logger.critical(f"Cannot find the universe_filter param. The universe_filter param should be explicitly in {configLoader.get_universe_pool()}")
             logger.critical("---> Terminating...")
             sys.exit(1)
 
         # Try loading the config
         try:
-            if universe_filter == 'all':
-                universe = []
-            else:
-                universe = configLoader.get_bases(universe_filter)
+            universe = configLoader.get_bases(universe_filter)
         except FileNotFoundError as err:
             logger.critical(err)
             logger.critical("---> Terminating...")

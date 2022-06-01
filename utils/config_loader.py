@@ -7,7 +7,7 @@ class configLoader():
     _config_folder_path = os.path.join(_home, "config")
     _mktdata_folder_path = os.path.join(_home, "mktdata")
 
-    _universe_pool = ["max", "wide", "institutional"]
+    _universe_pool = ["all", "max", "wide", "institutional"]
     _universe = None             # dict
     _universe_params = None      # dict
     _pfoptimizer_params = None   # dict
