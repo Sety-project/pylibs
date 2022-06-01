@@ -26,25 +26,23 @@ run_i = 0
 
 LOGGER_NAME = __name__
 
-async def refresh_universe(exchange_name, universe_filter):
+async def refresh_universe(exchange, universe_filter):
     ''' Reads from universe.json '''
     ''' futures need to be enriched first before this can run '''
 
     logger = logging.getLogger(LOGGER_NAME)
-    # universe = configLoader.get_bases(universe_filter)
-    universe = configLoader.get_universe()
-    dir_name = configLoader.get_mktdata_folder_for_exchange(exchange_name)
+    universe = configLoader.get_bases(universe_filter)
+    dir_name = configLoader.get_mktdata_folder_for_exchange(exchange.describe()['id'])
     universe_params = configLoader.get_universe_params()
 
     if universe:
         return universe
     else:
-        exchange = await open_exchange(exchange_name, '')
         futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=False)).set_index('name')
         markets = await exchange.fetch_markets()
 
         universe_start = datetime(2021, 12, 1)
-        universe_end = datetime(2022, 3, 1)
+        universe_end = datetime(2022, 5, 1)
         borrow_decile = 0.5
 
         screening_params = universe_params["screening"]
@@ -58,11 +56,9 @@ async def refresh_universe(exchange_name, universe_filter):
 
         # qualitative screening
         futures = futures[
-                        (futures['expired'] == False) & (futures['enabled'] == True) & (futures['type'] != "move")
-                        & (futures.apply(lambda f: float(find_spot_ticker(markets, f, 'ask')), axis=1) > 0.0)
-                        & (futures['tokenizedEquity'] != True)]
-
-        futures = futures[futures.index.isin(universe)]
+                        (futures['expired'] == False)
+                        & (futures.apply(lambda f: float(find_spot_ticker(markets, f, 'ask')), axis=1) > 0.0)]
+        futures = await enricher(exchange,futures,holding_period=timedelta(days=2),equity=1e6)
 
         # volume screening
         # await build_history(futures,exchange) --> Assumes History is up to date
@@ -102,7 +98,7 @@ async def refresh_universe(exchange_name, universe_filter):
 
         logger.info("Successfully refreshed universe")
 
-        return futures
+        return new_universe
 
 # runs optimization * [time, params]
 async def perp_vs_cash(
@@ -134,7 +130,7 @@ async def perp_vs_cash(
     now_time = datetime.now()
 
     # Qualitative filtering
-    universe = await refresh_universe(exchange_name, param_universe)
+    universe = await refresh_universe(exchange, param_universe)
     universe = [instrument_name for instrument_name in universe if instrument_name.split("-")[0] not in exclusion_list]
     # universe = universe[~universe['underlying'].isin(exclusion_list)]
     type_allowed = param_type_allowed
