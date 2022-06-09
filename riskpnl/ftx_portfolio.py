@@ -507,24 +507,39 @@ async def diff_portoflio_wrapper(*argv):
 
 async def fetch_portfolio(exchange,time):
     # fetch mark,spot and balances as closely as possible
-    markets = await exchange.fetch_markets()
-    balances = (await exchange.fetch_balance(params={}))['info']['result']
+
+    # shoot rest requests
+    n_requests = int(safe_gather_limit / 3)
+    p = [getattr(exchange, coro)(params={'dummy': i})
+         for i in range(n_requests)
+         for coro in ['fetch_markets', 'fetch_balance', 'fetch_positions']]
+    results = await safe_gather(p)
+
+    # avg to reduce impact of latency
+    markets_list = []
+    for result in results[0::3]:
+        res = pd.DataFrame(result).set_index('id')
+        res['price'] = res['info'].apply(lambda f: float(f['price']) if f['price'] else -9999999)
+        markets_list.append(res[['price']])
+    markets = sum(markets_list) / len(markets_list)
+
+    balances_list = [pd.DataFrame(r['info']['result']).set_index('coin')[['total']].astype(float) for r in
+                     results[1::3]]
+    balances = sum(balances_list) / len(balances_list)
+    var = sum([bal * bal for bal in balances_list]) / len(balances_list) - balances * balances
+    balances.reset_index(inplace=True)
+
+    positions_list = [
+        pd.DataFrame([r['info'] for r in result], dtype=float).set_index('future')[['netSize', 'unrealizedPnl']] for
+        result in results[2::3]]
+    positions = sum(positions_list) / len(positions_list)
+    var = sum([pos * pos for pos in positions_list]) / len(positions_list) - positions * positions
+    positions.reset_index(inplace=True)
+
+    # go ahead
     futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=True, includeIndex=True))
-    futures=futures.set_index('name')
-
-    # explicitly converts to float64
-    markets = pd.DataFrame([r['info'] for r in markets]).set_index('name')
-    for col in markets.columns:
-        markets[col] = pd.to_numeric(markets[col], errors="ignore")
-
-    balances = pd.DataFrame(balances)
-    for col in balances.columns:
-        balances[col] = pd.to_numeric(balances[col], errors="ignore")
-
-    positions = pd.DataFrame([r['info'] for r in await exchange.fetch_positions(params={'showAvgPrice': True})])
-    for col in positions.columns:
-        positions[col] = pd.to_numeric(positions[col], errors="ignore")
-
+    futures = futures.set_index('name')
+    
     if not positions.empty:
         positions = positions[positions['netSize'] != 0.0].fillna(0.0)
         unrealizedPnL= positions['unrealizedPnl'].sum()
