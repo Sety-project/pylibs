@@ -1242,7 +1242,7 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
             raise e
         finally:
             await exchange.cancel_all_orders()
-            await exchange.close_dust()
+            # await exchange.close_dust()  # Commenting out until bug fixed
             await exchange.close()
             exchange.logger.info('exchange closed',exc_info=True)
 
