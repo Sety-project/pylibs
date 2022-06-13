@@ -454,6 +454,7 @@ async def live_risk(exchange,futures):
 
 # diff is in coin
 async def diff_portoflio(exchange,future_weights) -> pd.DataFrame():
+    ''' Compares current risk vs optimal risk '''
     future_weights = future_weights[future_weights['name'].isin(['USD','total'])==False]
     future_weights['optimalUSD'] = -future_weights['optimalWeight']
 
