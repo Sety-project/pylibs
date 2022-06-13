@@ -916,6 +916,7 @@ async def run_plex(exchange,dirname='/tmp/pnl/'):
     return summary
 
 def ftx_portoflio_main(*argv):
+    ''' TODO: improve input params'''
     #pd.set_option('display.float_format',lambda x: '{:,.3f}'.format(x))
     #f'{float(f"{i:.1g}"):g}'
 
