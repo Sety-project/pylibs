@@ -33,11 +33,10 @@ def find_spot_ticker(markets,future,query):
     except:
         return np.NaN
 
-async def mkt_at_size(exchange, symbol, side, target_depth=10000.):
+def mkt_at_size(order_book, side, target_depth=10000.):
     ''' returns average px of a mkt order of size target_depth (in USD)
     side='bids' or 'asks'
     '''
-    order_book = await exchange.fetch_order_book(symbol)
     mktdepth = pd.DataFrame(order_book[side])
     other_side = 'bids' if side=='asks' else 'asks'
     mid = 0.5 * (order_book[side][0][0] + order_book[other_side][0][0])
@@ -52,7 +51,7 @@ async def mkt_at_size(exchange, symbol, side, target_depth=10000.):
     interpolator[float(target_depth)] = np.NaN
     interpolator.interpolate(method='index',inplace=True)
 
-    return {'mid':mid, 'side':interpolator[target_depth], 'slippage':interpolator[target_depth]/mid-1.0, 'symbol':symbol}
+    return {'mid':mid,'side':interpolator[target_depth],'slippage':interpolator[target_depth]/mid-1.0}
 
 def sweep_price(exchange, symbol, size):
     ''' fast version of mkt_at_size for use in executer

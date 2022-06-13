@@ -343,18 +343,17 @@ async def fetch_rate_slippage(input_futures,
             futures['future_bid'] = -futures['future_ask']
             #futures['speed']=0##*futures['future_ask'] ### just 0
         else:
-            futures['spot_ask'] = await safe_gather(
-                [mkt_at_size(exchange, f, 'asks', slippage_orderbook_depth) for
-                  f in futures['spot_ticker'].values])
-            futures['spot_bid'] = await safe_gather(
-                [mkt_at_size(exchange, f, 'bids', slippage_orderbook_depth) for
-                  f in futures['spot_ticker'].values])
-            futures['future_ask'] = await safe_gather(
-                [mkt_at_size(exchange, f, 'asks', slippage_orderbook_depth) for
-                 f in futures['symbol'].values])
-            futures['future_bid'] = await safe_gather(
-                [mkt_at_size(exchange, f, 'bids', slippage_orderbook_depth) for
-                 f in futures['symbol'].values])
+            order_books = await safe_gather([exchange.fetch_order_book(f) for f in futures['spot_ticker'].values])
+            futures['spot_ask'] = [mkt_at_size(order_book, 'asks', slippage_orderbook_depth) | {'symbol': f}
+                                   for order_book, f in zip(order_books, futures['spot_ticker'].values)]
+            futures['spot_bid'] = [mkt_at_size(order_book, 'bids', slippage_orderbook_depth) | {'symbol': f}
+                                   for order_book, f in zip(order_books, futures['spot_ticker'].values)]
+
+            order_books = await safe_gather([exchange.fetch_order_book(f) for f in futures['symbol'].values])
+            futures['future_ask'] = [mkt_at_size(order_book, 'asks', slippage_orderbook_depth) | {'symbol': f}
+                                   for order_book, f in zip(order_books, futures['symbol'].values)]
+            futures['future_bid'] = [mkt_at_size(order_book, 'bids', slippage_orderbook_depth) | {'symbol': f}
+                                   for order_book, f in zip(order_books, futures['symbol'].values)]
 
             futures[['spot_ask','spot_bid','future_ask','future_bid']] = futures[['spot_ask','spot_bid','future_ask','future_bid']].applymap(lambda x:
                         x['slippage'] * slippage_scaler + fees[x['symbol']])
