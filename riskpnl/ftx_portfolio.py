@@ -858,9 +858,12 @@ async def run_plex_wrapper(exchange_name='ftx',subaccount='debug'):
     await exchange.close()
     return plex
 
-async def run_plex(exchange,dirname='Runtime/RiskPnL/'):
+async def run_plex(exchange,dirname='/tmp/RiskPnL/'):
 
     filename = dirname+'portfolio_history_'+exchange.describe()['id']+('_'+exchange.headers['FTX-SUBACCOUNT'] if 'FTX-SUBACCOUNT' in exchange.headers else '')+'.xlsx'
+    if not os.path.exists(dirname):
+        os.umask(0)
+        os.makedirs(dirname, mode=0o777)
     if not os.path.isfile(filename):
         risk_history = pd.DataFrame()
         risk_history = risk_history.append(pd.DataFrame(index=[0], data=dict(
@@ -924,6 +927,6 @@ def ftx_portoflio_main(*argv):
     else:
         print(f'commands fromOptimal,risk,plex')
 
-if __name__ == "__main__":
+def main(*args):
     ftx_portoflio_main(*sys.argv[1:])
 
