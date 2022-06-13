@@ -110,7 +110,7 @@ class MarginCalculator:
                              for symbol in mm_fut.keys()} \
                             | {'USD': usd_balance + 0.03 * min([0, usd_balance])}
 
-    def actual(self,account_information):
+    def update_actual(self,account_information):
         self.actual_futures_IM = {position['future']:float(position['collateralUsed'])
                                   for position in account_information['positions'] if float(position['netSize'])!=0}
         totalPositionSize = float(account_information['totalPositionSize']) if float(account_information['totalPositionSize'])>0 else 0.0
