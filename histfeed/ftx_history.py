@@ -322,7 +322,7 @@ async def fetch_trades_history(symbol,
     ### grab data per batch of 5000, try weekly
     trades=[]
     start_time = start.timestamp()
-    end_time = start_time + 15*30
+    end_time = start_time + 15*60
 
     while start_time < end.timestamp():
         new_trades = (await exchange.publicGetMarketsMarketNameTrades(
@@ -337,7 +337,7 @@ async def fetch_trades_history(symbol,
             start_time = last_trade_time if len(new_trades)==max_trades_data else end_time
         else:
             start_time=end_time
-        end_time = start_time + 15*30
+        end_time = start_time + 15*60
 
     if len(trades)==0:
         vwap=pd.DataFrame(columns=['size','volume','count','vwap'])
