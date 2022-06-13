@@ -1,6 +1,7 @@
 from utils.io_utils import *
 from utils.ftx_utils import *
 from utils.config_loader import *
+from utils.ccxt_utilities import *
 from histfeed.ftx_history import fetch_trades_history
 from riskpnl.ftx_portfolio import diff_portoflio, MarginCalculator
 
@@ -1186,7 +1187,7 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
             exchange = myFtx(parameters, config={  ## David personnal
                 'enableRateLimit': True,
                 'apiKey': 'ZUWyqADqpXYFBjzzCQeUTSsxBZaMHeufPFgWYgQU',
-                'secret': api_params.loc['ftx', 'value'],
+                'secret': api_params['ftx']['key'],
                 'newUpdates': True})
             exchange.verbose = False
             exchange.headers = {'FTX-SUBACCOUNT': argv[2]}
