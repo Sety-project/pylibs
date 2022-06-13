@@ -1244,7 +1244,7 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
             await exchange.cancel_all_orders()
             # await exchange.close_dust()  # Commenting out until bug fixed
             await exchange.close()
-            exchange.logger.info('exchange closed',exc_info=True)
+            exchange.logger.info('exchange closed', exc_info=True)
 
     return
 
@@ -1263,8 +1263,9 @@ def ftx_ws_spread_main(*argv):
 
 def main(*args):
     '''
-        main debug
-        sysperp ftx debug
-        sysper ftx SysPerp
+        Examples runs :
+            - main debug
+            - sysperp ftx debug
+            - sysper ftx SysPerp
     '''
     ftx_ws_spread_main(*sys.argv[1:])
