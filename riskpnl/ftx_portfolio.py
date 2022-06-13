@@ -518,8 +518,8 @@ async def fetch_portfolio(exchange,time):
     # avg to reduce impact of latency
     markets_list = []
     for result in results[0::3]:
-        res = pd.DataFrame(result).set_index('id').astype(float)
-        res['price'] = res['info'].apply(lambda f: f['price'] if f['price'] else -9999999)
+        res = pd.DataFrame(result).set_index('id')
+        res['price'] = res['info'].apply(lambda f: float(f['price']) if f['price'] else -9999999)
         markets_list.append(res[['price']])
     markets = sum(markets_list) / len(markets_list)
 
