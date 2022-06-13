@@ -1263,6 +1263,8 @@ def ftx_ws_spread_main(*argv):
 
 def main(*args):
     '''
-    main debug
+        main debug
+        sysperp ftx debug
+        sysper ftx SysPerp
     '''
     ftx_ws_spread_main(*sys.argv[1:])
