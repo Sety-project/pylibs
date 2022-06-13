@@ -62,7 +62,7 @@ class configLoader():
         ''' Used by tradeexecutor to get execution params'''
         try:
             f = open(os.path.join(configLoader._config_folder_path, configLoader._executor_params_filename), "r")
-            configLoader._executor_params_filename = json.loads(f.read())
+            configLoader._executor_params = json.loads(f.read())
         except FileNotFoundError:
             raise FileNotFoundError(
                 f"File {os.path.join(configLoader._config_folder_path, configLoader._executor_params_filename)} not found")
