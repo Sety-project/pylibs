@@ -1262,6 +1262,6 @@ def ftx_ws_spread_main(*argv):
 
 def main(*args):
     '''
-    main ftx debug
+    main debug
     '''
     ftx_ws_spread_main(*sys.argv[1:])
