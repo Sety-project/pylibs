@@ -5,7 +5,7 @@ from pathlib import Path
 class configLoader():
     _home = Path.home()
     _config_folder_path = os.path.join(_home, "config")
-    _pfoptimizer_folder_path = os.path.join(_home, "config", "prod", "pfoptimizer")
+    _pfoptimizer_folder_path = os.path.join(_home, "config", "pfoptimizer")
     _mktdata_folder_path = os.path.join(_home, "mktdata")
 
     _universe_pool = ["all", "max", "wide", "institutional"]
