@@ -1,3 +1,3 @@
 #!/bin/bash
 
-python3 main.py $RUN_TYPE
+python3 main.py
