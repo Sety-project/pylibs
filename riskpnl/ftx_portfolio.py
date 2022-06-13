@@ -872,7 +872,7 @@ async def run_plex_wrapper(exchange_name='ftx',subaccount='debug'):
     await exchange.close()
     return plex
 
-async def run_plex(exchange,dirname='/tmp/RiskPnL/'):
+async def run_plex(exchange,dirname='/tmp/pnl/'):
 
     filename = dirname+'portfolio_history_'+exchange.describe()['id']+('_'+exchange.headers['FTX-SUBACCOUNT'] if 'FTX-SUBACCOUNT' in exchange.headers else '')+'.xlsx'
     if not os.path.exists(dirname):
