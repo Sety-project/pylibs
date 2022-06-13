@@ -71,7 +71,7 @@ class configLoader():
     def set_current_weights():
         ''' Used by tradeexecutor (only) to read current weights to have '''
         try:
-            configLoader._current_weights = pd.read_excel(configLoader._pfoptimizer_folder_path, configLoader._current_weights_filename)
+            configLoader._current_weights = pd.read_excel(os.path.join(configLoader._pfoptimizer_folder_path, configLoader._current_weights_filename))
         except FileNotFoundError:
             raise FileNotFoundError(
                 f"File {os.path.join(configLoader._pfoptimizer_folder_path, configLoader._current_weights_filename)} not found")
