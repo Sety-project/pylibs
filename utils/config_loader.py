@@ -5,6 +5,7 @@ from pathlib import Path
 class configLoader():
     _home = Path.home()
     _config_folder_path = os.path.join(_home, "config")
+    _pfoptimizer_folder_path = os.path.join(_home, "config", "prod", "pfoptimizer")
     _mktdata_folder_path = os.path.join(_home, "mktdata")
 
     _universe_pool = ["all", "max", "wide", "institutional"]
@@ -13,11 +14,15 @@ class configLoader():
     _pfoptimizer_params = None   # dict
     _static_params_used = None   # Dataframe
     _static_params_saved = None  # Dataframe
+    _executor_params = None      # dict
+    _current_weights = None      # Dataframe (from excel read)
 
     _universe_filename = "universe.json"
-    _universe_params_filename = "universe_params.json" # Used by pfoptimizer
-    _pfoptimizer_params_filename = "pfoptimizer_params.json"
+    _universe_params_filename = "universe_params.json"          # Used by pfoptimizer
+    _pfoptimizer_params_filename = "pfoptimizer_params.json"    # Used by pfoptimizer
     _static_params_filename = "static_params.xlsx"
+    _executor_params_filename = "tradeexecutor_params.json"     # Used by tradeexecutor
+    _current_weights_filename = "current_weights.xlsx"
 
     ### SETTERS ###
     @staticmethod
@@ -51,6 +56,25 @@ class configLoader():
             configLoader._universe_params = json.loads(f.read())
         except FileNotFoundError:
             raise FileNotFoundError(f"File {os.path.join(configLoader._config_folder_path, configLoader._universe_params_filename)} not found")
+
+    @staticmethod
+    def set_executor_params():
+        ''' Used by tradeexecutor to get execution params'''
+        try:
+            f = open(os.path.join(configLoader._config_folder_path, configLoader._executor_params_filename), "r")
+            configLoader._executor_params_filename = json.loads(f.read())
+        except FileNotFoundError:
+            raise FileNotFoundError(
+                f"File {os.path.join(configLoader._config_folder_path, configLoader._executor_params_filename)} not found")
+
+    @staticmethod
+    def set_current_weights():
+        ''' Used by tradeexecutor (only) to read current weights to have '''
+        try:
+            configLoader._current_weights = pd.read_excel(configLoader._pfoptimizer_folder_path, configLoader._current_weights_filename)
+        except FileNotFoundError:
+            raise FileNotFoundError(
+                f"File {os.path.join(configLoader._pfoptimizer_folder_path, configLoader._current_weights_filename)} not found")
 
     ### GETTERS ###
     @staticmethod
@@ -119,6 +143,19 @@ class configLoader():
         if configLoader._universe_params is None:  # Read only once, lazy
             configLoader.set_universe_params()
         return configLoader._universe_params
+
+    @staticmethod
+    def get_executor_params():   # dict
+        if configLoader._executor_params is None:  # Read only once, lazy
+            configLoader.set_executor_params()
+        return configLoader._executor_params
+
+    @staticmethod
+    def get_current_weights():   # Excel file
+        ''' Used by trade_executor to access current_weights '''
+        if configLoader._current_weights is None:  # Read only once, lazy
+            configLoader.set_current_weights()
+        return configLoader._current_weights
 
     # PERSIST params
     @staticmethod
