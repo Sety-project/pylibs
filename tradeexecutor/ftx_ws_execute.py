@@ -510,7 +510,7 @@ class myFtx(ccxtpro.ftx):
                                                            semaphore=self.rest_semaphor,
                                                            return_exceptions=True)
         for clientOrderId,external_status in zip(internal_order_internal_status.keys(),internal_order_external_status):
-            if type(external_status) is ccxt.OrderNotFound:
+            if isinstance(external_status,ccxt.OrderNotFound):
                 self.myLogger.warning(f'zombie {clientOrderId} not found')
                 continue
             if external_status['status'] != 'open':
@@ -1108,7 +1108,7 @@ class myFtx(ccxtpro.ftx):
                          'lifecycle_state':'rejected',
                          'comment':'create/'+str(e)}
                 self.lifecycle_cancel_or_reject(order)
-                if type(e) is ccxt.InsufficientFunds:
+                if isinstance(e,ccxt.InsufficientFunds):
                     risks = await safe_gather([self.fetch_balance(), self.fetch_positions()])
                     await self.update_margin_data(*risks)
                     cost = self.margin_calculator.margin_cost(coin, self.mid(symbol),
@@ -1117,7 +1117,7 @@ class myFtx(ccxtpro.ftx):
                         f'marginal cost {cost}, vs margin_headroom {self.margin_headroom} and calculated_IM {self.calculated_IM}')
                     self.exec_parameters[coin][symbol]['slice_size'] = max([self.exec_parameters[coin][symbol]['slice_size']/1.1,
                                                                             self.exec_parameters[coin][symbol]['sizeIncrement']])
-                elif type(e) is ccxt.RateLimitExceeded:
+                elif isinstance(e,ccxt.RateLimitExceeded):
                     throttle = 200.0
                     self.myLogger.warning(f'{str(e)}: waiting {throttle} ms)')
                     await asyncio.sleep(throttle / 1000)
