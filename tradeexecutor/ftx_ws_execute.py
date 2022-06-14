@@ -40,6 +40,7 @@ def loop(func):
                 self.myLogger.debug(str(e))
                 self.myLogger.info('reconciling after '+func.__name__+' dropped off')
                 await self.reconcile()
+                # restart socket unless ccxt does it
             except Exception as e:
                 self.myLogger.warning(e, exc_info=True)
                 raise e
@@ -127,6 +128,7 @@ class myFtx(ccxtpro.ftx):
         all layers events must carry id if known !! '''
         if 'clientOrderId' in fill:
             found = fill['clientOrderId']
+            assert (found in self.orders_lifecycle),f'{found} unknown'
         else:
             try:
                 found = next(clientID for clientID, events in self.orders_lifecycle.items() if
@@ -308,6 +310,7 @@ class myFtx(ccxtpro.ftx):
                                  'remote_timestamp':order_event['timestamp']}
         current['timestamp'] = nowtime
 
+        self.orders_lifecycle[clientOrderId] += [current]
         if order_event['status'] == 'closed':
             if order_event['remaining'] == 0:
                 current['order'] = order_event['id']
@@ -317,10 +320,6 @@ class myFtx(ccxtpro.ftx):
             else:
                 current['lifecycle_state'] = 'rejected'
                 self.lifecycle_cancel_or_reject(current)
-
-        #4) mine
-        else:
-            self.orders_lifecycle[clientOrderId] += [current]
 
     @symbol_locked
     def lifecycle_pending_cancel(self, order_event):
@@ -387,15 +386,17 @@ class myFtx(ccxtpro.ftx):
         # overwrite some fields
         current['timestamp'] = nowtime
 
-        if order_event['status'] in ['new', 'open', 'triggered']:
-            current['lifecycle_state'] = 'acknowledged'
-            self.orders_lifecycle[clientOrderId] += [current]
+        if order_event['status'] in ['new', 'open', 'triggered'] \
+            and order_event['filled'] != 0:
+                current['order'] = order_event['id']
+                current['id'] = None
+                #self.lifecycle_fill(current)
         elif order_event['status'] in ['closed']:
             #TODO: order event. not necessarily rejected ?
             if order_event['remaining'] == 0:
                 current['order'] = order_event['id']
                 current['id'] = None
-                self.lifecycle_fill(current)
+                #self.lifecycle_fill(current)
             else:
                 current['lifecycle_state'] = 'rejected'
                 self.lifecycle_cancel_or_reject(current)
@@ -409,7 +410,8 @@ class myFtx(ccxtpro.ftx):
         #     assert 'amount' in current,"assert 'amount' in current"
         #     self.lifecycle_fill(current)
         else:
-            raise Exception('unknown status{}'.format(order_event['status']))
+            current['lifecycle_state'] = 'acknowledged'
+            self.orders_lifecycle[clientOrderId] += [current]
 
     @symbol_locked
     def lifecycle_fill(self,order_event):
@@ -418,28 +420,22 @@ class myFtx(ccxtpro.ftx):
         clientOrderId = self.find_clientID_from_fill(order_event)
         symbol = order_event['symbol']
         coin = self.markets[symbol]['base']
-        size_threhold = self.exec_parameters[coin][symbol]['sizeIncrement'] / 2
+        size_threshold = self.exec_parameters[coin][symbol]['sizeIncrement'] / 2
 
-        # reconcile often rereads trades, skip then. There is no way to spot dupes from acknowledge though :(
-        if order_event['id'] in [block['fillId']
-                                     for block in self.orders_lifecycle[clientOrderId]
-                                     if 'fillId' in block]:
-            return
-        else:# 3) new block
-            nowtime = datetime.now().timestamp()*1000
-            eventID = clientOrderId + '_' + str(int(nowtime))
-            current = order_event | {'eventID':eventID,
-                                     'fillId': order_event['id'],
-                                     'remote_timestamp': order_event['timestamp']}
-            # overwrite some fields
-            current['timestamp'] = nowtime
-            current['remaining'] = max(0, self.latest_value(clientOrderId,'remaining') - order_event['amount'])
-            current['id'] = order_event['order']
+        nowtime = datetime.now().timestamp()*1000
+        eventID = clientOrderId + '_' + str(int(nowtime))
+        current = order_event | {'eventID':eventID,
+                                 'fillId': order_event['id'],
+                                 'remote_timestamp': order_event['timestamp']}
+        # overwrite some fields
+        current['timestamp'] = nowtime
+        current['remaining'] = max(0, self.latest_value(clientOrderId,'remaining') - order_event['amount'])
+        current['id'] = order_event['order']
 
-            if current['remaining'] < size_threhold:
-                self.orders_lifecycle[clientOrderId] += [current|{'lifecycle_state':'filled'}]
-            else:
-                self.orders_lifecycle[clientOrderId] += [current | {'lifecycle_state': 'partially_filled'}]
+        if current['remaining'] < size_threshold:
+            self.orders_lifecycle[clientOrderId] += [current|{'lifecycle_state':'filled'}]
+        else:
+            self.orders_lifecycle[clientOrderId] += [current | {'lifecycle_state': 'partially_filled'}]
 
     @symbol_locked
     def lifecycle_cancel_or_reject(self, order_event):
@@ -485,9 +481,11 @@ class myFtx(ccxtpro.ftx):
         for fill in fetched_fills:
             fill['comment'] = 'reconciled'
             fill['clientOrderId'] = self.find_clientID_from_fill(fill)
-            self.lifecycle_fill(fill)
+            if fill['id'] not in [block['fillId']
+                                     for block in self.orders_lifecycle[fill['clientOrderId']]
+                                     if 'fillId' in block]:
+                self.lifecycle_fill(fill)
         self.latest_fill_reconcile_timestamp = datetime.now(timezone.utc).timestamp()*1000
-        # hopefully using another lock instance
         await self.lifecycle_to_json()
 
     async def reconcile_orders(self):
@@ -501,11 +499,10 @@ class myFtx(ccxtpro.ftx):
         external_orders = await self.fetch_open_orders()
         for order in external_orders:
             if order['clientOrderId'] not in internal_order_internal_status.keys():
-                if order['clientOrderId'] in self.orders_lifecycle.keys():
-                    self.lifecycle_acknowledgment(order | {'comment':'reconciled_missing'})
-                    self.myLogger.warning('{} was missing'.format(order['clientOrderId']))
-                else:
-                    raise Exception('{} never intended'.format(order['clientOrderId']))
+                self.lifecycle_acknowledgment(order | {'comment':'reconciled_missing'})
+                self.myLogger.warning('{} was missing'.format(order['clientOrderId']))
+                found = order['clientOrderId']
+                assert (found in self.orders_lifecycle), f'{found} unknown'
 
         # remove zombie orders
         internal_order_external_status = await safe_gather([self.fetch_order(id=None, params={'clientOrderId':clientOrderId})
@@ -610,11 +607,8 @@ class myFtx(ccxtpro.ftx):
                                    for symbol, data in coin_data.items()}
                            for coin, coin_data in data_dict.items()}
 
-        futures = pd.DataFrame(await fetch_futures(self))
-        account_leverage = float(futures.iloc[0]['account_leverage'])
-        collateralWeight = futures.set_index('underlying')['collateralWeight'].to_dict()
-        imfFactor = futures.set_index('new_symbol')['imfFactor'].to_dict()
-        self.margin_calculator = MarginCalculator(account_leverage, collateralWeight, imfFactor)
+        # compute IM
+        self.margin_calculator = await MarginCalculator.build_margin_calculator(self)
 
         # populates risk, pv and IM
         self.latest_order_reconcile_timestamp = self.exec_parameters['timestamp']
@@ -669,10 +663,12 @@ class myFtx(ccxtpro.ftx):
 
         scaler = max(0,(time_limit-nowtime)/(time_limit-self.exec_parameters['timestamp']))
         for coin,coin_data in trades_history_dict.items():
+            # entry_level = what level on basket is too bad to even place orders
             self.exec_parameters[coin]['entry_level'] = basket_vwap_quantile(
                 [data['vwap'] for data in coin_data.values()],
                 [self.exec_parameters[coin][symbol]['diff'] for symbol in coin_data.keys()],
                 self.parameters['entry_tolerance'])
+            # rush_level = what level on basket is so good good that you go market on both legs
             self.exec_parameters[coin]['rush_level'] = basket_vwap_quantile(
                 [data['vwap'] for data in coin_data.values()],
                 [self.exec_parameters[coin][symbol]['diff'] for symbol in coin_data.keys()],
@@ -680,9 +676,17 @@ class myFtx(ccxtpro.ftx):
             for symbol, data in coin_data.items():
                 stdev = data['vwap'].std().squeeze()
                 if not (stdev>0): stdev = 1e-16
-                self.exec_parameters[coin][symbol]['edit_trigger_depth'] = stdev * np.sqrt(self.parameters['edit_trigger_tolerance']) * scaler
+                # edit_price_depth = how far to put limit on risk increasing orders
                 self.exec_parameters[coin][symbol]['edit_price_depth'] = stdev * np.sqrt(self.parameters['edit_price_tolerance']) * scaler
-                self.exec_parameters[coin][symbol]['aggressive_edit_price_depth'] = self.parameters['aggressive_edit_price_tolerance'] * self.exec_parameters[coin][symbol]['priceIncrement']
+                # aggressive_edit_price_depth = how far to put limit on risk reducing orders
+                self.exec_parameters[coin][symbol]['aggressive_edit_price_depth'] = self.parameters[
+                                                                                        'aggressive_edit_price_tolerance'] * \
+                                                                                    self.exec_parameters[coin][symbol][
+                                                                                        'priceIncrement']
+                # edit_trigger_depth = how far to let the mkt go before re-pegging limit orders
+                self.exec_parameters[coin][symbol]['edit_trigger_depth'] = stdev * np.sqrt(
+                    self.parameters['edit_trigger_tolerance']) * scaler
+                # stop_depth = how far to set the stop on risk reducing orders
                 self.exec_parameters[coin][symbol]['stop_depth'] = stdev * np.sqrt(self.parameters['stop_tolerance']) * scaler
 
         self.latest_exec_parameters_reconcile_timestamp = nowtime
@@ -709,6 +713,7 @@ class myFtx(ccxtpro.ftx):
             previous_total_delta = self.total_delta
             previous_pv = self.pv
 
+            #TODO: apply the gather trick
             risks = await safe_gather([self.fetch_positions(),self.fetch_balance(),self.fetch_markets()],semaphore=self.rest_semaphor)
             positions = risks[0]
             balances = risks[1]
@@ -752,26 +757,7 @@ class myFtx(ccxtpro.ftx):
                                             if symbol in self.markets and 'delta' in data.keys()])
 
             #compute IM
-            spot_weight={}
-            future_weight={}
-            for position in positions:
-                if float(position['info']['netSize'])!=0:
-                    symbol = position['symbol']
-                    mid = self.mid(symbol)
-                    future_weight |= {symbol: {'weight': float(position['info']['netSize'])*mid, 'mark':mid}}
-            for coin,balance in balances.items():
-                if coin!='USD' and coin in self.currencies and balance['total']!=0:
-                    mid = self.mid(coin+'/USD')
-                    spot_weight |= {(coin):{'weight':balance['total']*mid,'mark':mid}}
-            (spot_weight,future_weight) = MarginCalculator.add_pending_orders(self, spot_weight, future_weight)
-
-            self.margin_calculator.estimate(self.usd_balance, spot_weight, future_weight)
-            self.calculated_IM = sum(value for value in self.margin_calculator.estimated_IM.values())
-            # fetch IM
-            account_info = (await self.privateGetAccount())['result']
-            self.margin_calculator.update_actual(account_info)
-            self.margin_headroom = self.margin_calculator.actual_IM if float(account_info['totalPositionSize']) else self.pv
-
+            await self.update_margin_data(balances, positions)
 
             # replay missed _messages.
             self.myLogger.info(f'replaying {len(self.message_missed)} messages after recon')
@@ -800,6 +786,28 @@ class myFtx(ccxtpro.ftx):
                                       for coin,coindata in self.risk_state.items()
                                       for symbol_ in coindata.keys() if symbol_ in self.markets]
         await self.risk_reconciliation_to_json()
+
+    async def update_margin_data(self, balances, positions):
+        spot_weight = {}
+        future_weight = {}
+        for position in positions:
+            if float(position['info']['netSize']) != 0:
+                symbol = position['symbol']
+                mid = self.mid(symbol)
+                future_weight |= {symbol: {'weight': float(position['info']['netSize']) * mid, 'mark': mid}}
+        for coin, balance in balances.items():
+            if coin != 'USD' and coin in self.currencies and balance['total'] != 0:
+                mid = self.mid(coin + '/USD')
+                spot_weight |= {(coin): {'weight': balance['total'] * mid, 'mark': mid}}
+        (spot_weight, future_weight) = MarginCalculator.add_pending_orders(self, spot_weight, future_weight)
+
+        self.margin_calculator.estimate(self.usd_balance, spot_weight, future_weight)
+        self.calculated_IM = sum(value for value in self.margin_calculator.estimated_IM.values())
+        # fetch IM
+        account_info = (await self.privateGetAccount())['result']
+        self.margin_calculator.update_actual(account_info)
+        self.margin_headroom = self.margin_calculator.actual_IM if float(
+            account_info['totalPositionSize']) else self.pv
 
     # --------------------------------------------------------------------------------------------
     # ---------------------------------- WS loops, processors and message handlers ---------------
@@ -941,6 +949,7 @@ class myFtx(ccxtpro.ftx):
     # ---------------------------------- high level
 
     def quoter(self, symbol, orderbook):
+        '''leverages orderbook and risk to issue an order'''
         coin = self.markets[symbol]['base']
         mid = self.tickers[symbol]['mid']
         params = self.exec_parameters[coin][symbol]
@@ -949,7 +958,7 @@ class myFtx(ccxtpro.ftx):
         size = params['target'] - self.risk_state[coin][symbol]['delta']/mid
         # size < slice_size and margin_headroom
         size = np.sign(size)*float(self.amount_to_precision(symbol, min([np.abs(size), params['slice_size']])))
-        if (np.abs(size) < 2 * self.exec_parameters[coin][symbol]['sizeIncrement']):
+        if (np.abs(size) < self.exec_parameters[coin][symbol]['sizeIncrement']):
             self.running_symbols.remove(symbol)
             self.myLogger.info(f'{symbol} done, {self.running_symbols} left to do')
             if self.running_symbols == []:
@@ -960,12 +969,6 @@ class myFtx(ccxtpro.ftx):
         delta_timestamp = self.risk_state[coin][symbol]['delta_timestamp']
         globalDelta = self.risk_state[coin]['netDelta'] + self.parameters['global_beta'] * (self.total_delta - self.risk_state[coin]['netDelta'])
         marginal_risk = np.abs(globalDelta/mid + size)-np.abs(globalDelta/mid)
-
-        # if not enough margin, hold it# TODO: this may be slow, and depends on orders anyway
-        #if self.margin_calculator.margin_cost(coin, mid, size, self.usd_balance) > self.margin_headroom:
-        #    await asyncio.sleep(60) # TODO: I don't know how to stop/restart a thread..
-        #    self.myLogger.info('margin {} too small for order size {}'.format(size*mid, self.margin_headroom))
-        #    return None
 
         # if increases risk, go passive
         if marginal_risk>0:
@@ -992,7 +995,8 @@ class myFtx(ccxtpro.ftx):
         self.peg_or_stopout(symbol,size,orderbook,edit_trigger_depth=params['edit_trigger_depth'],edit_price_depth=edit_price_depth,stop_depth=stop_depth)
 
     def peg_or_stopout(self,symbol,size,orderbook,edit_trigger_depth,edit_price_depth,stop_depth=None):
-        '''creates of edit orders, pegging to orderbook
+        '''places an order after checking OMS
+        creates or edits orders, pegging to orderbook
         goes taker when depth<increment
         size in coin, already filtered
         skips if any pending_new, cancels duplicates
@@ -1025,7 +1029,7 @@ class myFtx(ccxtpro.ftx):
                         self.myLogger.warning('canceled duplicate {} order {}'.format(symbol,event_history[-1]['clientOrderId']))
 
 
-            # if no open order, create genesis
+            # if no open order, create an order
             order_side = 'buy' if size>0 else 'sell'
             if len(event_histories)==0:
                 (postOnly, ioc) = (True, False) if edit_price_depth > priceIncrement else (False, True)
@@ -1038,9 +1042,10 @@ class myFtx(ccxtpro.ftx):
                 order_distance = (1 if order['side'] == 'buy' else -1) * (opposite_side - order['price'])
 
                 # panic stop. we could rather place a trailing stop: more robust to latency, but less generic.
-                if stop_depth and order_distance > stop_trigger:
+                if (stop_depth and order_distance > stop_trigger)\
+                        or edit_price_depth <= 0.0:
                     size = self.latest_value(order['clientOrderId'],'remaining')
-                    price = mkt_at_size(orderbook, order_side, size)['side']
+                    price = sweep_price(orderbook, size)
                     asyncio.create_task( self.edit_order(symbol, 'limit', order_side, size=size, price = price,
                                                          params={'ioc':True,'comment':'stop'},previous_clientOrderId = order['clientOrderId']))
                 # peg limit order
@@ -1050,6 +1055,7 @@ class myFtx(ccxtpro.ftx):
 
         ### see error_hierarchy in DerivativeArbitrage/venv/Lib/site-packages/ccxt/base/errors.py
         except ccxt.InsufficientFunds as e: # is ExchangeError
+            asyncio.create_task(self.update_margin_data())
             cost = self.margin_calculator.margin_cost(coin, mid, size, self.usd_balance)
             self.myLogger.warning(f'marginal cost {cost}, vs margin_headroom {self.margin_headroom} and calculated_IM {self.calculated_IM}')
         except ccxt.InvalidOrder as e: # is ExchangeError
@@ -1075,7 +1081,6 @@ class myFtx(ccxtpro.ftx):
     async def create_order(self, symbol, type, side, amount, price=None, params={}):
         '''if acknowledged, place order. otherwise just reconcile
         orders_pending_new is blocking'''
-        order = None
         coin = self.markets[symbol]['base']
         if self.pending_new_histories(coin) != []:#TODO: rather incorporate orders_pending_new in risk, rather than block
             if self.pending_new_histories(coin,symbol) != []:
@@ -1087,7 +1092,7 @@ class myFtx(ccxtpro.ftx):
             await asyncio.sleep(1)
             #await self.reconcile()
         else:
-            # set pending_new -> send rest -> if success, leave pending_new and give id. Pls note it may have been caught by handle_order by then.
+            # set pending_new -> send rest -> if success, leave pending_new and give id. Pls note it may have been caught by monitor_order by then.
             clientOrderId = self.lifecycle_pending_new({'symbol': symbol,
                                                         'type': type,
                                                         'side': side,
@@ -1097,22 +1102,27 @@ class myFtx(ccxtpro.ftx):
                                                         'comment': params['comment']})
             try:
                 order = await super().create_order(symbol, type, side, amount, price, params | {'clientOrderId':clientOrderId})
-            except ccxt.InsufficientFunds as e:
-                order = {'clientOrderId':clientOrderId,
-                         'timestamp':datetime.now().timestamp() * 1000,
-                         'lifecycle_state':'rejected',
-                         'comment':'create/'+str(e)}
-                self.lifecycle_cancel_or_reject(order)
             except Exception as e:
                 order = {'clientOrderId':clientOrderId,
                          'timestamp':datetime.now().timestamp() * 1000,
                          'lifecycle_state':'rejected',
                          'comment':'create/'+str(e)}
                 self.lifecycle_cancel_or_reject(order)
+                if type(e) is ccxt.InsufficientFunds:
+                    risks = await safe_gather([self.fetch_balance(), self.fetch_positions()])
+                    await self.update_margin_data(*risks)
+                    cost = self.margin_calculator.margin_cost(coin, self.mid(symbol),
+                                                              amount * (1 if side == 'buy' else -1), self.usd_balance)
+                    self.myLogger.warning(
+                        f'marginal cost {cost}, vs margin_headroom {self.margin_headroom} and calculated_IM {self.calculated_IM}')
+                    self.exec_parameters[coin][symbol]['slice_size'] = max([self.exec_parameters[coin][symbol]['slice_size']/1.1,
+                                                                            self.exec_parameters[coin][symbol]['sizeIncrement']])
+                elif type(e) is ccxt.RateLimitExceeded:
+                    throttle = 200.0
+                    self.myLogger.warning(f'{str(e)}: waiting {throttle} ms)')
+                    await asyncio.sleep(throttle / 1000)
             else:
                 self.lifecycle_sent(order)
-
-        return order
 
     async def cancel_order(self, clientOrderId, trigger):
         '''set in flight, send cancel, set as pending cancel, set as canceled or insist'''
@@ -1133,55 +1143,48 @@ class myFtx(ccxtpro.ftx):
                                         'symbol': symbol,
                                         'status': str(e),
                                         'comment': trigger})
+            self.myLogger.warning(f'{clientOrderId} failed to cancel: {str(e)}')
             return True
         except ccxt.InvalidOrder as e: # could be in flight, or unknown
             self.lifecycle_cancel_or_reject({'clientOrderId':clientOrderId,
                                              'status':str(e),
                                              'lifecycle_state':'canceled',
                                              'comment':trigger})
+            self.myLogger.warning(f'{clientOrderId} failed to cancel: {str(e)}')
             return False
         except Exception as e:
-            self.myLogger.warning('cancel for {} fails with {}'.format(clientOrderId,str(e)))
+            self.myLogger.warning(f'{clientOrderId} failed to cancel: {str(e)}')
             await asyncio.sleep(.1)
             return await self.cancel_order(clientOrderId, trigger+'+')
 
     async def close_dust(self):
-        '''leaves slightly positive cash for ease of convert'''
-        risks = await safe_gather([self.fetch_positions(),self.fetch_balance()],semaphore=self.rest_semaphor)
-        positions = risks[0]
-        balances = risks[1]
+        data = await asyncio.gather(*[self.fetch_balance(),self.fetch_markets()])
+        balances = data[0]
+        markets = data[1]
+        coros = []
+        for coin, balance in balances.items():
+            if coin in self.currencies.keys() \
+                    and coin != 'USD' \
+                    and balance['total'] != 0.0 \
+                    and np.abs(balance['total']) < float(self.markets[coin+'/USD']['info']['sizeIncrement']):
+                size = balance['total']
+                mid = float(self.markets[coin+'/USD']['info']['last'])
+                if size > 0:
+                    request = {'fromCoin':coin,'toCoin':'USD','size':np.abs(size)}
+                else:
+                    request = {'fromCoin':'USD','toCoin':coin,'size':np.abs(size)*self.mid(f'{coin}/USD')}
+                coros += [self.privatePostOtcQuotes(request)]
 
-        futures_dust = [position for position in positions
-                        if float(position['info']['size'])!=0
-                        and np.abs(float(position['info']['size']))<2*float(self.markets[position['symbol']]['info']['minProvideSize'])]
-        for position in futures_dust:
-            details = {'symbol': position['symbol'],
-                       'type': 'market',
-                       'side': 'buy' if position['side'] == 'short' else 'sell',
-                       'amount': float(position['info']['size'])}
-            clientOrderId = self.lifecycle_pending_new(details|{'remaining': details['amount'],
-                                                'comment': 'dust'})
-            await super(ccxtpro.ftx,self).create_order(**details,params={'clientOrderId':clientOrderId})
-        await asyncio.sleep(5)
-
-        shorts_dust = {coin:float(self.markets[coin+'/USD']['info']['sizeIncrement']) for coin, balance in balances.items()
-                       if coin in set(self.currencies) - set(['USD'])
-                       and float(balance['total'])<0
-                       and float(balance['total'])+float(self.markets[coin+'/USD']['info']['sizeIncrement'])>0}
-        for coin,size in shorts_dust.items():
-            details = {'symbol': coin+'/USD',
-                       'type': 'market',
-                       'side': 'buy',
-                       'amount': size}
-            clientOrderId = self.lifecycle_pending_new(details|{'remaining': details['amount'],
-                                                'comment': 'dust'})
-            await super(ccxtpro.ftx,self).create_order(**details,params={'clientOrderId':clientOrderId})
+        quoteId_list = await asyncio.gather(*coros)
+        await asyncio.gather(*[self.privatePostOtcQuotesQuoteIdAccept({'quoteId': int(quoteId['result']['quoteId'])})
+        for quoteId in quoteId_list
+        if quoteId['success']])
 
 async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
     allDone = False
     while not allDone:
         try:
-
+            # TODO: rather read complex order
             parameters = configLoader.get_executor_params()
 
             exchange = myFtx(parameters, config={  ## David personnal
