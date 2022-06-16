@@ -10,7 +10,6 @@ import ccxtpro
 # parameters guide
 # 'max_nb_coins': 'sharding'
 # 'time_budget': scaling aggressiveness to 0 at time_budget (in seconds)
-# 'slice_factor': slice in % of request
 # 'global_beta': other coin weight in the global risk
 # 'max_cache_size': mkt data cache
 # 'message_cache_size': missed messages cache
@@ -21,6 +20,7 @@ import ccxtpro
 # 'aggressive_edit_price_tolerance': in priceIncrement
 # 'edit_trigger_tolerance': chase at edit_trigger_tolerance (in minutes) *  stdev
 # 'stop_tolerance': stop at stop_tolerance (in minutes) *  stdev
+# 'slice_factor': % of mkt volume * edit_price_tolerance. so farther is bigger.
 # 'check_frequency': risk recon frequency. in seconds
 # 'delta_limit': in % of pv
 
@@ -583,8 +583,6 @@ class myFtx(ccxtpro.ftx):
                                          {
                                              sys.intern('diff'): data['diff'],
                                              sys.intern('target'): data['target'],
-                                             sys.intern('slice_size'): max([float(self.markets[symbol]['info']['minProvideSize']),
-                                                                            self.parameters['slice_factor'] * np.abs(data['diff'])]),  # in coin
                                              sys.intern('priceIncrement'): float(self.markets[symbol]['info']['priceIncrement']),
                                              sys.intern('sizeIncrement'): float(self.markets[symbol]['info']['minProvideSize']),
                                              sys.intern('takerVsMakerFee'): trading_fees[symbol]['taker']-trading_fees[symbol]['maker'],
@@ -688,6 +686,13 @@ class myFtx(ccxtpro.ftx):
                     self.parameters['edit_trigger_tolerance']) * scaler
                 # stop_depth = how far to set the stop on risk reducing orders
                 self.exec_parameters[coin][symbol]['stop_depth'] = stdev * np.sqrt(self.parameters['stop_tolerance']) * scaler
+                # slice_size
+                minProvideSize = self.exec_parameters[coin][symbol]['sizeIncrement']
+                margin_share = self.margin_headroom / len(self.running_symbols) / self.mid(symbol)
+                volume_share = self.parameters['slice_factor'] * self.parameters['edit_price_tolerance'] * \
+                               data['volume'].mean()
+                self.exec_parameters[coin][symbol]['slice_size'] = max(
+                    [minProvideSize, min([margin_share, volume_share])])
 
         self.latest_exec_parameters_reconcile_timestamp = nowtime
         self.myLogger.info(f'scaled params by {scaler} at {nowtime}')
@@ -704,10 +709,9 @@ class myFtx(ccxtpro.ftx):
 
         # or reconcile, and lock until done
         with self.lock['reconciling']:
-            # fills, orders, refresh exec parameters
+            # fills, orders
             await self.reconcile_fills()
             await self.reconcile_orders()
-            await self.update_exec_parameters()
 
             # now recompute risks
             previous_total_delta = self.total_delta
@@ -758,6 +762,9 @@ class myFtx(ccxtpro.ftx):
 
             #compute IM
             await self.update_margin_data(balances, positions)
+
+            # update_exec_parameters
+            await self.update_exec_parameters()
 
             # replay missed _messages.
             self.myLogger.info(f'replaying {len(self.message_missed)} messages after recon')
