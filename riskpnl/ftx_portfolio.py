@@ -26,6 +26,14 @@ class MarginCalculator:
         self.actual_MM = None           # float
 
     @staticmethod
+    async def build_margin_calculator(exchange):
+        futures = pd.DataFrame(await fetch_futures(exchange))
+        account_leverage = float(futures.iloc[0]['account_leverage'])
+        collateralWeight = futures.set_index('underlying')['collateralWeight'].to_dict()
+        imfFactor = futures.set_index('new_symbol')['imfFactor'].to_dict()
+        return MarginCalculator(account_leverage, collateralWeight, imfFactor)
+
+    @staticmethod
     def add_pending_orders(exchange,spot_weight,future_weight):
         '''add orders as if done'''
         for open_order_history in exchange.filter_order_histories(state_set=exchange.openStates):
@@ -541,6 +549,7 @@ async def fetch_portfolio(exchange,time):
          for coro in ['fetch_markets', 'fetch_balance', 'fetch_positions']]
     results = await safe_gather(p)
 
+
     # avg to reduce impact of latency
     markets_list = []
     for result in results[0::3]:
@@ -948,7 +957,7 @@ def ftx_portoflio_main(*argv):
 
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['plex'])
+        argv.extend(['risk'])
     if len(argv) < 3:
         argv.extend(['ftx', 'SysPerp'])
     print(f'running {argv}')
