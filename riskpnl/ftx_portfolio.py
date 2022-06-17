@@ -404,24 +404,32 @@ async def live_risk_wrapper(exchange_name='ftx',subaccount='SysPerp'):
     return risk
 
 async def live_risk(exchange,futures):
-    balances=pd.DataFrame((await exchange.fetch_balance(params={}))['info']['result'],dtype=float)#'showAvgPrice':True})
-    balances=balances[(balances['total']!=0.0)&(balances['coin']!='USD')].fillna(0.0)
+
+    all_balances = pd.DataFrame((await exchange.fetch_balance(params={}))['info']['result'],dtype=float)#'showAvgPrice':True})
+    #balances = all_balances[(all_balances['total']!=0.0)&(all_balances['coin']!='USD')].fillna(0.0)
+    balances = all_balances[abs(all_balances['usdValue']) > 1].fillna(0.0)
     balances['spotDelta'] = balances.apply(lambda f: f['total'] * (1.0 if f['coin'] == 'USD' else float(exchange.market(f['coin']+'/USD')['info']['price'])), axis=1)
 
     def borrow(balance):
-        s = float(exchange.market(balance['coin']+'/USD')['info']['price'])
-        N = min(0,balance['total'])
-        r = float(futures.loc[balance['coin']+'-PERP', 'cash_borrow'] if balance['coin'] != 'USD' else futures.iloc[0]['quote_borrow'])
-        return N * s * r
+        if balance['coin'] != "USD":
+            s = float(exchange.market(balance['coin']+'/USD')['info']['price'])
+            N = min(0,balance['total'])
+            r = float(futures.loc[balance['coin']+'-PERP', 'cash_borrow'] if balance['coin'] != 'USD' else futures.iloc[0]['quote_borrow'])
+            return N * s * r
+        else:
+            return 0
     balances['borrow'] = balances.apply(lambda f: borrow(f), axis=1)
 
     positions = pd.DataFrame([r['info'] for r in await exchange.fetch_positions(params={}) if r['info']['netSize']!=0],dtype=float)#'showAvgPrice':True})
+
     if not positions.empty:
         positions = positions[positions['netSize'] != 0.0].fillna(0.0)
         positions['coin'] = positions['future'].apply(lambda f: futures.loc[f,'underlying'])
         positions['futureMark'] = positions.apply(lambda f: futures.loc[f['future'],'mark'], axis=1)
         positions['futureIndex'] = positions.apply(lambda f: futures.loc[f['future'],'index'], axis=1)
         positions['futureDelta'] = positions['netSize'] * positions['futureMark']
+
+        positions = positions.sort_values(by=['coin'], ascending=True)
 
         def future_carry(position):
             s = position['futureIndex']
@@ -444,13 +452,30 @@ async def live_risk(exchange,futures):
         result=balances
         result[['futureDelta','futureMark','futureIndex','future_carry','IR01']]=0
 
-    result['netDelta'] = result['futureDelta'] + result['spotDelta']
+    # Find the dollar index
+    usd_index = result[result['coin']=='USD'].index[0]
+    # Create pv column = spot delta
+    result['pv'] = result['spotDelta']
+
+    result['netDelta'] = result['futureDelta'] + result['spotDelta'] #- result[result['netDelta']]
+    # Put spotDelta and netDelta at 0 for USD
+    result.at[usd_index, 'spotDelta'] = 0
+    result.at[usd_index, 'netDelta'] = 0
+
     result['netCarry'] = result['future_carry'] + result['borrow']
     result['spotMark'] = balances['coin'].apply(lambda f: 1.0 if f=='USD' else float(exchange.market(f+'/USD')['info']['price']))
-    result.loc['total', ['futureDelta', 'spotDelta', 'netDelta', 'future_carry', 'borrow', 'netCarry', 'IR01']] = result[['futureDelta', 'spotDelta', 'netDelta', 'future_carry', 'borrow', 'netCarry', 'IR01']].sum()
+
+    # Move dollar to the last line
+    idx = result.index.tolist()
+    idx.pop(usd_index)
+    result = result.reindex(idx + [usd_index])
+
+    # Sort by coin before print
+    result = result.sort_values(by=['coin'], ascending=True)
+    result.loc['total', ['futureDelta', 'spotDelta', 'netDelta', 'future_carry', 'borrow', 'netCarry', 'IR01', 'pv']] = result[['futureDelta', 'spotDelta', 'netDelta', 'future_carry', 'borrow', 'netCarry', 'IR01', 'pv']].sum()
     result.loc['total', 'coin'] = 'total'
 
-    return result[['coin','futureDelta', 'spotDelta', 'netDelta', 'future_carry', 'borrow', 'netCarry', 'IR01']].set_index('coin')
+    return result[['coin','futureDelta', 'spotDelta', 'netDelta', 'future_carry', 'borrow', 'netCarry', 'IR01', 'pv']].set_index('coin')
 
 # diff is in coin
 async def diff_portoflio(exchange,future_weights) -> pd.DataFrame():
@@ -933,8 +958,9 @@ def ftx_portoflio_main(*argv):
         print(diff.loc[diff['diffUSD'].apply(np.abs)>1,['coin','name','currentUSD','optimalUSD','diffUSD']].round(decimals=0))
         return diff
     elif argv[0] == 'risk':
-        risk=asyncio.run(live_risk_wrapper(argv[1], argv[2]))
-        print(risk.astype(int))
+        while True:
+            risk=asyncio.run(live_risk_wrapper(argv[1], argv[2]))
+            print(risk.astype(int))
         return risk
     elif argv[0] == 'plex':
         plex= asyncio.run(run_plex_wrapper(*argv[1:]))
