@@ -35,7 +35,7 @@ def batch_log_reader(dirname='Runtime/logs/ftx_ws_execute/archive'):
             continue
     log_writer('Runtime/logs/ftx_ws_execute/all',compiled_logs)
 
-def log_reader(dirname='Runtime/logs/ftx_ws_execute',date='latest'):
+def log_reader(dirname='/tmp/tradeexecutor',date='latest'):
     '''compile json logs, or move to 'unreadable' directory if it fails'''
     path = f'{dirname}/{date}'
     try:
