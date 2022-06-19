@@ -1248,7 +1248,7 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
         if argv[0]=='sysperp':
             future_weights = configLoader.get_current_weights()
             target_portfolio = await diff_portoflio(exchange, future_weights)  # still a Dataframe
-            if target_portfolio.empty: return
+            if target_portfolio.empty: raise myFtx.NothingToDo()
 
         elif argv[0]=='spread':
             coin=argv[3]
@@ -1259,7 +1259,7 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
             target_portfolio = pd.DataFrame(columns=['coin','name','optimalCoin','currentCoin','spot_price'],data=[
                 [coin,cash_name,float(argv[4])/cash_price,0,cash_price],
                 [coin,future_name,-float(argv[4])/future_price,0,future_price]])
-            if target_portfolio.empty: return
+            if target_portfolio.empty: raise myFtx.NothingToDo()
 
         elif argv[0]=='flatten': # only works for basket with 2 symbols
             future_weights = pd.DataFrame(columns=['name','optimalWeight'])
@@ -1267,12 +1267,12 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
             smallest_risk = diff.groupby(by='coin')['currentCoin'].agg(lambda series: series.apply(np.abs).min() if series.shape[0]>1 else 0)
             target_portfolio=diff
             target_portfolio['optimalCoin'] = diff.apply(lambda f: smallest_risk[f['coin']]*np.sign(f['currentCoin']),axis=1)
-            if target_portfolio.empty: return
+            if target_portfolio.empty: raise myFtx.NothingToDo()
 
         elif argv[0]=='unwind':
             future_weights = pd.DataFrame(columns=['name','optimalWeight'])
             target_portfolio = await diff_portoflio(exchange, future_weights)
-            if target_portfolio.empty: return
+            if target_portfolio.empty: raise myFtx.NothingToDo()
 
         else:
             exchange.logger.exception(f'unknown command {argv[0]}',exc_info=True)
@@ -1333,7 +1333,7 @@ def ftx_ws_spread_main(*argv):
             elif isinstance(execution_status, myFtx.TimeBudgetExpired):
                 # Force flattens until it returns FILLED
                 while not isinstance(execution_status, myFtx.DoneDeal):
-                    execution_status = asyncio.run(ftx_ws_spread_main_wrapper(*['flatten', 'ftx', 'SysPerp']))
+                    execution_status = asyncio.run(ftx_ws_spread_main_wrapper(*(['flatten']+argv[1:])))
 
     else:
         logging.info(f'commands: sysperp [ftx][debug], flatten [ftx][debug],unwind [ftx][debug], spread [ftx][debug][coin][cash in usd]')
