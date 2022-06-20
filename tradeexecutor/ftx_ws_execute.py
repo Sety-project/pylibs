@@ -42,8 +42,8 @@ def loop(func):
             try:
                 value = await func(*args, **kwargs)
             except ccxt.NetworkError as e:
-                self.myLogger.debug(str(e))
-                self.myLogger.info('reconciling after '+func.__name__+' dropped off')
+                self.myLogger.warning(str(e))
+                self.myLogger.warning('reconciling after '+func.__name__+' dropped off')
                 await self.reconcile() # implicitement redemarre la socket, ccxt fait ca comme ca
             except Exception as e:
                 self.myLogger.warning(e, exc_info=True)
@@ -118,20 +118,20 @@ class myFtx(ccxtpro.ftx):
     # --------------------------------------------------------------------------------------------
 
     class DoneDeal(Exception):
-        def __init__(self,status):
+        def __init__(self,status=None):
             super().__init__(status)
 
     class NothingToDo(DoneDeal):
-        def __init__(self, status):
+        def __init__(self, status=None):
             super().__init__(status)
 
     class TimeBudgetExpired(Exception):
-        def __init__(self,status):
+        def __init__(self,status=None):
             super().__init__(status)
     class LimitBreached(Exception):
         def __init__(self,check_frequency,limit=None):
             super().__init__()
-            self.limit = limit
+            self.delta_limit = limit
             self.check_frequency = check_frequency
 
     def find_clientID_from_fill(self,fill):
@@ -191,11 +191,6 @@ class myFtx(ccxtpro.ftx):
         handler_info.setFormatter(logging.Formatter(f"%(levelname)s: %(message)s"))
         handler_info.addFilter(MyFilter(logging.INFO))
         self.myLogger.addHandler(handler_info)
-
-        handler_debug = logging.FileHandler(os.path.join(log_path, 'debug.log'), mode='w')
-        handler_debug.setLevel(logging.DEBUG)
-        handler_debug.setFormatter(logging.Formatter(f"%(levelname)s: %(message)s"))
-        self.myLogger.addHandler(handler_debug)
 
         # handler_alert = logging.handlers.SMTPHandler(mailhost='smtp.google.com',
         #                                              fromaddr='david@pronoia.link',
@@ -707,13 +702,16 @@ class myFtx(ccxtpro.ftx):
                     self.parameters['edit_trigger_tolerance']) * scaler
                 # stop_depth = how far to set the stop on risk reducing orders
                 self.exec_parameters[coin][symbol]['stop_depth'] = stdev * np.sqrt(self.parameters['stop_tolerance']) * scaler
-                # slice_size
+                # slice_size: cap IM impact to:
+                # - an equal share of margin headroom
+                # - an expected time to trade consistent with edit_price_tolerance
+                # - risk
                 minProvideSize = self.exec_parameters[coin][symbol]['sizeIncrement']
-                cost = - self.margin_calculator.margin_cost(symbol,
+                incremental_margin_usd = self.margin_calculator.margin_cost(symbol,
                                                           self.mid(symbol),
                                                           self.exec_parameters[coin][symbol]['diff'],
-                                                          self.usd_balance) / self.mid(symbol)
-                margin_share = self.margin_headroom / len(self.running_symbols) / cost
+                                                          self.usd_balance)
+                margin_share = self.margin_headroom * np.abs(self.exec_parameters[coin][symbol]['diff']/ incremental_margin_usd ) / len(self.running_symbols)
                 volume_share = self.parameters['slice_factor'] * self.parameters['edit_price_tolerance'] * \
                                data['volume'].mean()
                 self.exec_parameters[coin][symbol]['slice_size'] = max(
@@ -954,10 +952,9 @@ class myFtx(ccxtpro.ftx):
         await asyncio.sleep(self.limit.check_frequency)
         await self.reconcile()
 
-        self.limit.limit = self.pv * self.limit.delta_limit
         absolute_risk = sum(abs(data['netDelta']) for data in self.risk_state.values())
-        if absolute_risk > self.limit.limit:
-            self.myLogger.warning(f'absolute_risk {absolute_risk} > {self.limit.limit}')
+        if absolute_risk > self.pv * self.limit.delta_limit:
+            self.myLogger.warning(f'absolute_risk {absolute_risk} > {self.pv * self.limit.delta_limit}')
         if self.margin_headroom < self.pv/100:
             self.myLogger.warning(f'IM {self.margin_headroom}  < 1%')
 
@@ -995,11 +992,9 @@ class myFtx(ccxtpro.ftx):
         mid = self.tickers[symbol]['mid']
         params = self.exec_parameters[coin][symbol]
 
-        # size to do: aim at target, slice, round to sizeIncrement
-        size = params['target'] - self.risk_state[coin][symbol]['delta']/mid
-        # size < slice_size and margin_headroom
-        size = np.sign(size)*float(self.amount_to_precision(symbol, min([np.abs(size), params['slice_size']])))
-        if (np.abs(size) < self.exec_parameters[coin][symbol]['sizeIncrement']):
+        # size to do:
+        original_size = params['target'] - self.risk_state[coin][symbol]['delta']/mid
+        if (np.abs(original_size) < self.exec_parameters[coin][symbol]['sizeIncrement']):
             self.running_symbols.remove(symbol)
             self.myLogger.info(f'{symbol} done, {self.running_symbols} left to do')
             if self.running_symbols == []:
@@ -1009,13 +1004,7 @@ class myFtx(ccxtpro.ftx):
         #risk
         delta_timestamp = self.risk_state[coin][symbol]['delta_timestamp']
         globalDelta = self.risk_state[coin]['netDelta'] + self.parameters['global_beta'] * (self.total_delta - self.risk_state[coin]['netDelta'])
-        marginal_risk = np.abs(globalDelta/mid + size)-np.abs(globalDelta/mid)
-
-        # if not enough margin, hold it# TODO: this may be slow, and depends on orders anyway
-        #if self.margin_calculator.margin_cost(coin, mid, size, self.usd_balance) > self.margin_headroom:
-        #    await asyncio.sleep(60) # TODO: I don't know how to stop/restart a thread..
-        #    self.myLogger.info('margin {} too small for order size {}'.format(size*mid, self.margin_headroom))
-        #    return None
+        marginal_risk = np.abs(globalDelta/mid + original_size)-np.abs(globalDelta/mid)
 
         # if increases risk, go passive. logique de comment on place les ordres.
         # tu regardes le prix et le risk et tu decides comment tu places les ordres
@@ -1032,12 +1021,14 @@ class myFtx(ccxtpro.ftx):
                         self.exec_parameters[coin][_symbol]['edit_price_depth'] = 0
             # limit order if level is acceptable
             elif current_basket_price < self.exec_parameters[coin]['entry_level']:
+                size = np.sign(original_size) * min([np.abs(original_size), params['slice_size']])
                 edit_price_depth = params['edit_price_depth']
             # hold off if level is bad
             else:
                 return
         # if decrease risk, go aggressive
         else:
+            size =  np.sign(original_size) * min([np.abs(original_size), np.abs(globalDelta/mid)])
             edit_price_depth = params['aggressive_edit_price_depth']
             stop_depth = params['stop_depth']
         self.peg_or_stopout(symbol,size,orderbook,edit_trigger_depth=params['edit_trigger_depth'],edit_price_depth=edit_price_depth,stop_depth=stop_depth)
@@ -1095,7 +1086,7 @@ class myFtx(ccxtpro.ftx):
                         or edit_price_depth <= 0.0:
                     size = self.latest_value(order['clientOrderId'],'remaining')
                     price = sweep_price(orderbook, size)
-                    asyncio.create_task( self.edit_order(symbol, 'limit', order_side, size=size, price = price,
+                    asyncio.create_task( self.edit_order(symbol, 'limit', order_side, size, price = price,
                                                          params={'ioc':True,'comment':'stop'},previous_clientOrderId = order['clientOrderId']))
                 # peg limit order
                 elif order_distance > edit_trigger and (np.abs(edit_price-order['price']) >= priceIncrement):
@@ -1134,10 +1125,10 @@ class myFtx(ccxtpro.ftx):
         # check that there is no inflight on the spread
         if self.pending_new_histories(coin) != []:#TODO: rather incorporate orders_pending_new in risk, rather than block
             if self.pending_new_histories(coin,symbol) != []:
-                self.myLogger.debug('orders {} should not be in flight'.format([order['clientOrderId'] for order in self.pending_new_histories(coin,symbol)[-1]]))
+                self.myLogger.warning('orders {} should not be in flight'.format([order['clientOrderId'] for order in self.pending_new_histories(coin,symbol)[-1]]))
             else:
                 # this happens mostly between pending_new and create_order on the other leg. not a big deal...
-                self.myLogger.debug('orders {} still in flight. holding off {}'.format(
+                self.myLogger.warning('orders {} still in flight. holding off {}'.format(
                     [order['clientOrderId'] for order in self.pending_new_histories(coin)[-1]],symbol))
             await asyncio.sleep(1)
             #await self.reconcile()
