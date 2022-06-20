@@ -1,5 +1,8 @@
+import os
+import time as t
 from utils.ftx_utils import *
 from utils.config_loader import *
+from riskpnl.post_trade import *
 
 class MarginCalculator:
     '''low level class to compute margins
@@ -150,11 +153,12 @@ class MarginCalculator:
         if symbol in self._imfFactor:  # --> derivative
             (im_fut, mm_fut) = self.futureMargins({symbol: {'weight': size * mid, 'mark': mid}})
             return -im_fut[symbol]
-        elif symbol in self._collateralWeight:  # --> coin
-            (collateral, im_short, mm_short) = self.spotMargins({symbol: {'weight': size * mid, 'mark': mid}})
+        elif symbol.replace('/USD','') in self._collateralWeight:  # --> coin
+            coin = symbol.replace('/USD','')
+            (collateral, im_short, mm_short) = self.spotMargins({coin: {'weight': size * mid, 'mark': mid}})
             usd_balance_chg = -size * mid
-            return collateral[symbol+'/USD'] + usd_balance_chg + 0.1 * (
-                        min([0, usd_balance + usd_balance_chg]) - min([0, usd_balance])) - im_short[symbol+'/USD']
+            return collateral[symbol] + usd_balance_chg + 0.1 * (
+                        min([0, usd_balance + usd_balance_chg]) - min([0, usd_balance])) - im_short[symbol]
         logging.exception(f'IM impact: {symbol} neither derivative or cash')
 
 class BasisMarginCalculator(MarginCalculator):
@@ -504,7 +508,7 @@ async def diff_portoflio(exchange,future_weights) -> pd.DataFrame():
         balances = pd.DataFrame((await exchange.fetch_balance(params={}))['info']['result'],
                                 dtype=float)  # 'showAvgPrice':True})
         balances = balances[balances['coin'] != 'USD']
-        balances['name'] = balances['coin'] + '/USD'
+        balances['name'] = balances['coin'].apply(lambda c: c+'/USD')
 
         current = positions.append(balances)[['name', 'total']]
         current = current[current['total'] != 0]
@@ -957,26 +961,48 @@ def ftx_portoflio_main(*argv):
 
     argv=list(argv)
     if len(argv) == 0:
-        argv.extend(['risk'])
-    if len(argv) < 3:
-        argv.extend(['ftx', 'SysPerp'])
+        argv.extend(['plex'])
     print(f'running {argv}')
     if argv[0] == 'fromoptimal':
+        if len(argv) < 3:
+            argv.extend(['ftx', 'SysPerp'])
+
         diff=asyncio.run(diff_portoflio_wrapper(argv[1], argv[2]))
         diff=diff.append(pd.Series({'coin': 'total', 'name': 'total'}).append(diff.sum(numeric_only=True)),ignore_index=True)
         print(diff.loc[diff['diffUSD'].apply(np.abs)>1,['coin','name','currentUSD','optimalUSD','diffUSD']].round(decimals=0))
         return diff
+
     elif argv[0] == 'risk':
+        if len(argv) < 3:
+            argv.extend(['ftx', 'SysPerp'])
         while True:
             risk=asyncio.run(live_risk_wrapper(argv[1], argv[2]))
             print(risk.astype(int))
+            t.sleep(5)
         return risk
+
     elif argv[0] == 'plex':
+        if len(argv) < 4:
+            argv.extend(['ftx', 'SysPerp',timedelta(days=1)])
+
         plex= asyncio.run(run_plex_wrapper(*argv[1:]))
         print(plex.astype(int))
         return plex
+
+    elif argv[0] == 'log_reader':
+        if argv[0] == 'log_reader' and len(argv) < 2:
+            argv.extend(['latest'])
+
+        log = log_reader(prefix=argv[1])
+        return log
+
+    elif argv[0] == 'batch_log_reader':
+        log = batch_log_reader()
+        return log
+
     else:
-        print(f'commands fromOptimal,risk,plex')
+        print(f'commands: fromOptimal[ftx, SysPerp]\nrisk[ftx, SysPerp],plex[ftx, SysPerp,timedelta(days=1)],log_reader[latest],batch_log_reader[]')
+
 
 def main(*args):
     ftx_portoflio_main(*sys.argv[1:])

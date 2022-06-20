@@ -23,6 +23,7 @@ import ccxtpro
 # 'aggressive_edit_price_tolerance': in priceIncrement
 # 'edit_trigger_tolerance': chase at edit_trigger_tolerance (in minutes) *  stdev
 # 'stop_tolerance': stop at stop_tolerance (in minutes) *  stdev
+# 'slice_factor': % of mkt volume * edit_price_tolerance. so farther is bigger.
 # 'check_frequency': risk recon frequency. in seconds
 # 'delta_limit': in % of pv
 
@@ -477,14 +478,14 @@ class myFtx(ccxtpro.ftx):
     async def lifecycle_to_json(self,filename = os.path.join(os.sep, "tmp", "tradeexecutor", 'latest_events.json')):
         async with aiofiles.open(filename,mode='w') as file:
             await file.write(json.dumps(self.orders_lifecycle, cls=NpEncoder))
-        shutil.copy2(filename, os.path.join(os.sep, "tmp", "tradeexecutor",
+        shutil.copy2(filename, os.path.join(os.sep, "tmp", "tradeexecutor",'archive',
                                             datetime.utcfromtimestamp(self.exec_parameters['timestamp'] / 1000).replace(
                                                 tzinfo=timezone.utc).strftime("%Y%m%d_%H%M%S") + '_events.json'))
 
     async def risk_reconciliation_to_json(self,filename = os.path.join(os.sep, "tmp", "tradeexecutor", 'latest_risk_reconciliations.json')):
         async with aiofiles.open(filename,mode='w') as file:
             await file.write(json.dumps(self.risk_reconciliations, cls=NpEncoder))
-        shutil.copy2(filename, os.path.join(os.sep, "tmp", "tradeexecutor", datetime.utcfromtimestamp(self.exec_parameters['timestamp']/1000).replace(tzinfo=timezone.utc).strftime("%Y%m%d_%H%M%S")+'_risk_reconciliations.json'))
+        shutil.copy2(filename, os.path.join(os.sep, "tmp", "tradeexecutor", 'archive', datetime.utcfromtimestamp(self.exec_parameters['timestamp']/1000).replace(tzinfo=timezone.utc).strftime("%Y%m%d_%H%M%S")+'_risk_reconciliations.json'))
 
     #@synchronized
     async def reconcile_fills(self):
@@ -642,7 +643,7 @@ class myFtx(ccxtpro.ftx):
                       file,
                       cls=NpEncoder)
         shutil.copy2(os.path.join(os.sep, "tmp", "tradeexecutor", 'latest_request.json'),
-                     os.path.join(os.sep, "tmp", "tradeexecutor",
+                     os.path.join(os.sep, "tmp", "tradeexecutor",'archive',
                                   datetime.utcfromtimestamp(self.exec_parameters['timestamp'] / 1000).replace(
                                       tzinfo=timezone.utc).strftime(
                                       "%Y%m%d_%H%M%S") + '_request.json'))
@@ -708,7 +709,11 @@ class myFtx(ccxtpro.ftx):
                 self.exec_parameters[coin][symbol]['stop_depth'] = stdev * np.sqrt(self.parameters['stop_tolerance']) * scaler
                 # slice_size
                 minProvideSize = self.exec_parameters[coin][symbol]['sizeIncrement']
-                margin_share = self.margin_headroom / len(self.running_symbols) / self.mid(symbol)
+                cost = - self.margin_calculator.margin_cost(symbol,
+                                                          self.mid(symbol),
+                                                          self.exec_parameters[coin][symbol]['diff'],
+                                                          self.usd_balance) / self.mid(symbol)
+                margin_share = self.margin_headroom / len(self.running_symbols) / cost
                 volume_share = self.parameters['slice_factor'] * self.parameters['edit_price_tolerance'] * \
                                data['volume'].mean()
                 self.exec_parameters[coin][symbol]['slice_size'] = max(
@@ -1100,7 +1105,7 @@ class myFtx(ccxtpro.ftx):
         # raise exception if it cannot create order
         ### see error_hierarchy in DerivativeArbitrage/venv/Lib/site-packages/ccxt/base/errors.py
         except ccxt.InsufficientFunds as e: # is ExchangeError
-            cost = self.margin_calculator.margin_cost(coin, mid, size, self.usd_balance)
+            cost = self.margin_calculator.margin_cost(symbol, mid, size, self.usd_balance)
             self.myLogger.warning(f'marginal cost {cost}, vs margin_headroom {self.margin_headroom} and calculated_IM {self.calculated_IM}')
         except ccxt.InvalidOrder as e: # is ExchangeError
             if "Order not found" in str(e):
@@ -1160,12 +1165,14 @@ class myFtx(ccxtpro.ftx):
                 if isinstance(e,ccxt.InsufficientFunds):
                     risks = await safe_gather([self.fetch_balance(), self.fetch_positions()])
                     await self.update_margin_data(*risks)
-                    cost = self.margin_calculator.margin_cost(coin, self.mid(symbol),
-                                                              amount * (1 if side == 'buy' else -1), self.usd_balance)
+                    cost = self.margin_calculator.margin_cost(symbol,
+                                                              self.mid(symbol),
+                                                              amount * (1 if side == 'buy' else -1),
+                                                              self.usd_balance)
                     self.myLogger.warning(
                         f'marginal cost {cost}, vs margin_headroom {self.margin_headroom} and calculated_IM {self.calculated_IM}')
-                    self.exec_parameters[coin][symbol]['slice_size'] = max([self.exec_parameters[coin][symbol]['slice_size']/1.1,
-                                                                            self.exec_parameters[coin][symbol]['sizeIncrement']])
+                    #self.exec_parameters[coin][symbol]['slice_size'] = max([self.exec_parameters[coin][symbol]['slice_size']/1.1,
+                    #                                                        self.exec_parameters[coin][symbol]['sizeIncrement']])
                 elif isinstance(e,ccxt.RateLimitExceeded):
                     throttle = 200.0
                     self.myLogger.warning(f'{str(e)}: waiting {throttle} ms)')
@@ -1313,7 +1320,7 @@ def ftx_ws_spread_main(*argv):
         argv.extend(['sysperp'])      # Means run the sysperp strategy
 
     if len(argv) < 3:
-        argv.extend(['ftx', 'debug']) # SysPerp and debug are subaccounts
+        argv.extend(['ftx', 'SysPerp']) # SysPerp and debug are subaccounts
 
     if argv[0] in ['sysperp', 'flatten', 'unwind', 'spread']:
 
@@ -1328,7 +1335,7 @@ def ftx_ws_spread_main(*argv):
 
             if isinstance(execution_status, myFtx.DoneDeal):
                 # Wait for 5 minutes and start over
-                t.sleep(60 * 2)
+                t.sleep(60 * 5)
 
             elif isinstance(execution_status, myFtx.TimeBudgetExpired):
                 # Force flattens until it returns FILLED
