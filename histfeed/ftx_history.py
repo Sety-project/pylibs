@@ -350,7 +350,7 @@ async def fetch_trades_history(symbol,
     data['square'] = data['size'] * data['price']*data['price']
     data['count'] = 1
 
-    data['time']=data['time'].apply(lambda t: dateutil.parser.isoparse(t).replace(tzinfo=None))
+    data['time']=data['time'].apply(lambda t: dateutil.parser.isoparse(t).replace(tzinfo=timezone.utc))
     data.set_index('time',inplace=True)
 
     vwap=data[['size','volume','square','count']].resample(frequency).sum()
