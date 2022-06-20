@@ -31,28 +31,22 @@ async def refresh_universe(exchange, universe_filter):
     ''' futures need to be enriched first before this can run '''
 
     logger = logging.getLogger(LOGGER_NAME)
-    universe = configLoader.get_bases(universe_filter)
+
     dir_name = configLoader.get_mktdata_folder_for_exchange(exchange.describe()['id'])
     universe_params = configLoader.get_universe_params()
 
-    if universe:
+    try:
+        universe = configLoader.get_bases(universe_filter)
         return universe
-    else:
+    except FileNotFoundError as e:
         futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=False)).set_index('name')
         markets = await exchange.fetch_markets()
 
         universe_start = datetime(2021, 12, 1)
-        universe_end = datetime(2022, 6, 1)
+        universe_end = datetime(year=datetime.now().year, month=datetime.now().month, day=datetime.now().day) - timedelta(days=1)
         borrow_decile = 0.5
 
         screening_params = universe_params["screening"]
-
-        #type_allowed=['perpetual']
-        # screening_params=pd.DataFrame(
-        #     index=['future_volume_threshold','spot_volume_threshold','borrow_volume_threshold','open_interest_threshold'],
-        #     data={'max':[5e4,5e4,-1,5e4],# important that sets are decreasing  :(
-        #           'wide':[1e5,1e5,2e5,5e6],# to run say 1M after leverage
-        #           'institutional':[5e6,5e6,-1,1e7]})# instiutionals borrow OTC
 
         # qualitative screening
         futures = futures[
@@ -60,8 +54,7 @@ async def refresh_universe(exchange, universe_filter):
                         & (futures.apply(lambda f: float(find_spot_ticker(markets, f, 'ask')), axis=1) > 0.0)]
         futures = await enricher(exchange,futures,holding_period=timedelta(days=2),equity=1e6)
 
-        # volume screening
-        # await build_history(futures,exchange) --> Assumes History is up to date
+        # volume screening --> Assumes History is up to date
         hy_history = await get_history(dir_name, futures, start_or_nb_hours=universe_start, end=universe_end)
         futures = market_capacity(futures, hy_history, universe_filter_window=hy_history[universe_start:universe_end].index)
 
@@ -74,31 +67,29 @@ async def refresh_universe(exchange, universe_filter):
                                     & (futures['future_volume_avg'] > screening_params[tier]['future_volume_threshold'])
                                     & (futures['openInterestUsd'] > screening_params[tier]['open_interest_threshold'])]
             dict_population = population.to_dict(orient='index')
-            dict_population = {k : v | {"tier": tier} for k, v in dict_population.items()}
-            new_universe = new_universe | dict_population
-            # print(new_universe)
+            dict_population = {k : tier for k, v in dict_population.items()}
+            # new_universe = new_universe | dict_population
+            for el in dict_population:
+                if not new_universe.get(el, None):
+                    new_universe[el] = {"tier": [dict_population[el]]}
+                else:
+                    new_universe[el]["tier"].append(dict_population[el])
 
-        # with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
-        #     for c in screening_params:# important that wide is first :( c is among [max, wide, institutional]
-        #         population = futures.loc[
-        #             (futures['borrow_volume_decile'] > screening_params.loc['borrow_volume_threshold',c])
-        #             & (futures['spot_volume_avg'] > screening_params.loc['spot_volume_threshold',c])
-        #             & (futures['future_volume_avg'] > screening_params.loc['future_volume_threshold',c])
-        #             & (futures['openInterestUsd'] > screening_params.loc['open_interest_threshold',c])]
-        #         population.to_excel(writer, sheet_name=c)
-
-        # Need to persist the statistics of the refresh run in new_universe dict
+        # Persist the statistics of the refreshed run
         universe_params['run_date'] = datetime.today()
         universe_params['universe_start'] = universe_start
         universe_params['universe_end'] = universe_end
         universe_params['borrow_decile'] = borrow_decile
 
         # Persist new params... should live in a logger file
-        # configLoader.persist_universe_params(new_params)
+        configLoader.persist_universe_params(universe_params)
+
+        # Persist new refreshed universe
+        configLoader.persist_universe(new_universe)
 
         logger.info("Successfully refreshed universe")
-
-        return new_universe
+        universe = configLoader.get_bases(universe_filter)
+        return universe
 
 # runs optimization * [time, params]
 async def perp_vs_cash(

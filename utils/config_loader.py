@@ -120,7 +120,7 @@ class configLoader():
 
         if bases_filter != 'max':
             res = [symbol_name for symbol_name in configLoader._universe
-                   if configLoader._universe[symbol_name]["tier"] == bases_filter]
+                   if bases_filter in configLoader._universe[symbol_name]["tier"]]
         else:
             # Need all records, only if filter is max
             res = list(configLoader._universe.keys())
@@ -162,6 +162,15 @@ class configLoader():
     def persist_universe_params(new_params):
         try:
             with open(os.path.join(configLoader._config_folder_path, configLoader._universe_params_filename), "w") as outfile:
-                json.dump(new_params, outfile)
+                json.dump(new_params, outfile, ensure_ascii=False, indent=4, default=str)
         except FileNotFoundError:
             raise FileNotFoundError(f"Cannot write file {os.path.join(configLoader._config_folder_path, configLoader._universe_params_filename)}")
+
+    # PERSIST params
+    @staticmethod
+    def persist_universe(new_universe):
+        try:
+            with open(os.path.join(configLoader._config_folder_path, configLoader._universe_filename), "w") as outfile:
+                json.dump(new_universe, outfile, ensure_ascii=False, indent=4, default=str)
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Cannot write file {os.path.join(configLoader._config_folder_path, configLoader._universe_filename)}")
