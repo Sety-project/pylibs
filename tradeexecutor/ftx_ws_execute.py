@@ -1256,6 +1256,7 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
         exchange.verbose = False
         exchange.headers = {'FTX-SUBACCOUNT': argv[2]}
         exchange.authenticate()
+        await exchange.cancel_all_orders()
         await exchange.load_markets()
 
         # Cancel all legacy orders (if any) before starting new batch
