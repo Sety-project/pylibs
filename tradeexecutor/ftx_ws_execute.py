@@ -1258,6 +1258,9 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
         exchange.authenticate()
         await exchange.load_markets()
 
+        # Cancel all legacy orders (if any) before starting new batch
+        await exchange.cancel_all_orders()
+
         if argv[0]=='sysperp':
             future_weights = configLoader.get_current_weights()
             target_portfolio = await diff_portoflio(exchange, future_weights)  # still a Dataframe
@@ -1323,7 +1326,7 @@ def ftx_ws_spread_main(*argv):
     argv = list(argv)
 
     if len(argv) == 0:
-        argv.extend(['sysperp'])      # Means run the sysperp strategy
+        argv.extend(['sysperp'])        # Means run the sysperp strategy
 
     if len(argv) < 3:
         argv.extend(['ftx', 'SysPerp']) # SysPerp and debug are subaccounts
@@ -1335,6 +1338,7 @@ def ftx_ws_spread_main(*argv):
         while True:
 
             execution_status = asyncio.run(ftx_ws_spread_main_wrapper(*argv)) # --> I am filled or I timed out and I have flattened position
+            print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")}  EXIT with execution_status={execution_status}')
 
             if not isinstance(execution_status, myFtx.NothingToDo):
                 log_reader()
@@ -1342,11 +1346,16 @@ def ftx_ws_spread_main(*argv):
             if isinstance(execution_status, myFtx.DoneDeal):
                 # Wait for 5 minutes and start over
                 t.sleep(60 * 5)
+                print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")}  ALLDONE --> SLEEPING for 5 minutes...')
 
             elif isinstance(execution_status, myFtx.TimeBudgetExpired):
                 # Force flattens until it returns FILLED
                 while not isinstance(execution_status, myFtx.DoneDeal):
                     execution_status = asyncio.run(ftx_ws_spread_main_wrapper(*(['flatten']+argv[1:])))
+                    print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")}  TIMEOUT --> FLATTEN UNTIL FINISHED')
+
+            else:
+                print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")}  UNCAUGHT --> EXCEPTION NOT CAUGHT')
 
     else:
         logging.info(f'commands: sysperp [ftx][debug], flatten [ftx][debug],unwind [ftx][debug], spread [ftx][debug][coin][cash in usd]')
