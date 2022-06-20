@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 # This program is dedicated to the public domain under the CC0 license.
 
-from ftx_history import *
-from portoflio_optimizer import *
-from ftx_portfolio import *
-from ftx_ws_execute import *
+from histfeed.ftx_history import *
+from pfoptimizer.portoflio_optimizer import *
+from riskpnl.ftx_portfolio import *
+from tradeexecutor.ftx_ws_execute import *
 #import dataframe_image as dfi
 """
 Pronoia_Bot to reply to Telegram messages with all ftx basis
@@ -53,12 +53,11 @@ def echo(update, context):
         split_message = update.effective_message.text.lower().split()
         whitelist = ['daviidarr','Stephan']
         if not update.effective_message.chat['first_name'] in whitelist:
-            update.message.reply_text("https://arxiv.org/pdf/1904.05234.pdf")
             update.message.reply_text("Hey " + update.effective_message.chat['first_name'] + ": my code is so slow you have time to read that")
             log=pd.DataFrame({'first_name':[update.effective_message.chat['first_name']],
                               'date':[str(update.effective_message['date'])],
                               'message':[update.effective_message['text']]})
-            log.to_excel("Runtime/logs/Pronoia_Bot/chathistory.xlsx")
+            log.to_excel(os.path.join(os.sep, "tmp", "ux", 'chathistory.xlsx'))
 
         if split_message[0] == 'hist':
             argv = ['build']+split_message[1:]
@@ -80,7 +79,7 @@ def echo(update, context):
         else:
             raise Exception('unknown command, type /help')
 
-        filename = "Runtime/logs/Pronoia_Bot/telegram_file.xlsx"
+        filename = os.path.join(os.sep, "tmp", "ux", 'telegram_file.xlsx')
         data.to_excel(filename)
         with open(filename, "rb") as file:
             update.message.bot.sendDocument(update.message['chat']['id'], document=file)
