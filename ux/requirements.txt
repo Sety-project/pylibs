@@ -1,1 +1,3 @@
 python-telegram-bot
+matplotlib
+cufflinks # For Jupyter only

@@ -10,4 +10,3 @@ pandas
 pyarrow
 s3fs
 openpyxl
-cufflinks # For Jupyter only
