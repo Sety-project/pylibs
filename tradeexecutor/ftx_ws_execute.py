@@ -1015,6 +1015,7 @@ class myFtx(ccxtpro.ftx):
             # mkt order if target reached.
             if current_basket_price + 2 * np.abs(params['diff']) * params['takerVsMakerFee']< self.exec_parameters[coin]['rush_level']:
                 # (np.abs(netDelta+size)-np.abs(netDelta))/np.abs(size)*params['edit_price_depth'] # equate: profit if done ~ marginal risk * stdev
+                size = np.sign(original_size) * min([np.abs(original_size), params['slice_size']])
                 edit_price_depth = 0
                 for _symbol in self.exec_parameters[coin]:
                     if _symbol in self.markets:
@@ -1028,7 +1029,7 @@ class myFtx(ccxtpro.ftx):
                 return
         # if decrease risk, go aggressive
         else:
-            size =  np.sign(original_size) * min([np.abs(original_size), np.abs(globalDelta/mid)])
+            size = np.sign(original_size) * min([np.abs(original_size), np.abs(globalDelta/mid)])
             edit_price_depth = params['aggressive_edit_price_depth']
             stop_depth = params['stop_depth']
         self.peg_or_stopout(symbol,size,orderbook,edit_trigger_depth=params['edit_trigger_depth'],edit_price_depth=edit_price_depth,stop_depth=stop_depth)

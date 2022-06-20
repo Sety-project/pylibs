@@ -122,10 +122,10 @@ def log_reader(dirname = os.path.join(os.sep, 'tmp', 'tradeexecutor'),date = 'la
             'data':data,
             'history':history,
             'risk_recon':risk}
-    log_time = datetime.strptime(date, "%Y%m%d_%H%M%S")
+
     return {key: pd.concat([value,pd.Series(name='log_time',
                                             index=value.index,
-                                            data=log_time)],axis=1)
+                                            data=start_time)],axis=1)
             for key,value in result.items()}
 
 def log_writer(path,tab_dict):
