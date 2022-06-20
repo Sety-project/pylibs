@@ -473,14 +473,28 @@ class myFtx(ccxtpro.ftx):
     async def lifecycle_to_json(self,filename = os.path.join(os.sep, "tmp", "tradeexecutor", 'latest_events.json')):
         async with aiofiles.open(filename,mode='w') as file:
             await file.write(json.dumps(self.orders_lifecycle, cls=NpEncoder))
-        shutil.copy2(filename, os.path.join(os.sep, "tmp", "tradeexecutor",'archive',
+
+        # File copy
+        # Mkdir log repos if does not exist
+        log_path = os.path.join(os.sep, 'tmp', 'tradeexecutor', 'archive')
+        if not os.path.exists(log_path):
+            os.umask(0)
+            os.makedirs(log_path, mode=0o777)
+        shutil.copy2(filename, os.path.join(log_path,
                                             datetime.utcfromtimestamp(self.exec_parameters['timestamp'] / 1000).replace(
                                                 tzinfo=timezone.utc).strftime("%Y%m%d_%H%M%S") + '_events.json'))
 
     async def risk_reconciliation_to_json(self,filename = os.path.join(os.sep, "tmp", "tradeexecutor", 'latest_risk_reconciliations.json')):
         async with aiofiles.open(filename,mode='w') as file:
             await file.write(json.dumps(self.risk_reconciliations, cls=NpEncoder))
-        shutil.copy2(filename, os.path.join(os.sep, "tmp", "tradeexecutor", 'archive', datetime.utcfromtimestamp(self.exec_parameters['timestamp']/1000).replace(tzinfo=timezone.utc).strftime("%Y%m%d_%H%M%S")+'_risk_reconciliations.json'))
+
+        # File copy
+        # Mkdir log repos if does not exist
+        log_path = os.path.join(os.sep, 'tmp', 'tradeexecutor', 'archive')
+        if not os.path.exists(log_path):
+            os.umask(0)
+            os.makedirs(log_path, mode=0o777)
+        shutil.copy2(filename, os.path.join(log_path, datetime.utcfromtimestamp(self.exec_parameters['timestamp']/1000).replace(tzinfo=timezone.utc).strftime("%Y%m%d_%H%M%S")+'_risk_reconciliations.json'))
 
     #@synchronized
     async def reconcile_fills(self):
