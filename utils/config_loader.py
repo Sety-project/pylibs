@@ -153,8 +153,9 @@ class configLoader():
     @staticmethod
     def get_current_weights():   # Excel file
         ''' Used by trade_executor to access current_weights '''
-        if configLoader._current_weights is None:  # Read only once, lazy
-            configLoader.set_current_weights()
+        # Read each time the method is called.
+        # Mandatory to catch the weights refreshed every hour
+        configLoader.set_current_weights()
         return configLoader._current_weights
 
     # PERSIST params
