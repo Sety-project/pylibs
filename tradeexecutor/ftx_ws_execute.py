@@ -6,7 +6,7 @@ from utils.config_loader import *
 from utils.ccxt_utilities import *
 from histfeed.ftx_history import fetch_trades_history
 from riskpnl.ftx_portfolio import diff_portoflio, MarginCalculator
-from riskpnl.post_trade import log_reader
+from riskpnl.post_trade import batch_summarize_exec_logs
 
 import ccxtpro
 
@@ -164,7 +164,7 @@ class myFtx(ccxtpro.ftx):
         market = self.market(symbol)
         return self.decimal_to_precision(amount, ccxt.ROUND, market['precision']['amount'], self.precisionMode, self.paddingMode)
 
-    def build_logging(self):
+    def build_logging(self, date):
         '''3 handlers: >=debug, ==info and >=warning'''
         class MyFilter(object):
             '''this is to restrict info logger to info only'''
@@ -179,14 +179,15 @@ class myFtx(ccxtpro.ftx):
         if not os.path.exists(log_path):
             os.umask(0)
             os.makedirs(log_path, mode=0o777)
+        date_string = date.replace(tzinfo=timezone.utc).strftime("%Y%m%d_%H%M%S")
 
         # logs
-        handler_warning = logging.FileHandler(os.path.join(log_path, 'oms_warning.log'), mode='w')
+        handler_warning = logging.FileHandler(os.path.join(log_path, date_string,'oms_warning.log'), mode='w')
         handler_warning.setLevel(logging.WARNING)
         handler_warning.setFormatter(logging.Formatter(f"%(levelname)s: %(message)s"))
         self.myLogger.addHandler(handler_warning)
 
-        handler_info = logging.FileHandler(os.path.join(log_path, 'exec_info.log'), mode='w')
+        handler_info = logging.FileHandler(os.path.join(log_path, date_string,'exec_info.log'), mode='w')
         handler_info.setLevel(logging.INFO)
         handler_info.setFormatter(logging.Formatter(f"%(levelname)s: %(message)s"))
         handler_info.addFilter(MyFilter(logging.INFO))
@@ -1338,11 +1339,11 @@ def ftx_ws_spread_main(*argv):
 
         while True:
 
-            execution_status = asyncio.run(ftx_ws_spread_main_wrapper(*argv)) # --> I am filled or I timed out and I have flattened position
+            execution_status = None#asyncio.run(ftx_ws_spread_main_wrapper(*argv)) # --> I am filled or I timed out and I have flattened position
             print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")}  EXIT with execution_status={execution_status}')
 
             if not isinstance(execution_status, myFtx.NothingToDo):
-                log_reader()
+                exec_logs = batch_summarize_exec_logs()
 
             if isinstance(execution_status, myFtx.DoneDeal):
                 # Wait for 5 minutes and start over

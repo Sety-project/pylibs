@@ -993,11 +993,11 @@ def ftx_portoflio_main(*argv):
         if argv[0] == 'log_reader' and len(argv) < 2:
             argv.extend(['latest'])
 
-        log = log_reader(prefix=argv[1])
+        log = summarize_exec_logs(prefix=argv[1])
         return log
 
     elif argv[0] == 'batch_log_reader':
-        log = batch_log_reader()
+        log = batch_summarize_exec_logs()
         return log
 
     else:

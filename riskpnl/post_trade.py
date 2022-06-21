@@ -11,46 +11,64 @@ from utils.async_utils import safe_gather
 from utils.ccxt_utilities import open_exchange
 from histfeed.ftx_history import fetch_trades_history
 
-def batch_log_reader(dirname = os.path.join(os.sep, 'tmp', 'tradeexecutor','archive')):
+def batch_summarize_exec_logs(dirname = os.path.join(os.sep, 'tmp', 'tradeexecutor', 'archive'),
+                              start=datetime(1970,1,1),
+                              end=datetime.now(),
+                              add_history_context = False):
     '''pd.concat all logs
     add log_time column
     move unreadable log sets to unreadable subdir'''
-    tab_list = ['by_symbol', 'request', 'by_clientOrderId', 'data', 'history', 'risk_recon']
+    tab_list = ['request','parameters','by_symbol', 'by_clientOrderId', 'data', 'risk_recon'] + (['history'] if add_history_context else [])
     all_files = os.listdir(dirname)
-    all_dates = set([f[:15] for f in all_files])
+
+    all_dates = []
+    date_string_length = len(end.strftime("%Y%m%d_%H%M%S"))
+    for f in all_files:
+        try:
+            date_from_path = datetime.strptime(f[:date_string_length],"%Y%m%d_%H%M%S")
+            if start <= date_from_path <= end:
+                all_dates += [f[:date_string_length]]
+        except Exception as e:# always outside (start,end)
+            continue
 
     try:
-        compiled_logs = pd.read_excel(dirname.replace('/archive','/all_exec.xlsx'),sheet_name=tab_list,index_col='index')
-        existing_dates = set(compiled_logs['request']['log_time'].apply(lambda d: d.strftime("%Y-%m-%d-%H-%M")))
+        compiled_logs = {tab: pd.read_csv(os.path.join(os.sep,dirname,f'all_{tab}.csv'),index_col='index') for tab in tab_list}
+        existing_dates = set(compiled_logs['request']['log_time'].apply(lambda d: d.strftime("%Y%m%d_%H%M%S").replace(tzinfo=timezone.utc)))
     except Exception as e:
         compiled_logs = {tab:pd.DataFrame() for tab in tab_list}
         existing_dates = set()
 
-    for date in all_dates - existing_dates:
+    for date in set(all_dates) - existing_dates:
         try:
-            new_logs = log_reader(dirname, date)
+            new_logs = summarize_exec_logs(os.path.join(os.sep,dirname,date),add_history_context)
             for key in tab_list:
+                new_logs[key]['log_time'] = datetime.strptime(date,"%Y%m%d_%H%M%S").replace(tzinfo=timezone.utc)
                 compiled_logs[key] = pd.concat([compiled_logs[key],new_logs[key]],axis=0)
         except Exception as e:
+            unreadable_path = os.path.join(os.sep, 'tmp', 'tradeexecutor', 'archive', 'unreadable')
+            if not os.path.exists(unreadable_path):
+                os.umask(0)
+                os.makedirs(unreadable_path, mode=0o777)
+
             for suffix in ['events', 'request', 'risk_reconciliations']:
                 filename = os.path.join(os.sep, dirname,f'{date}_{suffix}.json')
                 if os.path.isfile(filename):
-                    shutil.move(filename, os.path.join(os.sep, dirname,'unreadable',f'{date}_{suffix}.json'))
-    log_writer(os.path.join(os.sep, 'tmp', 'tradeexecutor','all'),compiled_logs)
+                    shutil.move(filename, os.path.join(os.sep , unreadable_path,f'{date}_{suffix}.json'))
 
-def log_reader(dirname = os.path.join(os.sep, 'tmp', 'tradeexecutor'),date = 'latest'):
-    '''compile json logs, or move to 'unreadable' directory if it fails'''
-    path = os.path.join(os.sep,dirname,date)
-    with open(f'{path}_events.json', 'r') as file:
+    for key,value in compiled_logs.items():
+        value.to_csv(os.path.join(os.sep, 'tmp', 'tradeexecutor',f'all_{key}.csv'))
+
+def summarize_exec_logs(path_date, add_history_context = False):
+    '''compile json logs into DataFrame summaries'''
+    with open(f'{path_date}_events.json', 'r') as file:
         d = json.load(file)
         events = {clientId: pd.DataFrame(data).reset_index() for clientId, data in d.items()}
-    with open(f'{path}_risk_reconciliations.json', 'r') as file:
+    with open(f'{path_date}_risk_reconciliations.json', 'r') as file:
         d = json.load(file)
         risk = pd.DataFrame(d).reset_index()
-    with open(f'{path}_request.json', 'r') as file:
+    with open(f'{path_date}_request.json', 'r') as file:
         d = json.load(file)
-        parameters = d.pop('parameters')
-        start_time = parameters['inception_time']
+        parameters = pd.Series(d.pop('parameters')).reset_index()
         request = pd.DataFrame(d).T.reset_index()
 
     data = pd.concat([data for clientOrderId, data in events.items()], axis=0)
@@ -86,55 +104,45 @@ def log_reader(dirname = os.path.join(os.sep, 'tmp', 'tradeexecutor'),date = 'la
         for symbol,symbol_data in by_clientOrderId.groupby(by='symbol')}).T.reset_index()
 
     fill_history = []
-    for symbol, symbol_data in by_clientOrderId.groupby(by='symbol'):
-        df = symbol_data[['slice_ended','filled','price']]
-        df['slice_ended'] = df['slice_ended'].apply(lambda t:datetime.utcfromtimestamp(t/1000).replace(tzinfo=timezone.utc))
-        df.set_index('slice_ended', inplace=True)
-        df = df.rename(columns={
-            'price':symbol.replace('/USD:USD','-PERP').replace('/USD','')+'/fills/price',
-            'filled':symbol.replace('/USD:USD','-PERP').replace('/USD','')+'/fills/filled'})
-        fill_history += [df]
+    if add_history_context:
+        for symbol, symbol_data in by_clientOrderId.groupby(by='symbol'):
+            df = symbol_data[['slice_ended','filled','price']]
+            df['slice_ended'] = df['slice_ended'].apply(lambda t:datetime.utcfromtimestamp(t/1000).replace(tzinfo=timezone.utc))
+            df.set_index('slice_ended', inplace=True)
+            df = df.rename(columns={
+                'price':symbol.replace('/USD:USD','-PERP').replace('/USD','')+'_fills_price',
+                'filled':symbol.replace('/USD:USD','-PERP').replace('/USD','')+'_fills_filled'})
+            fill_history += [df]
 
-    async def build_vwap(start, end):
-        date_start = datetime.utcfromtimestamp(start / 1000).replace(tzinfo=timezone.utc)
-        date_end = datetime.utcfromtimestamp(end / 1000).replace(tzinfo=timezone.utc)
-        exchange = await open_exchange('ftx','SysPerp')
-        await exchange.load_markets()
-        trades_history_list = await safe_gather([fetch_trades_history(
-            exchange.market(symbol)['id'], exchange, date_start,date_end, frequency=timedelta(seconds=1))
-            for symbol in by_symbol['index'].values])
-        await exchange.close()
+        async def build_vwap(start, end):
+            date_start = datetime.utcfromtimestamp(start / 1000).replace(tzinfo=timezone.utc)
+            date_end = datetime.utcfromtimestamp(end / 1000).replace(tzinfo=timezone.utc)
+            exchange = await open_exchange('ftx','SysPerp') # subaccount doesn't matter
+            await exchange.load_markets()
+            trades_history_list = await safe_gather([fetch_trades_history(
+                exchange.market(symbol)['id'], exchange, date_start,date_end, frequency=timedelta(seconds=1))
+                for symbol in by_symbol['index'].values])
+            await exchange.close()
 
-        return pd.concat([x['vwap'] for x in trades_history_list], axis=1,join='outer')
+            return pd.concat([x['vwap'] for x in trades_history_list], axis=1,join='outer')
 
-    history = pd.concat([asyncio.run(build_vwap(start_time,by_clientOrderId['slice_ended'].max()))]+fill_history).sort_index()
+        start_time = request['inception_time']
+        history = pd.concat([asyncio.run(build_vwap(start_time,by_clientOrderId['slice_ended'].max()))]+fill_history).sort_index()
 
-    by_symbol = by_symbol.append(pd.Series({'index': 'average', 'fee': (by_symbol['filledUSD'].apply(
-        np.abs) * by_symbol['fee']).sum() / by_symbol['filledUSD'].apply(
-        np.abs).sum()}), ignore_index=True)
-    by_symbol = by_symbol.append(pd.Series({'index': 'average', 'slippage_bps': (by_symbol['filledUSD'].apply(
-        np.abs) * by_symbol['slippage_bps']).sum() / by_symbol['filledUSD'].apply(
-        np.abs).sum()}), ignore_index=True)
+    by_symbol = pd.concat([by_symbol,
+                           pd.DataFrame({'index': ['average'],
+                                         'fee': [(by_symbol['filledUSD'].apply(np.abs) * by_symbol['fee']).sum() /
+                                                 by_symbol['filledUSD'].apply(np.abs).sum()],
+                                         'slippage_bps': [
+                                             (by_symbol['filledUSD'].apply(np.abs) * by_symbol['slippage_bps']).sum() /
+                                             by_symbol['filledUSD'].apply(np.abs).sum()]})],
+                          axis=0,ignore_index=True)
 
-    result = {'by_symbol':by_symbol,
-            'request':request,
-            'by_clientOrderId':by_clientOrderId,
-            'data':data,
-            'history':history,
-            'risk_recon':risk}
-
-    return {key: pd.concat([value,pd.Series(name='log_time',
-                                            index=value.index,
-                                            data=start_time)],axis=1)
-            for key,value in result.items()}
-
-def log_writer(path,tab_dict):
-    with pd.ExcelWriter(f'{path}_exec.xlsx', engine='xlsxwriter', mode="w") as writer:
-        for tab_name,df in tab_dict.items():
-            try:
-                df.index = [t.replace(tzinfo=None) for t in df.index]
-            except Exception as e:
-                pass
-
-            if not df.empty:
-                df.to_excel(writer, sheet_name=tab_name)
+    return {
+        'request':request,
+        'parameters':parameters,
+        'by_symbol':by_symbol,
+        'by_clientOrderId':by_clientOrderId,
+        'data':data,
+        'risk_recon':risk
+    } | ({'history':history} if add_history_context else {})
