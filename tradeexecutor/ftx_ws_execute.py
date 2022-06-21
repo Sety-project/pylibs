@@ -182,12 +182,12 @@ class myFtx(ccxtpro.ftx):
         date_string = date.replace(tzinfo=timezone.utc).strftime("%Y%m%d_%H%M%S")
 
         # logs
-        handler_warning = logging.FileHandler(os.path.join(log_path, date_string,'oms_warning.log'), mode='w')
+        handler_warning = logging.FileHandler(os.path.join(log_path, f'{date_string}_oms_warning.log'), mode='w')
         handler_warning.setLevel(logging.WARNING)
         handler_warning.setFormatter(logging.Formatter(f"%(levelname)s: %(message)s"))
         self.myLogger.addHandler(handler_warning)
 
-        handler_info = logging.FileHandler(os.path.join(log_path, date_string,'exec_info.log'), mode='w')
+        handler_info = logging.FileHandler(os.path.join(log_path, f'{date_string}_exec_info.log'), mode='w')
         handler_info.setLevel(logging.INFO)
         handler_info.setFormatter(logging.Formatter(f"%(levelname)s: %(message)s"))
         handler_info.addFilter(MyFilter(logging.INFO))
@@ -554,8 +554,6 @@ class myFtx(ccxtpro.ftx):
         '''initialize all state and does some filtering (weeds out slow underlyings; should be in strategy)
             target_sub_portfolios = {coin:{rush_level_increment,
             symbol1:{'spot_price','diff','target'}]}]'''
-        self.build_logging()
-
         self.limit.delta_limit = self.parameters['delta_limit']
 
         frequency = timedelta(minutes=1)
@@ -566,6 +564,8 @@ class myFtx(ccxtpro.ftx):
             self.market(symbol)['id'], self, start, end, frequency=frequency)
             for symbol in weights['name']],semaphore=self.rest_semaphor)
         trading_fees = await self.fetch_trading_fees()
+
+        self.build_logging(end)
 
         weights['diffCoin'] = weights['optimalCoin'] - weights['currentCoin']
         weights['diffUSD'] = weights['diffCoin'] * weights['spot_price']
@@ -1111,9 +1111,6 @@ class myFtx(ccxtpro.ftx):
 
         # raise exception if it cannot create order
         ### see error_hierarchy in DerivativeArbitrage/venv/Lib/site-packages/ccxt/base/errors.py
-        except ccxt.InsufficientFunds as e: # is ExchangeError
-            cost = self.margin_calculator.margin_cost(symbol, mid, size, self.usd_balance)
-            self.myLogger.warning(f'marginal cost {cost}, vs margin_headroom {self.margin_headroom} and calculated_IM {self.calculated_IM}')
         except ccxt.InvalidOrder as e: # is ExchangeError
             if "Order not found" in str(e):
                 self.myLogger.warning(str(e) + str(order))
@@ -1257,7 +1254,7 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
         exchange.verbose = False
         exchange.headers = {'FTX-SUBACCOUNT': argv[2]}
         exchange.authenticate()
-        await exchange.cancel_all_orders()
+
         await exchange.load_markets()
 
         # Cancel all legacy orders (if any) before starting new batch
@@ -1339,7 +1336,7 @@ def ftx_ws_spread_main(*argv):
 
         while True:
 
-            execution_status = None#asyncio.run(ftx_ws_spread_main_wrapper(*argv)) # --> I am filled or I timed out and I have flattened position
+            execution_status = asyncio.run(ftx_ws_spread_main_wrapper(*argv)) # --> I am filled or I timed out and I have flattened position
             print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")}  EXIT with execution_status={execution_status}')
 
             if not isinstance(execution_status, myFtx.NothingToDo):
