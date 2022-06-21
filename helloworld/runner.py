@@ -1,5 +1,6 @@
 #!/bin/python3
-from pytests.helloworld.runner2 import *
+from helloworld.runner2 import greetMe
+import time
 
 def main(*args):
     ''' This is the main runner to feed persist the data on a set of days for a given config
@@ -7,7 +8,10 @@ def main(*args):
     '''
 
     args = list(*args)
-
     arg_count = len(args)
-    print("Hello Vic  from my docker image !")
+    sleep_time = 30
+
+    print("Hello from my docker image !")
+    print(f"Sleeping for {sleep_time}s...")
+    time.sleep(sleep_time)
     greetMe()
