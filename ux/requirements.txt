@@ -3,3 +3,4 @@ matplotlib
 cufflinks # For Jupyter only
 docker
 tabulate
+prettytable
