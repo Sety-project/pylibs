@@ -112,7 +112,7 @@ def add_row_to_table(filtered_cn_list):
         startedAt_duration_in_s = int((datetime.datetime.now() - container_startedAt).total_seconds())
 
         container_createdAt = _format_time(createdAt_duration_in_s, "")
-        container_runningFrom = _format_time(startedAt_duration_in_s, "Status : Up")
+        container_runningFrom = _format_time(startedAt_duration_in_s, "")
         container_status = container.attrs['State']['Status']
         container_name = container.name
 
