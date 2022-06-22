@@ -6,6 +6,8 @@ from histfeed.ftx_history import *
 from pfoptimizer.portoflio_optimizer import *
 from riskpnl.ftx_portfolio import *
 from tradeexecutor.ftx_ws_execute import *
+from histfeed.ftx_history import ftx_history_main_wrapper
+
 #import dataframe_image as dfi
 """
 Pronoia_Bot to reply to Telegram messages with all ftx basis
@@ -51,7 +53,7 @@ def help(update, context):
 def echo(update, context):
     try:
         split_message = update.effective_message.text.lower().split()
-        whitelist = ['daviidarr','Stephan']
+        whitelist = ['daviidarr','Stephan', 'Victor']
         if not update.effective_message.chat['first_name'] in whitelist:
             update.message.reply_text("Hey " + update.effective_message.chat['first_name'] + ": my code is so slow you have time to read that")
             log=pd.DataFrame({'first_name':[update.effective_message.chat['first_name']],
@@ -61,7 +63,7 @@ def echo(update, context):
 
         if split_message[0] == 'hist':
             argv = ['build']+split_message[1:]
-            data = ftx_history_main(*argv)
+            data = ftx_history_main_wrapper(*argv)
         elif split_message[0] == 'basis':
             type='future' if len(split_message)<2 else str(split_message[1])
             depth=1000 if len(split_message)<3 else int(split_message[2])
@@ -71,7 +73,8 @@ def echo(update, context):
             if split_message[0] in ['risk','plex','fromoptimal']:
                 data = ftx_portoflio_main(*split_message)
             elif split_message[0] == 'sysperp':
-                data = strategies_main(*split_message)
+                #data = strategies_main(*split_message)
+                pass
             elif split_message[0] == 'execute':
                 data = ftx_ws_spread_main(*split_message)[0]
             else:
