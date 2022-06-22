@@ -9,3 +9,4 @@ dist/
 utils/api_encrypt/
 .idea/
 .venv*/
+.run
