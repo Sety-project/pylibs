@@ -7,6 +7,8 @@ from pfoptimizer.portoflio_optimizer import *
 from riskpnl.ftx_portfolio import *
 from tradeexecutor.ftx_ws_execute import *
 from histfeed.ftx_history import ftx_history_main_wrapper
+from ux.docker_access import *
+from telegram import ParseMode
 
 #import dataframe_image as dfi
 """
@@ -52,6 +54,7 @@ def help(update, context):
 
 def echo(update, context):
     try:
+        user_msg = update.effective_message.text.lower()
         split_message = update.effective_message.text.lower().split()
         whitelist = ['daviidarr','Stephan', 'Victor']
         if not update.effective_message.chat['first_name'] in whitelist:
@@ -70,22 +73,39 @@ def echo(update, context):
             exchange_name = 'ftx' if len(split_message) < 4 else split_message[3]
             data = enricher_wrapper(exchange_name,type,depth)
         elif update.effective_message.chat['first_name'] in whitelist:
-            if split_message[0] in ['risk','plex','fromoptimal']:
-                data = ftx_portoflio_main(*split_message)
-            elif split_message[0] == 'sysperp':
-                #data = strategies_main(*split_message)
-                pass
-            elif split_message[0] == 'execute':
-                data = ftx_ws_spread_main(*split_message)[0]
-            else:
-                raise Exception('unknown command, type /help')
-        else:
-            raise Exception('unknown command, type /help')
+            pass
+            # if split_message[0] in ['risk','plex','fromoptimal']:
+            #     # Call pyrun with the good params
+            #     data = ftx_portoflio_main(*split_message)
+            # elif split_message[0] == 'sysperp':
+            #     # Call pyrun with the good params
+            #     #data = strategies_main(*split_message)
+            #     pass
+            # elif split_message[0] == 'execute':
+            #     # Call pyrun with the good params
+            #     data = ftx_ws_spread_main(*split_message)[0]
+            # else:
+            #     raise Exception('unknown command, type /help')
+            # else:
+            #     raise Exception('unknown command, type /help')
 
-        filename = os.path.join(os.sep, "tmp", "ux", 'telegram_file.xlsx')
-        data.to_excel(filename)
-        with open(filename, "rb") as file:
-            update.message.bot.sendDocument(update.message['chat']['id'], document=file)
+            # filename = os.path.join(os.sep, "tmp", "ux", 'telegram_file.xlsx')
+            # data.to_excel(filename)
+            # with open(filename, "rb") as file:
+            #     update.message.bot.sendDocument(update.message['chat']['id'], document=file)
+
+            # msg = update.message.reply_text(docker_status(split_message[0]))
+            # msg = docker_status(split_message[0])
+            # msg = [[1,2,3,234,542,12],[1,2,3,234,542,12],[1,2,3,234,542,12],[1,2,3,234,542,12]]
+            # update.message.reply_text(f'<pre>{msg}</pre>', parse_mode=ParseMode.HTML)
+            # if len(msg) > 4096:
+            #     for x in range(0, len(msg), 4096):
+            #         update.message.reply_text(msg[x:x + 4096], parse_mode=ParseMode.HTML)
+            # else:
+            #     update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+            if user_msg == 'docker ps':
+                response = docker_ps()
+                update.message.reply_text(f'<pre>{response}</pre>', parse_mode=ParseMode.HTML)
 
     except Exception as e:
         update.message.reply_text(str(e))
