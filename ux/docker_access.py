@@ -9,6 +9,14 @@ from tabulate import tabulate
 # pyrun tradeexecutor flatten sysperp -> should stop tradeexecutor ungracefully first
 # pyrun tradeexecutor unwind sysperp -> should stop tradeexecutor ungracefully first
 
+def docker_stop_prod():
+    '''
+        # Should stop the running instance of tradeexecutor
+        # And start a tradeexecutor with flatten or unwind (ask user)
+    '''
+    # TODO
+    pass
+
 def docker_stop(image):
     '''
         Function to stop all containers running from a given image
