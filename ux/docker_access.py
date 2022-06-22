@@ -74,6 +74,9 @@ def docker_status(image):
             return f'image {image} is stopped'
 
 def docker_ps():
+    '''
+        @returns: container states as a prettytable (HTML compatible)
+    '''
     client = docker.from_env()
     img_list_on_host = [img.tags[0] for img in client.images.list() if img.tags]
     img_list = [((img.split("/"))[1]).split(":")[0] for img in img_list_on_host if len(img.split("/")) > 1]
@@ -127,5 +130,6 @@ def add_row_to_table(filtered_cn_list):
 
 def main(*args):
     args = list(*args)
-    docker_state = docker_status(args[1])
-    print(docker_state)
+    # docker_state = docker_status(args)
+    container_states = docker_ps
+    print(container_states)

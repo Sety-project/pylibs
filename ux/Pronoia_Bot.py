@@ -2,13 +2,15 @@
 # -*- coding: utf-8 -*-
 # This program is dedicated to the public domain under the CC0 license.
 
-from histfeed.ftx_history import *
-from pfoptimizer.portoflio_optimizer import *
-from riskpnl.ftx_portfolio import *
-from tradeexecutor.ftx_ws_execute import *
-from histfeed.ftx_history import ftx_history_main_wrapper
+#from histfeed.ftx_history import *
+#from pfoptimizer.portoflio_optimizer import *
+#from riskpnl.ftx_portfolio import *
+#from tradeexecutor.ftx_ws_execute import *
+#from histfeed.ftx_history import ftx_history_main_wrapper
+import logging
 from ux.docker_access import *
 from telegram import ParseMode
+import pandas as pd
 
 #import dataframe_image as dfi
 """
@@ -66,12 +68,12 @@ def echo(update, context):
 
         if split_message[0] == 'hist':
             argv = ['build']+split_message[1:]
-            data = ftx_history_main_wrapper(*argv)
+            #data = ftx_history_main_wrapper(*argv)
         elif split_message[0] == 'basis':
             type='future' if len(split_message)<2 else str(split_message[1])
             depth=1000 if len(split_message)<3 else int(split_message[2])
             exchange_name = 'ftx' if len(split_message) < 4 else split_message[3]
-            data = enricher_wrapper(exchange_name,type,depth)
+            #data = enricher_wrapper(exchange_name,type,depth)
         elif update.effective_message.chat['first_name'] in whitelist:
             pass
             # if split_message[0] in ['risk','plex','fromoptimal']:
@@ -114,7 +116,7 @@ def error(update, context):
     """Log Errors caused by Updates."""
     logger.warning('Update "%s" caused error "%s"', update, context.error)
 
-def main():
+def main(*args):
     """Start the bot."""
     # Create the Updater and pass it your bot's token.
     # Make sure to set use_context=True to use the new context based callbacks
@@ -142,5 +144,5 @@ def main():
     # start_polling() is non-blocking and will stop the bot gracefully.
     updater.idle()
 
-if __name__ == '__main__':
-    main()
+# if __name__ == '__main__':
+#     main(*args)
