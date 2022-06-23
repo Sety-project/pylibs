@@ -939,9 +939,10 @@ async def run_plex(exchange,dirname='/tmp/pnl/'):
     end_time = datetime.now() - timedelta(seconds=14)  # 16s is to avoid looking into the future to fetch prices
     end_portfolio = await fetch_portfolio(exchange, end_time) # it's live in fact, end_time just there for records
 
-    pnl=await compute_plex(exchange,start=start_time,end=end_time,start_portfolio=start_portfolio,end_portfolio=end_portfolio)#margintest
-    summary=pnl[pnl['time']>start_time+timedelta(milliseconds= 10)].pivot_table(values='USDamt',
-                            index='underlying',
+    pnl = await compute_plex(exchange,start=start_time,end=end_time,start_portfolio=start_portfolio,end_portfolio=end_portfolio)#margintest
+    pnl.sort_values(by='time',ascending=True,inplace=True)
+    summary=pnl[pnl['time']>datetime(2022,6,21,19)].pivot_table(values='USDamt',
+                            index='time',
                             columns='event_type',
                             aggfunc='sum',
                             margins=True,
@@ -982,10 +983,10 @@ def ftx_portoflio_main(*argv):
         return risk
 
     elif argv[0] == 'plex':
-        if len(argv) < 4:
-            argv.extend(['ftx', 'SysPerp',timedelta(days=1)])
+        if len(argv) < 3:
+            argv.extend(['ftx', 'SysPerp'])
 
-        plex= asyncio.run(run_plex_wrapper(*argv[1:]))
+        plex = asyncio.run(run_plex_wrapper(*argv[1:]))
         print(plex.astype(int))
         return plex
 

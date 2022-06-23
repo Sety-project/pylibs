@@ -96,7 +96,7 @@ def summarize_exec_logs(path_date, add_history_context = False):
 
     by_symbol = pd.DataFrame({
         symbol:
-            {'time_to_execute':symbol_data['slice_started'].max()-symbol_data['slice_started'].min(),
+            {'time_to_execute':symbol_data['slice_ended'].max()-symbol_data['slice_started'].min(),
              'slippage_bps': 10000*np.sign(symbol_data['filled'].sum())*((symbol_data['filled']*symbol_data['price']).sum()/symbol_data['filled'].sum()/request.loc[request['index']==symbol,'spot'].squeeze()-1),
              'fee': 10000*symbol_data['fee'].sum()/np.abs((symbol_data['filled']*symbol_data['price']).sum()),
              'filledUSD': (symbol_data['filled']*symbol_data['price']).sum()
@@ -133,6 +133,7 @@ def summarize_exec_logs(path_date, add_history_context = False):
                            pd.DataFrame({'index': ['average'],
                                          'fee': [(by_symbol['filledUSD'].apply(np.abs) * by_symbol['fee']).sum() /
                                                  by_symbol['filledUSD'].apply(np.abs).sum()],
+                                         'filledUSD': by_symbol['filledUSD'].apply(np.abs).sum(),
                                          'slippage_bps': [
                                              (by_symbol['filledUSD'].apply(np.abs) * by_symbol['slippage_bps']).sum() /
                                              by_symbol['filledUSD'].apply(np.abs).sum()]})],
