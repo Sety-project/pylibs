@@ -295,8 +295,8 @@ async def perp_vs_cash(
             cash_flow['bucket'] = 'spot_vs_index(rel chg)'
             pnl_list += [cash_flow]
 
-            RealizedCarry = row['previousWeight'] * (row['funding'] + (row['borrow'] if row['previousWeight'] < 0 else -row['quote_borrow']))
-            cash_flow = (RealizedCarry*(time-prev_time).total_seconds()/365.25/24/3600).reset_index().rename(columns={'RealizedCarry':'amtUSD'})
+            RealizedCarry = row['previousWeight'] * (row['funding'] + row.apply(lambda x: x['borrow'] if x['previousWeight'] < 0 else -x['quote_borrow'],axis=1))
+            cash_flow = (RealizedCarry*(time-prev_time).total_seconds()/365.25/24/3600).reset_index().rename(columns={0:'amtUSD'})
             cash_flow['end_time'] = time
             cash_flow['bucket'] = 'carry(USD not annualized)'
             cash_flow.loc[cash_flow['name']=='total','amtUSD'] = cash_flow['amtUSD'].sum()
@@ -369,7 +369,7 @@ async def strategy_wrapper(**kwargs):
         slippage_override=slippage_override,
         backtest_start=kwargs['backtest_start'],
         backtest_end=kwargs['backtest_end'],
-        optional_params=['verbose'])
+        optional_params=['verbose'] if __debug__ else [])
         for equity in kwargs['equity']
         for concentration_limit in kwargs['concentration_limit']
         for mktshare_limit in kwargs['mktshare_limit']
@@ -513,7 +513,7 @@ def main(*args):
                                         signal_horizon=sig_horizon,
                                         holding_period=hol_period,
                                         slippage_override=slippage_override,
-                                        backtest_start= datetime(2022,6,20,19),
+                                        backtest_start= datetime.now().replace(minute=0, second=0, microsecond=0)-timedelta(days=90),# live start was datetime(2022,6,21,19),
                                         backtest_end = datetime.now().replace(minute=0, second=0, microsecond=0)-timedelta(hours=1)))
         logger.info("pfoptimizer terminated successfully...")
         return pd.DataFrame()

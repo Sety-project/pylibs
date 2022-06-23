@@ -189,11 +189,11 @@ def update(futures,point_in_time,history,equity,
 
     ####### expectations. This is what optimizer uses.
 
-    # carry expectation at point_in_time. no need for -1h to avoid foresight, as funding is a TWAP
-    futures['intLongCarry']  = intLongCarry.loc[point_in_time]
-    futures['intShortCarry'] = intShortCarry.loc[point_in_time]
-    futures['intBorrow'] = intBorrow.loc[point_in_time]
-    futures['intUSDborrow']  = intUSDborrow.loc[point_in_time]
+    # carry expectation at point_in_time. funding is known (it's a TWAP) but borrow isn't --> use shift
+    futures['intLongCarry'] = intLongCarry.shift(periods=1).loc[point_in_time]
+    futures['intShortCarry'] = intShortCarry.shift(periods=1).loc[point_in_time]
+    futures['intBorrow'] = intBorrow.shift(periods=1).loc[point_in_time]
+    futures['intUSDborrow']  = intUSDborrow.shift(periods=1).loc[point_in_time]
     futures['E_long']        = E_long.loc[point_in_time]
     futures['E_short']       = E_short.loc[point_in_time]
     futures['E_intBorrow'] = E_intBorrow.loc[point_in_time]
@@ -448,6 +448,7 @@ def cash_carry_optimizer(exchange, futures,
                          'fun': lambda x: excess_margin.shockedEstimate(x)['totalIM']}
     stopout_constraint = {'type': 'ineq',
                           'fun': lambda x: excess_margin.shockedEstimate(x)['totalMM']}
+    constraints = [margin_constraint, stopout_constraint]
 
     # bounds: mktshare and concentration
     # scipy understands [0,0] bounds
@@ -502,7 +503,12 @@ def cash_carry_optimizer(exchange, futures,
             pd.concat(progress_display, axis=1).to_csv(pfoptimizer_filename)
         return []
 
-    xt = previous_weights.values if 'warm_start' in optional_params else previous_weights.values * 0
+    if 'warm_start' in optional_params:
+        xt = previous_weights.values
+    else:
+        # tiny position in the right direaction
+        xt = futures['direction'].values
+
     if 'frozen_weights' in futures.columns:
         res=futures[['frozen_weights']].rename({'frozen_weights':'x'}).to_numpy()
     else:
@@ -511,23 +517,25 @@ def cash_carry_optimizer(exchange, futures,
         # - previous weights
         #x0=equity*np.array(E_intCarry)/sum(E_intCarry)
         #x1 = x0/np.max([1-margin_constraint['fun'](x0)/equity,1-stopout_constraint['fun'](x0)/equity])
-        x1 = xt*0
+        x1 = xt
         if 'verbose' in optional_params:
             callbackF(x1, progress_display, 'initial')
 
         res = opt.minimize(objective, x1, method='SLSQP', jac=objective_jac,
-                                      constraints = [margin_constraint,stopout_constraint], # ,loss_tolerance_constraint
+                                      constraints = constraints, # ,loss_tolerance_constraint
                                       bounds = bounds,
                                       callback= (lambda x:callbackF(x,progress_display,'interim' if 'verbose' in optional_params else None)) ,
-                                      options = {'ftol': 1e-2, 'disp': False, 'finite_diff_rel_step' : finite_diff_rel_step, 'maxiter': 20*len(x1)})
+                                      options = {'ftol': 1e-2, 'disp': False, 'finite_diff_rel_step' : finite_diff_rel_step, 'maxiter': 50*len(x1)})
         if not res['success']:
             # cheeky ignore that exception:
             # https://github.com/scipy/scipy/issues/3056 -> SLSQP is unfomfortable with numerical jacobian when solution is on bounds, but in fact does converge.
+            violation = - min([constraint['fun'](res['x']) for constraint in constraints])
             if res['message'] == 'Iteration limit reached':
-                logging.warning(res['message'])
+                logging.warning(res['message'] + '...but SLSQP is unfomfortable with numerical jacobian when solution is on bounds, but in fact does converge.')
+            elif res['message'] == "Inequality constraints incompatible" and violation < equity / 100:
+                logging.warning(res['message'] + '...but only by' + str(violation))
             else:
                 logging.error(res['message'])
-                raise Exception(res['message'])
 
     callbackF(res['x'], progress_display,res['message'])
 
