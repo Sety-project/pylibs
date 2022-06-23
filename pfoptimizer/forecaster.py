@@ -2,7 +2,9 @@
 import pandas as pd
 import sys
 import asyncio
+import datetime
 from histfeed.ftx_history import ftx_history_main_wrapper
+from utils.config_loader import configLoader
 
 from scipy.interpolate import CubicSpline
 from scipy.fft import fft, fftfreq
@@ -13,11 +15,17 @@ from sklearn.pipeline import FeatureUnion,Pipeline
 from sklearn.model_selection import TimeSeriesSplit,cross_val_score,cross_val_predict,train_test_split
 from sklearn.linear_model import ElasticNet,LinearRegression,LassoCV
 
+class ZscoreTransformer(StandardScaler):
+    def get_feature_names_out(self):
+        return 'zscore'
+    def fit_transform(self, X, y=None, **fit_params):
+        return pd.DataFrame(index=X.index,
+                            data=super(StandardScaler,self).fit_transform(X.values.reshape(-1,1), y, **fit_params))
 class LaplaceTransformer(FunctionTransformer):
     '''horizon_windows in hours'''
     def __init__(self,horizon_windows: list[int]):
-        super().__init__(lambda x: [x.ewm(times = x.index,halflife=timedelta(hours=horizon_window)).mean()
-                          for horizon_window in horizon_windows])
+        super().__init__(lambda x: pd.DataFrame({horizon_window:x.ewm(times = x.index,halflife = datetime.timedelta(hours=horizon_window)).mean()
+                          for horizon_window in horizon_windows}).dropna())
         self._horizon_windows = horizon_windows
     def get_feature_names_out(self):
         return [f'ewma{horizon_window}' for horizon_window in self._horizon_windows]
@@ -32,8 +40,8 @@ class ShiftTransformer(FunctionTransformer):
         return f'shift{self._horizon_window}'
 class FwdMeanTransformer(TransformedTargetRegressor):
     def __init__(self,horizon_windows):
-        super().__init__(lambda x: {horizon_window:x.shift(periods=-horizon_window-1).rolling(horizon_window).mean()
-                                    for horizon_window in horizon_windows})
+        super().__init__(lambda x: pd.DataFrame({horizon_window:x.shift(periods=-horizon_window-1).rolling(horizon_window).mean()
+                                    for horizon_window in horizon_windows}))
         self._horizon_windows = horizon_windows
     def get_feature_names_out(self):
         return [f'fwdmean{horizon_window}' for horizon_window in self._horizon_windows]
@@ -51,6 +59,14 @@ class ColumnNames:
     def borrow(coin): return f'{coin}_rate_borrow'
 
 def ftx_forecaster_main(*args):
+    # Try loading the config
+    try:
+        universe = configLoader.get_bases('max')
+    except FileNotFoundError as err:
+        print(str(err))
+        print("---> Terminating...")
+        sys.exit(1)
+
     coins = ['ETH','AAVE']
     features = ['funding','price', 'borrowOI', 'volume', 'borrow']
     label_func = lambda coin,data: data[getattr(ColumnNames,'funding')(coin)]-data[getattr(ColumnNames,'borrow')(coin)]
@@ -59,11 +75,11 @@ def ftx_forecaster_main(*args):
 
     n_split = 7
     models = [LassoCV()]
-    pca_n = None
+    pca_n = .99
 
     # grab data
     #main(['build', coins, 'ftx', 1000])
-    data = asyncio.run(ftx_history_main_wrapper('ftx', 'get', 'wide', 1000))
+    data = asyncio.run(ftx_history_main_wrapper('ftx', 'get', universe, 1000))
 
     features_list = []
     labels_list = {holding_window:[] for holding_window in holding_windows}
@@ -74,18 +90,19 @@ def ftx_forecaster_main(*args):
             feature_data = data[getattr(ColumnNames,feature)(coin)]
 
             if feature in ['funding','borrow']:
+                incrementer = 'passthrough'
                 standardizer = 'passthrough'
+            elif feature == 'price':
+                incrementer = FunctionTransformer(func = lambda data: data.diff() / data)
+                standardizer = ZscoreTransformer()
             else:
-                if feature == 'price':
-                    rel_diff = FunctionTransformer(func = lambda data: data.diff() / data)
-                    standardizer = Pipeline([('rel_diff',rel_diff),
-                                             ('standardizer', StandardScaler)])
-                else:
-                    standardizer = StandardScaler()
+                incrementer = 'passthrough'
+                standardizer = ZscoreTransformer()
 
             laplace_expansion = LaplaceTransformer(horizon_windows)
             dimensionality_reduction = PCA(n_components=pca_n,svd_solver='full') if pca_n else 'passthrough'
-            data_list += [Pipeline([('standardizer', standardizer),
+            data_list += [Pipeline([('incrementer', incrementer),
+                                    ('standardizer', standardizer),
                                     ('laplace_expansion', laplace_expansion),
                                     ('dimensionality_reduction', dimensionality_reduction)])
                               .fit_transform(feature_data)]
