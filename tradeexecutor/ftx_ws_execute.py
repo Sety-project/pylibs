@@ -1072,26 +1072,29 @@ class myFtx(ccxtpro.ftx):
                         self.exec_parameters[coin][_symbol]['edit_price_depth'] = 0
             # sliced limit order if level is acceptable
             elif current_basket_price < self.exec_parameters[coin]['entry_level']:
-                size = side * min([np.abs(original_size), params['slice_size']])
+                size = params['slice_size']
                 edit_price_depth = params['edit_price_depth']
                 stop_depth = None
             # hold off if level is bad
             else:
-                return
+                size = params['slice_size']
+                edit_price_depth = max([0,(current_basket_price - self.exec_parameters[coin]['entry_level'])/params['diff']])
+                stop_depth = None
         # if decrease risk
         else:
             # if risk excessive, rush to bring to limit
             if np.abs(globalDelta) > self.limit.delta_limit:
-                size = side * (np.abs(globalDelta) - self.limit.delta_limit)
+                size = (np.abs(globalDelta) - self.limit.delta_limit)/mid
                 edit_price_depth = 0
                 stop_depth = None
             # else zero out delta somewhat aggressively
             else:
-                size = - globalDelta/mid
+                size = -globalDelta/mid
                 edit_price_depth = params['aggressive_edit_price_depth']
                 stop_depth = params['stop_depth']
 
-        self.peg_or_stopout(symbol,size,orderbook,edit_trigger_depth=params['edit_trigger_depth'],edit_price_depth=edit_price_depth,stop_depth=stop_depth)
+        capped_size = side * min([np.abs(original_size), np.abs(size)])
+        self.peg_or_stopout(symbol,capped_size,orderbook,edit_trigger_depth=params['edit_trigger_depth'],edit_price_depth=edit_price_depth,stop_depth=stop_depth)
 
     def peg_or_stopout(self,symbol,size,orderbook,edit_trigger_depth,edit_price_depth,stop_depth=None):
         # il a tous les niveaux qu'il faut faire
@@ -1219,6 +1222,7 @@ class myFtx(ccxtpro.ftx):
                 # if not enough margin, recursive call on a reduced amount
                 if isinstance(e,ccxt.InsufficientFunds):
                     margin_adjusted_amount = 0.9 * min([amount,np.abs(await self.adjust_order_for_margin(amount * (1 if side == 'buy' else -1), symbol))])
+                    #assert margin_adjusted_amount<amount,"margin_adjusted_amount<amount"
                     self.myLogger.warning(f'{clientOrderId} adjusted from {amount*self.mid(symbol)} to {margin_adjusted_amount*self.mid(symbol)}')
                     if margin_adjusted_amount > self.exec_parameters[coin][symbol]['sizeIncrement']:
                         params['comment'] = params['comment'] + '/' + 'margin_adjusted'
@@ -1393,7 +1397,7 @@ def ftx_ws_spread_main(*argv):
             # TODO: read complex orders
             target_portfolio = asyncio.run(get_exec_request(*argv, subaccount=argv[2]))
             max_nb_coins = configLoader.get_executor_params()['max_nb_coins']
-            for i in range(int(len(target_portfolio['coin'].unique())/max_nb_coins)):
+            for i in range(1+int(len(target_portfolio['coin'].unique())/max_nb_coins)):
                 execution_status = asyncio.run(ftx_ws_spread_main_wrapper(target_portfolio,subaccount=argv[2])) # --> I am filled or I timed out and I have flattened position
                 print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")} tranche {i}  EXIT with execution_status={execution_status}')
 
