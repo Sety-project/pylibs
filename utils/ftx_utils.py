@@ -52,19 +52,37 @@ def mkt_at_size(order_book, side, target_depth=10000.):
 
     return {'mid':mid,'side':interpolator[target_depth],'slippage':interpolator[target_depth]/mid-1.0}
 
-def sweep_price(order_book, size):
+def sweep_price_atomic(order_book, sizeUSD):
     ''' fast version of mkt_at_size for use in executer
     slippage of a mkt order: https://www.sciencedirect.com/science/article/pii/S0378426620303022'''
-    book_on_side = order_book['bids' if size < 0 else 'asks']
+    book_on_side = order_book['bids' if sizeUSD < 0 else 'asks']
     depth = 0
-    previous_side = book_on_side[0][0]
     for pair in book_on_side:
         depth += pair[0] * pair[1]
-        if depth > size:
+        if depth > sizeUSD:
             break
-        previous_side = pair[0]
 
-    return previous_side
+    return pair[0]
+
+def sweep_price_depths(order_book, depths):
+    ''' depths = a ('bids','asks') dict of (USD) depths list
+    returns a ('bids','asks') dict of (depths,sweep price) tuple list '''
+    sweep_prices = {'bids':[],'asks':[]}
+    for side in ['bids','asks']:
+        book_on_side = order_book[side]
+        depths_on_side = depths[side]
+        n_on_side = len(depths_on_side)
+        depth_idx = 0
+        depth = 0
+        for pair in book_on_side:
+            depth += pair[0] * pair[1]
+            if depth > depths_on_side[depth_idx]:
+                sweep_prices[side] += [(depths_on_side[depth_idx],pair[0])]
+                if depth_idx < n_on_side:
+                    depth_idx += 1
+                else:
+                    break
+    return sweep_prices
 
 async def mkt_speed(exchange, symbol, target_depth=10000):
     '''

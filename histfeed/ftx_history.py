@@ -110,12 +110,12 @@ async def correct_history(futures,exchange,hy_history,dirname=configLoader.get_m
 
     coroutines = []
     for _, f in futures[futures['type'] == 'perpetual'].iterrows():
-        parquet_name = os.path.join(dirname, f.name, '_funding.parquet')
+        parquet_name = os.path.join(dirname, f'{f.name}_funding.parquet')
         coroutines.append(async_to_parquet(hy_history[[exchange.market(f['symbol'])['id'] + '_rate_funding']],parquet_name))
         logger.info("Adding coroutine for correction " + parquet_name)
 
     for _, f in futures.iterrows():
-        parquet_name = os.path.join(dirname, f.name, '_futures.parquet')
+        parquet_name = os.path.join(dirname, f'{f.name}_futures.parquet')
         future_id = exchange.market(f['symbol'])['id']
         column_names = [future_id + '_mark_' + field for field in ['o', 'h', 'l', 'c', 'volume']]
         column_names += [future_id + '_indexes_' + field for field in ['o', 'h', 'l', 'c', 'volume']]
@@ -124,13 +124,13 @@ async def correct_history(futures,exchange,hy_history,dirname=configLoader.get_m
         logger.info("Adding coroutine for correction " + parquet_name)
 
     for f in futures['underlying'].unique():
-        parquet_name = os.path.join(dirname, f, '_price.parquet')
+        parquet_name = os.path.join(dirname, f'{f}_price.parquet')
         column_names = [f + '_price_' + field for field in ['o', 'h', 'l', 'c', 'volume']]
         coroutines.append(async_to_parquet(hy_history[column_names], parquet_name))
         logger.info("Adding coroutine for correction " + parquet_name)
 
     for f in list(futures.loc[futures['spotMargin'] == True, 'underlying'].unique()) + ['USD']:
-        parquet_name = os.path.join(dirname, f, '_borrow.parquet')
+        parquet_name = os.path.join(dirname, f'{f}_borrow.parquet')
         column_names = [f + '_rate_' + field for field in ['borrow', 'size']]
         coroutines.append(async_to_parquet(hy_history[column_names], parquet_name))
         logger.info("Adding coroutine for correction " + parquet_name)
@@ -138,7 +138,7 @@ async def correct_history(futures,exchange,hy_history,dirname=configLoader.get_m
     # run all coroutines
     await safe_gather(coroutines)
 
-### only perps, only borrow and funding, only hourly
+### only perps, only borrow and funding, only hourly, time is fixing / payment time.
 async def borrow_history(coin,
                          exchange,
                          end=(datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
@@ -165,7 +165,7 @@ async def borrow_history(coin,
 
     if dirname != '': await async_to_parquet(data, os.path.join(dirname, coin + '_borrow.parquet'),mode='a')
 
-######### annualized funding for perps
+######### annualized funding for perps, time is fixing / payment time.
 async def funding_history(future,
                           exchange,
                           start=(datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0))-timedelta(days=30),
@@ -322,8 +322,9 @@ async def fetch_trades_history(symbol,
     ### grab data per batch of 5000, try weekly
     trades=[]
     start_time = start.timestamp()
-    end_time = start_time + 15*60
+    end_time = end.timestamp()
 
+    new_trades = []
     while start_time < end.timestamp():
         new_trades = (await exchange.publicGetMarketsMarketNameTrades(
             {'market_name': symbol, 'start_time': start_time, 'end_time': end_time}
@@ -340,34 +341,44 @@ async def fetch_trades_history(symbol,
         end_time = start_time + 15*60
 
     if len(trades)==0:
-        vwap=pd.DataFrame(columns=['size','volume','count','vwap'])
+        vwap = pd.DataFrame(columns=['size','volume','count','vwap','vwvol','liquidation_intensity'])
         vwap.columns = [symbol.split('/USD')[0] + '_trades_' + column for column in vwap.columns]
-        return {'symbol':exchange.market(symbol)['symbol'],'coin':exchange.market(symbol)['base'],'vwap':vwap}
+        return {'symbol':exchange.market(symbol)['symbol'],
+                'coin':exchange.market(symbol)['base'],
+                'vwap':vwap[symbol.split('/USD')[0] + '_trades_'+'vwap'],
+                'vwvol': vwap[symbol.split('/USD')[0] + '_trades_'+'vwvol'],
+                'volume':vwap[symbol.split('/USD')[0] + '_trades_'+'volume'],
+                'liquidation_intensity':vwap[symbol.split('/USD')[0] + '_trades_'+'liquidation_intensity']}
 
     data = pd.DataFrame(data=trades)
     data[['size','price']] = data[['size','price']].astype(float)
     data['volume'] = data['size'] * data['price']
     data['square'] = data['size'] * data['price']*data['price']
     data['count'] = 1
+    data['liquidation_volume'] = data['size'] * data['price'] * data['liquidation'].apply(lambda flag: 1 if flag else 0)
 
     data['time']=data['time'].apply(lambda t: dateutil.parser.isoparse(t).replace(tzinfo=timezone.utc))
     data.set_index('time',inplace=True)
 
-    vwap=data[['size','volume','square','count']].resample(frequency).sum()
-    vwap['vwap']=vwap['volume']/vwap['size']
-    vwap['vwsp'] = (vwap['square'] / vwap['size']-vwap['vwap']*vwap['vwap']).apply(np.sqrt)
+    vwap = data[['size','volume','square','count','liquidation_volume']].resample(frequency).sum()
+    vwap['vwap'] = vwap['volume']/vwap['size']
+    vwap['vwvol'] = (vwap['square'] / vwap['size']-vwap['vwap']*vwap['vwap']).apply(np.sqrt)
+    vwap['liquidation_intensity'] = vwap['liquidation_volume'] / vwap['volume']
 
     vwap.columns = [symbol.split('/USD')[0] + '_trades_' + column for column in vwap.columns]
     #data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     vwap = vwap[~vwap.index.duplicated()].sort_index().ffill()
 
-    parquet_filename = os.path.join(dirname, symbol.split('/USD')[0] + "_trades.parquet")
-    if dirname != '': vwap.to_parquet(parquet_filename)
+    if dirname != '':
+        parquet_filename = os.path.join(dirname, symbol.split('/USD')[0] + "_trades.parquet")
+        vwap.to_parquet(parquet_filename)
 
     return {'symbol':exchange.market(symbol)['symbol'],
             'coin':exchange.market(symbol)['base'],
             'vwap':vwap[symbol.split('/USD')[0] + '_trades_vwap'],
-            'volume':vwap[symbol.split('/USD')[0] + '_trades_volume']}
+            'vwvol':vwap[symbol.split('/USD')[0] + '_trades_vwvol'],
+            'volume':vwap[symbol.split('/USD')[0] + '_trades_volume'],
+            'liquidation_intensity':vwap[symbol.split('/USD')[0] + '_trades_liquidation_intensity']}
 
 async def ftx_history_main_wrapper(exchange_name, run_type, universe, nb_of_days):
 
@@ -392,6 +403,7 @@ async def ftx_history_main_wrapper(exchange_name, run_type, universe, nb_of_days
         await build_history(futures, exchange, dir_name)
         await exchange.close()
     elif run_type == 'correct':
+        raise Exception('bug. does not correct')
         logger.info("Building history for correct")
         hy_history = await get_history(dir_name, futures, history_start)
         end = datetime.now()-timedelta(days=nb_of_days)
