@@ -566,7 +566,7 @@ def cash_carry_optimizer(exchange, futures,
         summary.loc['USD', 'previousWeight'] = equity - sum(previous_weights.values)
         summary.loc['USD', 'optimalWeight'] = equity-sum(res['x'])
         summary.loc['USD', 'ExpectedCarry'] = np.min([0,equity-sum(res['x'])])* E_intUSDborrow
-        summary.loc['USD', 'RealizedCarry'] = - max([summary['previousWeight'].sum()-equity,0]) * summary['quote_borrow'].mean()
+        summary.loc['USD', 'RealizedCarry'] = min([summary.loc['USD','previousWeight'],0]) * summary['quote_borrow'].mean()
         summary.loc['USD', 'excessIM'] = excess_margin.shockedEstimate(res['x'])['totalIM']-summary['excessIM'].sum()
         summary.loc['USD', 'excessMM'] = excess_margin.shockedEstimate(res['x'])['totalMM']-summary['excessMM'].sum()
         summary.loc['USD', 'transactionCost'] = 0
