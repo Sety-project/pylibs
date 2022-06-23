@@ -153,7 +153,7 @@ async def perp_vs_cash(
 
     # Run a trajectory
     if backtest_start and backtest_end:
-        point_in_time = backtest_start + signal_horizon + holding_period
+        point_in_time = backtest_start
     else:
         point_in_time = now_time.replace(minute=0, second=0, microsecond=0)-timedelta(hours=1)
         backtest_start = point_in_time
@@ -206,9 +206,7 @@ async def perp_vs_cash(
         initial_weight['optimalWeight'] = 0
     previous_weights = initial_weight
 
-    pnl = pd.DataFrame()
     optimized = pd.DataFrame()
-    debug_mode = False #__debug__
     while point_in_time <= backtest_end:
 
         updated = update(filtered, point_in_time, hy_history, equity,
@@ -292,20 +290,21 @@ async def perp_vs_cash(
             cash_flow.loc[cash_flow['name'] == 'total', 'amtUSD'] = cash_flow['amtUSD'].sum()
             pnl_list += [cash_flow]
 
-            cash_flow = (row['previousWeight'] * ((row['spot'] - row['index'])-(prev_row['spot'] - prev_row['index']))/prev_row['spot']).reset_index().rename(columns={0:'amtUSD'})
+            cash_flow = ((row['spot'] - row['index'])-(prev_row['spot'] - prev_row['index'])/prev_row['spot']).reset_index().rename(columns={0:'amtUSD'})
             cash_flow['end_time'] = time
-            cash_flow['bucket'] = 'spot_vs_index'
+            cash_flow['bucket'] = 'spot_vs_index(rel chg)'
             pnl_list += [cash_flow]
 
-            cash_flow = (row['RealizedCarry']*(time-prev_time).total_seconds()/365.25/24/3600).reset_index().rename(columns={'RealizedCarry':'amtUSD'})
+            RealizedCarry = row['previousWeight'] * (row['funding'] + (row['borrow'] if row['previousWeight'] < 0 else -row['quote_borrow']))
+            cash_flow = (RealizedCarry*(time-prev_time).total_seconds()/365.25/24/3600).reset_index().rename(columns={'RealizedCarry':'amtUSD'})
             cash_flow['end_time'] = time
-            cash_flow['bucket'] = 'carry'
+            cash_flow['bucket'] = 'carry(USD not annualized)'
             cash_flow.loc[cash_flow['name']=='total','amtUSD'] = cash_flow['amtUSD'].sum()
             pnl_list += [cash_flow]
 
             cash_flow = (-row['previousWeight'] * ((row['mark'] - row['spot'])-(prev_row['mark'] - prev_row['spot']))/prev_row['spot']).reset_index().rename(columns={0:'amtUSD'})
             cash_flow['end_time'] = time
-            cash_flow['bucket'] = 'IR01'
+            cash_flow['bucket'] = 'IR01(USD)'
             cash_flow.loc[cash_flow['name'] == 'total', 'amtUSD'] = cash_flow['amtUSD'].sum()
             pnl_list += [cash_flow]
 
@@ -514,7 +513,7 @@ def main(*args):
                                         signal_horizon=sig_horizon,
                                         holding_period=hol_period,
                                         slippage_override=slippage_override,
-                                        backtest_start= datetime.now().replace(minute=0, second=0, microsecond=0)-timedelta(hours=70),
+                                        backtest_start= datetime(2022,6,20,19),
                                         backtest_end = datetime.now().replace(minute=0, second=0, microsecond=0)-timedelta(hours=1)))
         logger.info("pfoptimizer terminated successfully...")
         return pd.DataFrame()
