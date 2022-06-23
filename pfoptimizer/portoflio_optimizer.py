@@ -182,7 +182,7 @@ async def perp_vs_cash(
         forecast(
                 exchange, enriched, hy_history,
                 holding_period,  # to convert slippage into rate
-                signal_horizon,filename=log_file
+                signal_horizon,filename= log_file if 'verbose' in optional_params else ''
         )  # historical window for expectations
     updated = update(enriched, point_in_time, hy_history, equity,
                      intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow,
@@ -268,7 +268,7 @@ async def perp_vs_cash(
         parameters.to_csv(f'{pfoptimizer_res_filename}_parameters.csv')
 
         pfoptimizer_res_last_filename = os.path.join(pfoptimizer_path, "current_weights.xlsx")
-        shutil.copy2(pfoptimizer_res_filename, pfoptimizer_res_last_filename)
+        shutil.copy2(f'{pfoptimizer_res_filename}_weights.csv', pfoptimizer_res_last_filename)
 
         display = optimized[['optimalWeight', 'ExpectedCarry', 'transactionCost']]
         totals = display.loc[['USD', 'total']]
@@ -512,8 +512,8 @@ def main(*args):
                                         signal_horizon=sig_horizon,
                                         holding_period=hol_period,
                                         slippage_override=slippage_override,
-                                        backtest_start= datetime(2019,12,1), # datetime.now().replace(minute=0, second=0, microsecond=0)-timedelta(days=2),# live start was datetime(2022,6,21,19),
-                                        backtest_end = datetime.now().replace(minute=0, second=0, microsecond=0)-timedelta(days=1)))
+                                        backtest_start= datetime(2022,6,21,19),#datetime.now().replace(minute=0, second=0, microsecond=0)-timedelta(days=2),# live start was datetime(2022,6,21,19),
+                                        backtest_end = datetime.now().replace(minute=0, second=0, microsecond=0)-timedelta(hours=1)))
         logger.info("pfoptimizer terminated successfully...")
         return pd.DataFrame()
     else:
