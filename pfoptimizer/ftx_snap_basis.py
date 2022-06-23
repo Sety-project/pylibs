@@ -69,6 +69,7 @@ async def enricher(exchange,
                        right_index=True)
     futures['quote_borrow'] = float(borrows.loc['USD', 'borrow'])
     futures['quote_lend'] = float(borrows.loc['USD', 'lend'])
+    futures['spot'] = 0.5*futures.apply(lambda f: float(find_spot_ticker(markets, f, 'ask'))+float(find_spot_ticker(markets, f, 'bid')),axis=1)
     ########### naive basis for all futures
     if not futures[futures['type'] == 'perpetual'].empty:
         list = await safe_gather([exchange.publicGetFuturesFutureNameStats({'future_name': f})
@@ -167,6 +168,8 @@ def update(futures,point_in_time,history,equity,
         lambda f: history.loc[point_in_time, f.name + '_mark_o'],axis=1)
     futures['index'] = futures.apply(
         lambda f: history.loc[point_in_time, f.name + '_indexes_o'],axis=1)
+    futures['spot'] = futures.apply(
+        lambda f: history.loc[point_in_time, f['underlying'] + '_price_o'],axis=1)
     futures.loc[futures['type'] == 'future','expiryTime'] = futures.loc[futures['type'] == 'future'].apply(
         lambda f: history.loc[point_in_time, f.name + '_rate_T'],axis=1)
     futures.loc[futures['type'] == 'future', 'basis_mid'] = futures[futures['type'] == 'future'].apply(
@@ -211,12 +214,8 @@ def update(futures,point_in_time,history,equity,
     futures = futures[(futures['direction']!=0) | (futures.index.isin(previous_weights_index))]
 
     # compute realized=\int(carry) and E[\int(carry)]. We're done with direction so remove the max leverage.
-    futures['intCarry'] = 0
-    futures.loc[futures['direction'] < 0,'intCarry'] = futures.loc[futures['direction'] < 0,'intShortCarry']
-    futures.loc[futures['direction'] > 0,'intCarry'] = futures.loc[futures['direction'] > 0,'intLongCarry']
-    futures['E_intCarry'] = 0
-    futures.loc[futures['direction'] < 0,'E_intCarry'] = futures.loc[futures['direction'] < 0, 'E_short']
-    futures.loc[futures['direction'] > 0,'E_intCarry'] = futures.loc[futures['direction'] > 0,'E_long']
+    futures['intCarry'] = futures.apply(lambda f: f['intShortCarry'] if f['direction'] < 0 else f['intLongCarry'],axis=1)
+    futures['E_intCarry'] = futures.apply(lambda f: f['E_short'] if f['direction'] < 0 else f['E_long'],axis=1)
     # TODO: covar pre-update
     # C_int = integralCarry_t.ewm(times=hy_history.index, halflife=signal_horizon, axis=0).cov().loc[point_in_time]
 
@@ -399,7 +398,7 @@ def cash_carry_optimizer(exchange, futures,
                          concentration_limit,
                          mktshare_limit,
                          equity,# for markovitz
-                         optional_params=[]):             # use external rather than order book
+                         optional_params=[]):  # verbose,warm_start, cost_blind
     # freeze universe, from now on must ensure order is the same
     futures = futures.join(previous_weights_df, how='left', lsuffix='_')
     previous_weights = futures['optimalWeight'].fillna(0.0)
@@ -466,18 +465,21 @@ def cash_carry_optimizer(exchange, futures,
     progress_display=[]
     def callbackF(x, progress_display, print_with_flag=None):
         if print_with_flag:
-            progress_display += [pd.Series({
-                'E_int': np.dot(x, E_intCarry),
-                'usdBorrowRefund': E_intUSDborrow * min([equity, sum(x)]),
-                'tx_cost': + sum([(x - xt)[i] * buy_slippage[i] if (x - xt)[i] > 0
-                                  else (x - xt)[i] * sell_slippage[i] for i in
-                                  range(len(x - xt))]),
-                #TODO: covar pre-update
-                # 'loss_tolerance_constraint': loss_tolerance_constraint['fun'](x),
-                'margin_constraint': margin_constraint['fun'](x),
-                'stopout_constraint': stopout_constraint['fun'](x),
-                'success': print_with_flag
-            }).append(pd.Series(index=futures.index, data=x))]   #used .append
+            progress_display += [pd.concat([
+                pd.Series({
+                    'E_int': np.dot(x, E_intCarry),
+                    'usdBorrowRefund': E_intUSDborrow * min([equity, sum(x)]),
+                    'tx_cost': + sum([(x - xt)[i] * buy_slippage[i] if (x - xt)[i] > 0
+                                      else (x - xt)[i] * sell_slippage[i] for i in
+                                      range(len(x - xt))]),
+                    #TODO: covar pre-update
+                    # 'loss_tolerance_constraint': loss_tolerance_constraint['fun'](x),
+                    'margin_constraint': margin_constraint['fun'](x),
+                    'stopout_constraint': stopout_constraint['fun'](x),
+                    'success': print_with_flag
+                }),
+                pd.Series(index=futures.index, data=x)
+            ])]   #used .append
 
             # progress_display.extend(pd.concat([pd.Series({
             #     'E_int': np.dot(x, E_intCarry),
@@ -496,12 +498,11 @@ def cash_carry_optimizer(exchange, futures,
             if not os.path.exists(pfoptimizer_path):
                 os.umask(0)
                 os.makedirs(pfoptimizer_path, mode=0o777)
-            pfoptimizer_filename = os.path.join(pfoptimizer_path, "paths.xlsx")
-            with pd.ExcelWriter(pfoptimizer_filename, engine='xlsxwriter') as writer:
-                pd.concat(progress_display, axis=1).to_excel(writer, sheet_name='optimPath')
+            pfoptimizer_filename = os.path.join(pfoptimizer_path, "paths.csv")
+            pd.concat(progress_display, axis=1).to_csv(pfoptimizer_filename)
         return []
 
-    xt = previous_weights.values
+    xt = previous_weights.values if 'warm_start' in optional_params else previous_weights.values * 0
     if 'frozen_weights' in futures.columns:
         res=futures[['frozen_weights']].rename({'frozen_weights':'x'}).to_numpy()
     else:
@@ -517,25 +518,33 @@ def cash_carry_optimizer(exchange, futures,
         res = opt.minimize(objective, x1, method='SLSQP', jac=objective_jac,
                                       constraints = [margin_constraint,stopout_constraint], # ,loss_tolerance_constraint
                                       bounds = bounds,
-                                      callback= (lambda x:callbackF(x,progress_display,'interim')) if 'verbose' in optional_params else None,
+                                      callback= (lambda x:callbackF(x,progress_display,'interim' if 'verbose' in optional_params else None)) ,
                                       options = {'ftol': 1e-2, 'disp': False, 'finite_diff_rel_step' : finite_diff_rel_step, 'maxiter': 20*len(x1)})
-        if (not res['success']) and not res['message'] == 'Iteration limit reached':
+        if not res['success']:
             # cheeky ignore that exception:
             # https://github.com/scipy/scipy/issues/3056 -> SLSQP is unfomfortable with numerical jacobian when solution is on bounds, but in fact does converge.
-            logging.error(res['message'])
-            raise Exception(res['message'])
+            if res['message'] == 'Iteration limit reached':
+                logging.warning(res['message'])
+            else:
+                logging.error(res['message'])
+                raise Exception(res['message'])
 
     callbackF(res['x'], progress_display,res['message'])
 
     def summarize():
         summary=pd.DataFrame()
-        summary['spotBenchmark']=futures['mark']/futures['index']-1.0
+        summary['spot']= futures['spot']
+        summary['mark']= futures['mark']
+        summary['index']= futures['index']
+        summary['borrow'] = futures['borrow']
+        summary['quote_borrow'] = futures['quote_borrow']
         summary['ExpectedBenchmark']=(E_intCarry+E_intUSDborrow- futures['direction'].apply(lambda  f: 0 if f>0 else 1.0).values*E_intBorrow)/365.25
-        summary['FundingBenchmark'] = futures['basis_mid']/365.25
-        summary['currentWeight'] = previous_weights
+        summary['funding'] = futures['basis_mid']
+        summary['previousWeight'] = previous_weights
         summary['optimalWeight'] = res['x']
         summary['ExpectedCarry'] = res['x'] * (E_intCarry+E_intUSDborrow)
-        summary['RealizedCarry'] = xt*(intCarry+intUSDborrow)
+        summary['RealizedCarry'] = summary.apply(lambda f: f['previousWeight'] * (f['funding'] + (f['borrow'] if f['previousWeight']<0 else -f['quote_borrow'])),axis=1)
+
         summary['excessIM'] = summary.apply(lambda f:excess_margin.shockedEstimate(res['x'])['IM'].loc[[f.name.split('-PERP')[0]+'/USD',f.name.split('-PERP')[0]+'/USD:USD']].sum(),axis=1)
         summary['excessMM'] = summary.apply(lambda f:excess_margin.shockedEstimate(res['x'])['MM'].loc[[f.name.split('-PERP')[0]+'/USD',f.name.split('-PERP')[0]+'/USD:USD']].sum(),axis=1)
 
@@ -546,10 +555,10 @@ def cash_carry_optimizer(exchange, futures,
         summary.loc['USD', 'spotBenchmark'] = futures.iloc[0]['quote_borrow']
         summary.loc['USD', 'ExpectedBenchmark'] = E_intUSDborrow
         summary.loc['USD', 'FundingBenchmark'] = futures.iloc[0]['quote_borrow'] /365.25
-        summary.loc['USD', 'currentWeight'] = equity - sum(previous_weights.values)
+        summary.loc['USD', 'previousWeight'] = equity - sum(previous_weights.values)
         summary.loc['USD', 'optimalWeight'] = equity-sum(res['x'])
         summary.loc['USD', 'ExpectedCarry'] = np.min([0,equity-sum(res['x'])])* E_intUSDborrow
-        summary.loc['USD', 'RealizedCarry'] = np.min([0,equity-previous_weights.sum()])* intUSDborrow
+        summary.loc['USD', 'RealizedCarry'] = - max([summary['previousWeight'].sum()-equity,0]) * summary['quote_borrow'].mean()
         summary.loc['USD', 'excessIM'] = excess_margin.shockedEstimate(res['x'])['totalIM']-summary['excessIM'].sum()
         summary.loc['USD', 'excessMM'] = excess_margin.shockedEstimate(res['x'])['totalMM']-summary['excessMM'].sum()
         summary.loc['USD', 'transactionCost'] = 0
@@ -557,14 +566,14 @@ def cash_carry_optimizer(exchange, futures,
         summary.loc['total', 'spotBenchmark'] = summary['spotBenchmark'].mean()
         summary.loc['total', 'ExpectedBenchmark'] = (E_intCarry+E_intUSDborrow).mean()
         summary.loc['total', 'FundingBenchmark'] = summary['FundingBenchmark'].mean()
-        summary.loc['total', 'currentWeight'] = equity
+        summary.loc['total', 'previousWeight'] = equity
         summary.loc['total', 'optimalWeight'] = summary['optimalWeight'].sum() ## 000....
         summary.loc['total', 'ExpectedCarry'] = summary['ExpectedCarry'].sum()
         summary.loc['total', 'RealizedCarry'] = summary['RealizedCarry'].sum()
         summary.loc['total', 'excessIM'] = summary['excessIM'].sum()
         summary.loc['total', 'excessMM'] = summary['excessMM'].sum()
         # TODO: covar pre-update
-        #futures.loc['total', 'lossProbability'] = loss_tolerance - loss_tolerance_constraint['fun'](res['x'])
+        #both.loc['total', 'lossProbability'] = loss_tolerance - loss_tolerance_constraint['fun'](res['x'])
         summary.loc['total', 'transactionCost'] = summary['transactionCost'].sum()
         summary.columns.names=['field']
 
