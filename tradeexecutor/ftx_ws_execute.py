@@ -1043,7 +1043,6 @@ class myFtx(ccxtpro.ftx):
 
         # size to do:
         original_size = params['target'] - self.risk_state[coin][symbol]['delta']/mid
-        side = np.sign(original_size)
         if (np.abs(original_size) < self.exec_parameters[coin][symbol]['sizeIncrement']):
             self.running_symbols.remove(symbol)
             self.myLogger.info(f'{symbol} done, {self.running_symbols} left to do')
@@ -1054,42 +1053,35 @@ class myFtx(ccxtpro.ftx):
         #risk
         delta_timestamp = self.risk_state[coin][symbol]['delta_timestamp']
         globalDelta = self.risk_state[coin]['netDelta'] + self.parameters['global_beta'] * (self.total_delta - self.risk_state[coin]['netDelta'])
-        marginal_risk = np.abs(globalDelta + original_size * mid)-np.abs(globalDelta)
+        marginal_risk = np.abs(globalDelta/mid + original_size)-np.abs(globalDelta/mid)
 
-        # if increases risk, go passive.
-        if marginal_risk >= 0:
+        # if increases risk, go passive. logique de comment on place les ordres.
+        # tu regardes le prix et le risk et tu decides comment tu places les ordres
+        if marginal_risk>0:
+            stop_depth = None
             current_basket_price = sum(self.mid(_symbol)*self.exec_parameters[coin][_symbol]['diff']
                                        for _symbol in self.exec_parameters[coin].keys() if _symbol in self.markets)
-            # unsliced mkt order if target reached.
-            if current_basket_price + 2 * np.abs(params['diff']) * params['takerVsMakerFee'] * mid < self.exec_parameters[coin]['rush_level']:
+            # mkt order if target reached.
+            if current_basket_price + 2 * np.abs(params['diff']) * params['takerVsMakerFee']< self.exec_parameters[coin]['rush_level']:
                 # (np.abs(netDelta+size)-np.abs(netDelta))/np.abs(size)*params['edit_price_depth'] # equate: profit if done ~ marginal risk * stdev
-                size = original_size
+                size = np.sign(original_size) * min([np.abs(original_size), params['slice_size']])
                 edit_price_depth = 0
-                stop_depth = None
                 for _symbol in self.exec_parameters[coin]:
                     if _symbol in self.markets:
                         self.exec_parameters[coin][_symbol]['edit_price_depth'] = 0
-            # sliced limit order otherwise (targetting entry_level)
+            # limit order if level is acceptable
+            elif current_basket_price < self.exec_parameters[coin]['entry_level']:
+                size = np.sign(original_size) * min([np.abs(original_size), params['slice_size']])
+                edit_price_depth = params['edit_price_depth']
+            # hold off if level is bad
             else:
-                size = side * min([np.abs(original_size), params['slice_size']])
-                edit_price_depth = max([params['edit_price_depth'],(current_basket_price - self.exec_parameters[coin]['entry_level'])/params['diff']])
-                stop_depth = None
-
-        # if decrease risk
+                return
+        # if decrease risk, go aggressive
         else:
-            # if risk excessive, rush to bring to limit
-            if np.abs(globalDelta) > self.limit.delta_limit * self.pv:
-                size = (np.abs(globalDelta) - self.limit.delta_limit * self.pv)/mid
-                edit_price_depth = 0
-                stop_depth = None
-            # else zero out delta somewhat aggressively
-            else:
-                size = -globalDelta/mid
-                edit_price_depth = params['aggressive_edit_price_depth']
-                stop_depth = params['stop_depth']
-
-        capped_size = side * min([np.abs(original_size), np.abs(size)])
-        self.peg_or_stopout(symbol,capped_size,orderbook,edit_trigger_depth=params['edit_trigger_depth'],edit_price_depth=edit_price_depth,stop_depth=stop_depth)
+            size = np.sign(original_size) * min([np.abs(original_size), np.abs(globalDelta/mid)])
+            edit_price_depth = params['aggressive_edit_price_depth']
+            stop_depth = params['stop_depth']
+        self.peg_or_stopout(symbol,size,orderbook,edit_trigger_depth=params['edit_trigger_depth'],edit_price_depth=edit_price_depth,stop_depth=stop_depth)
 
     def peg_or_stopout(self,symbol,size,orderbook,edit_trigger_depth,edit_price_depth,stop_depth=None):
         # il a tous les niveaux qu'il faut faire
@@ -1284,6 +1276,7 @@ class myFtx(ccxtpro.ftx):
         if quoteId['success']])
 
 async def open_exec_echange(subaccount):
+    '''TODO unused for now'''
     parameters = configLoader.get_executor_params()
     exchange = myFtx(parameters, config={  ## David personnal
         'enableRateLimit': True,
@@ -1298,6 +1291,7 @@ async def open_exec_echange(subaccount):
     return exchange
 
 async def get_exec_request(*argv,subaccount):
+    '''TODO unused for now'''
     exchange = await open_exec_echange(subaccount)
 
     if argv[0] == 'sysperp':
@@ -1335,17 +1329,60 @@ async def get_exec_request(*argv,subaccount):
 
     return target_portfolio
 
-async def ftx_ws_spread_main_wrapper(target_portfolio,subaccount):
+async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
 
     execution_status = None
 
     try:
+        # TODO: read complex orders
         parameters = configLoader.get_executor_params()
-        exchange = await open_exec_echange(subaccount)
+
+        exchange = myFtx(parameters, config={  ## David personnal
+            'enableRateLimit': True,
+            'apiKey': 'ZUWyqADqpXYFBjzzCQeUTSsxBZaMHeufPFgWYgQU',
+            'secret': api_params['ftx']['key'],
+            'newUpdates': True})
+        exchange.verbose = False
+        exchange.headers = {'FTX-SUBACCOUNT': argv[2]}
+        exchange.authenticate()
+
+        await exchange.load_markets()
+
+        # Cancel all legacy orders (if any) before starting new batch
         await exchange.cancel_all_orders()
 
-        if target_portfolio.empty:
-            raise myFtx.NothingToDo()
+        if argv[0]=='sysperp':
+            future_weights = configLoader.get_current_weights()
+            target_portfolio = await diff_portoflio(exchange, future_weights)  # still a Dataframe
+            if target_portfolio.empty: raise myFtx.NothingToDo()
+
+        elif argv[0]=='spread':
+            coin=argv[3]
+            cash_name = coin+'/USD'
+            future_name = coin + '-PERP'
+            cash_price = float(exchange.market(cash_name)['info']['price'])
+            future_price = float(exchange.market(future_name)['info']['price'])
+            target_portfolio = pd.DataFrame(columns=['coin','name','optimalCoin','currentCoin','spot_price'],data=[
+                [coin,cash_name,float(argv[4])/cash_price,0,cash_price],
+                [coin,future_name,-float(argv[4])/future_price,0,future_price]])
+            if target_portfolio.empty: raise myFtx.NothingToDo()
+
+        elif argv[0]=='flatten': # only works for basket with 2 symbols
+            future_weights = pd.DataFrame(columns=['name','optimalWeight'])
+            diff = await diff_portoflio(exchange, future_weights)
+            smallest_risk = diff.groupby(by='coin')['currentCoin'].agg(lambda series: series.apply(np.abs).min() if series.shape[0]>1 else 0)
+            target_portfolio=diff
+            target_portfolio['optimalCoin'] = diff.apply(lambda f: smallest_risk[f['coin']]*np.sign(f['currentCoin']),axis=1)
+            if target_portfolio.empty: raise myFtx.NothingToDo()
+
+        elif argv[0]=='unwind':
+            future_weights = pd.DataFrame(columns=['name','optimalWeight'])
+            target_portfolio = await diff_portoflio(exchange, future_weights)
+            if target_portfolio.empty: raise myFtx.NothingToDo()
+
+        else:
+            exchange.logger.exception(f'unknown command {argv[0]}',exc_info=True)
+            raise Exception(f'unknown command {argv[0]}', exc_info=True)
 
         await exchange.build_state(target_portfolio, parameters)   # i
         coros = [exchange.monitor_risk(),exchange.monitor_orders(),exchange.monitor_fills()]+ \
@@ -1389,30 +1426,26 @@ def ftx_ws_spread_main(*argv):
         logging.info(f'running {argv}')
 
         while True:
-            # TODO: read complex orders
-            target_portfolio = asyncio.run(get_exec_request(*argv, subaccount=argv[2]))
-            max_nb_coins = configLoader.get_executor_params()['max_nb_coins']
-            for i in range(1+int(len(target_portfolio['coin'].unique())/max_nb_coins)):
-                try:
-                    execution_status = asyncio.run(ftx_ws_spread_main_wrapper(target_portfolio,subaccount=argv[2])) # --> I am filled or I timed out and I have flattened position
-                    print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")} tranche {i}  EXIT with execution_status={execution_status}')
 
-                    if not isinstance(execution_status, myFtx.NothingToDo):
-                        exec_logs = batch_summarize_exec_logs()
+            execution_status = asyncio.run(ftx_ws_spread_main_wrapper(*argv)) # --> I am filled or I timed out and I have flattened position
+            print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")}  EXIT with execution_status={execution_status}')
 
-                    if isinstance(execution_status, myFtx.DoneDeal):
-                        # Wait for 5 minutes and start over
-                        t.sleep(60 * 5)
-                        print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")}  ALLDONE --> SLEEPING for 5 minutes...')
+            if not isinstance(execution_status, myFtx.NothingToDo):
+                exec_logs = batch_summarize_exec_logs()
 
-                    elif isinstance(execution_status, myFtx.TimeBudgetExpired):
-                        # Force flattens until it returns FILLED
-                        while not isinstance(execution_status, myFtx.DoneDeal):
-                            target_portfolio = asyncio.run(get_exec_request(*argv, subaccount=argv[2]))
-                            execution_status = asyncio.run(ftx_ws_spread_main_wrapper(target_portfolio,subaccount=argv[2]))
-                            print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")}  TIMEOUT --> FLATTEN UNTIL FINISHED')
-                except Exception as e:
-                    print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")} {str(e)}')
+            if isinstance(execution_status, myFtx.DoneDeal):
+                # Wait for 5 minutes and start over
+                t.sleep(60 * 5)
+                print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")}  ALLDONE --> SLEEPING for 5 minutes...')
+
+            elif isinstance(execution_status, myFtx.TimeBudgetExpired):
+                # Force flattens until it returns FILLED
+                while not isinstance(execution_status, myFtx.DoneDeal):
+                    execution_status = asyncio.run(ftx_ws_spread_main_wrapper(*(['flatten']+argv[1:])))
+                    print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")}  TIMEOUT --> FLATTEN UNTIL FINISHED')
+
+            else:
+                print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")}  UNCAUGHT --> EXCEPTION NOT CAUGHT')
 
     else:
         logging.info(f'commands: sysperp [ftx][debug], flatten [ftx][debug],unwind [ftx][debug], spread [ftx][debug][coin][cash in usd]')
