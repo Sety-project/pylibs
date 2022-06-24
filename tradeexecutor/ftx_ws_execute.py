@@ -1058,11 +1058,10 @@ class myFtx(ccxtpro.ftx):
 
         # if increases risk, go passive.
         if marginal_risk >= 0:
-            stop_depth = None
             current_basket_price = sum(self.mid(_symbol)*self.exec_parameters[coin][_symbol]['diff']
                                        for _symbol in self.exec_parameters[coin].keys() if _symbol in self.markets)
             # unsliced mkt order if target reached.
-            if current_basket_price + 2 * np.abs(params['diff']) * params['takerVsMakerFee'] *mid < self.exec_parameters[coin]['rush_level']:
+            if current_basket_price + 2 * np.abs(params['diff']) * params['takerVsMakerFee'] * mid < self.exec_parameters[coin]['rush_level']:
                 # (np.abs(netDelta+size)-np.abs(netDelta))/np.abs(size)*params['edit_price_depth'] # equate: profit if done ~ marginal risk * stdev
                 size = original_size
                 edit_price_depth = 0
@@ -1070,21 +1069,17 @@ class myFtx(ccxtpro.ftx):
                 for _symbol in self.exec_parameters[coin]:
                     if _symbol in self.markets:
                         self.exec_parameters[coin][_symbol]['edit_price_depth'] = 0
-            # sliced limit order if level is acceptable
-            elif current_basket_price < self.exec_parameters[coin]['entry_level']:
-                size = params['slice_size']
-                edit_price_depth = params['edit_price_depth']
-                stop_depth = None
-            # hold off if level is bad
+            # sliced limit order otherwise (targetting entry_level)
             else:
                 size = params['slice_size']
-                edit_price_depth = max([0,(current_basket_price - self.exec_parameters[coin]['entry_level'])/params['diff']])
+                edit_price_depth = max([params['edit_price_depth'],(current_basket_price - self.exec_parameters[coin]['entry_level'])/params['diff']])
                 stop_depth = None
+
         # if decrease risk
         else:
             # if risk excessive, rush to bring to limit
-            if np.abs(globalDelta) > self.limit.delta_limit:
-                size = (np.abs(globalDelta) - self.limit.delta_limit)/mid
+            if np.abs(globalDelta) > self.limit.delta_limit * self.pv:
+                size = (np.abs(globalDelta) - self.limit.delta_limit * self.pv)/mid
                 edit_price_depth = 0
                 stop_depth = None
             # else zero out delta somewhat aggressively
@@ -1151,14 +1146,14 @@ class myFtx(ccxtpro.ftx):
                 price = sweep_price_atomic(orderbook, size * mid)
                 asyncio.create_task( self.edit_order(symbol, 'limit', order_side, size,
                                                      price = price,
-                                                     params={'ioc':True,
+                                                     params={'ioc':True,'postOnly':False,
                                                              'comment':'stop' if edit_price_depth>0 else 'rush'},
                                                      previous_clientOrderId = order['clientOrderId']))
             # peg limit order
             elif order_distance > edit_trigger and (np.abs(edit_price-order['price']) >= priceIncrement):
                 asyncio.create_task(self.edit_order(symbol, 'limit', order_side, np.abs(size),
                                                     price=edit_price,
-                                                    params={'postOnly': True,
+                                                    params={'postOnly': True,'ioc':False,
                                                             'comment':'chase'},
                                                     previous_clientOrderId = order['clientOrderId']))
 
@@ -1223,10 +1218,10 @@ class myFtx(ccxtpro.ftx):
                 if isinstance(e,ccxt.InsufficientFunds):
                     margin_adjusted_amount = 0.9 * min([amount,np.abs(await self.adjust_order_for_margin(amount * (1 if side == 'buy' else -1), symbol))])
                     #assert margin_adjusted_amount<amount,"margin_adjusted_amount<amount"
-                    self.myLogger.warning(f'{clientOrderId} adjusted from {amount*self.mid(symbol)} to {margin_adjusted_amount*self.mid(symbol)}')
-                    if margin_adjusted_amount > self.exec_parameters[coin][symbol]['sizeIncrement']:
-                        params['comment'] = params['comment'] + '/' + 'margin_adjusted'
-                        await self.create_order(symbol, type, side, margin_adjusted_amount, price=None, params=params)
+                    self.myLogger.warning(f'{clientOrderId} could be adjusted from {amount*self.mid(symbol)} to {margin_adjusted_amount*self.mid(symbol)}')
+                    # if margin_adjusted_amount > self.exec_parameters[coin][symbol]['sizeIncrement']:
+                    #     params['comment'] = params['comment'] + '/' + 'margin_adjusted'
+                    #     await self.create_order(symbol, type, side, margin_adjusted_amount, price=None, params=params)
                 elif isinstance(e,ccxt.RateLimitExceeded):
                     throttle = 200.0
                     self.myLogger.warning(f'{str(e)}: waiting {throttle} ms)')
@@ -1398,26 +1393,26 @@ def ftx_ws_spread_main(*argv):
             target_portfolio = asyncio.run(get_exec_request(*argv, subaccount=argv[2]))
             max_nb_coins = configLoader.get_executor_params()['max_nb_coins']
             for i in range(1+int(len(target_portfolio['coin'].unique())/max_nb_coins)):
-                execution_status = asyncio.run(ftx_ws_spread_main_wrapper(target_portfolio,subaccount=argv[2])) # --> I am filled or I timed out and I have flattened position
-                print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")} tranche {i}  EXIT with execution_status={execution_status}')
+                try:
+                    execution_status = asyncio.run(ftx_ws_spread_main_wrapper(target_portfolio,subaccount=argv[2])) # --> I am filled or I timed out and I have flattened position
+                    print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")} tranche {i}  EXIT with execution_status={execution_status}')
 
-                if not isinstance(execution_status, myFtx.NothingToDo):
-                    exec_logs = batch_summarize_exec_logs()
+                    if not isinstance(execution_status, myFtx.NothingToDo):
+                        exec_logs = batch_summarize_exec_logs()
 
-                if isinstance(execution_status, myFtx.DoneDeal):
-                    # Wait for 5 minutes and start over
-                    t.sleep(60 * 5)
-                    print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")}  ALLDONE --> SLEEPING for 5 minutes...')
+                    if isinstance(execution_status, myFtx.DoneDeal):
+                        # Wait for 5 minutes and start over
+                        t.sleep(60 * 5)
+                        print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")}  ALLDONE --> SLEEPING for 5 minutes...')
 
-                elif isinstance(execution_status, myFtx.TimeBudgetExpired):
-                    # Force flattens until it returns FILLED
-                    while not isinstance(execution_status, myFtx.DoneDeal):
-                        target_portfolio = asyncio.run(get_exec_request(*argv, subaccount=argv[2]))
-                        execution_status = asyncio.run(ftx_ws_spread_main_wrapper(target_portfolio,subaccount=argv[2]))
-                        print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")}  TIMEOUT --> FLATTEN UNTIL FINISHED')
-
-                else:
-                    print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")}  UNCAUGHT --> EXCEPTION NOT CAUGHT')
+                    elif isinstance(execution_status, myFtx.TimeBudgetExpired):
+                        # Force flattens until it returns FILLED
+                        while not isinstance(execution_status, myFtx.DoneDeal):
+                            target_portfolio = asyncio.run(get_exec_request(*argv, subaccount=argv[2]))
+                            execution_status = asyncio.run(ftx_ws_spread_main_wrapper(target_portfolio,subaccount=argv[2]))
+                            print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")}  TIMEOUT --> FLATTEN UNTIL FINISHED')
+                except Exception as e:
+                    print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")} {str(e)}')
 
     else:
         logging.info(f'commands: sysperp [ftx][debug], flatten [ftx][debug],unwind [ftx][debug], spread [ftx][debug][coin][cash in usd]')
