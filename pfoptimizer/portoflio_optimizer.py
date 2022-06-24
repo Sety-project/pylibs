@@ -269,9 +269,8 @@ async def perp_vs_cash(
         parameters.to_csv(f'{pfoptimizer_res_filename}_parameters.csv')
 
         # send bus message
-        pfoptimizer_res_last_filename = os.path.join(pfoptimizer_path, "current_weights.xlsx")
-        with pd.ExcelWriter(pfoptimizer_res_last_filename, engine='xlsxwriter') as writer:
-            optimized.to_excel(writer)
+        pfoptimizer_res_last_filename = os.path.join(pfoptimizer_path, "current_weights.csv")
+        optimized.to_csv(pfoptimizer_res_last_filename)
 
         display = optimized[['optimalWeight', 'ExpectedCarry', 'transactionCost']]
         totals = display.loc[['USD', 'total']]

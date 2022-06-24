@@ -538,7 +538,7 @@ async def diff_portoflio(exchange,future_weights) -> pd.DataFrame():
 async def diff_portoflio_wrapper(*argv):
     exchange= await open_exchange(*argv)
     await exchange.load_markets()
-    future_weights = pd.read_excel('~/config/pfoptimizer/current_weights.xlsx')
+    future_weights = pd.read_csv('~/config/pfoptimizer/current_weights.csv')
     diff = await diff_portoflio(exchange,future_weights)
     await exchange.close()
     return diff
