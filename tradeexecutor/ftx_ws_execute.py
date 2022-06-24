@@ -950,9 +950,9 @@ class myFtx(ccxtpro.ftx):
         self.lifecycle_fill(fill)
 
         # logger.info
-        self.myLogger.info('{} fill at {}: {} {} {} at {}'.format(symbol,
-                                                                  fill['timestamp'],
-                                                                  fill['side'], fill['amount'], symbol,
+        self.myLogger.info('{} filled after {}: {} {} at {}'.format(fill['clientOrderId'],
+                                                                  fill['timestamp'] - int(fill['clientOrderId'].split('_')[-1]),
+                                                                  fill['side'], fill['amount'],
                                                                   fill['price']))
 
         current = self.risk_state[coin][symbol]['delta']
