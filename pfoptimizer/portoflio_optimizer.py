@@ -256,19 +256,22 @@ async def perp_vs_cash(
     # for live, just send last optimized
     if backtest_start == backtest_end:
         pfoptimizer_path = os.path.join(configLoader.get_config_folder_path(), "pfoptimizer")
+
+        # write logs
         if not os.path.exists(pfoptimizer_path):
             os.umask(0)
             os.makedirs(pfoptimizer_path, mode=0o777)
         pfoptimizer_res_filename = os.path.join(os.sep,
                                                 pfoptimizer_path,
                                                 'ftx_optimal_cash_carry_' + datetime.utcnow().strftime("%Y%m%d_%H%M%S"))
-
         optimized.to_csv(f'{pfoptimizer_res_filename}_weights.csv')
         updated.to_csv(f'{pfoptimizer_res_filename}_snapshot.csv')
         parameters.to_csv(f'{pfoptimizer_res_filename}_parameters.csv')
 
+        # send bus message
         pfoptimizer_res_last_filename = os.path.join(pfoptimizer_path, "current_weights.xlsx")
-        shutil.copy2(f'{pfoptimizer_res_filename}_weights.csv', pfoptimizer_res_last_filename)
+        with pd.ExcelWriter(pfoptimizer_res_last_filename, engine='xlsxwriter') as writer:
+            optimized.to_excel(writer)
 
         display = optimized[['optimalWeight', 'ExpectedCarry', 'transactionCost']]
         totals = display.loc[['USD', 'total']]
@@ -512,7 +515,7 @@ def main(*args):
                                         signal_horizon=sig_horizon,
                                         holding_period=hol_period,
                                         slippage_override=slippage_override,
-                                        backtest_start= datetime(2022,6,21,19),#datetime.now().replace(minute=0, second=0, microsecond=0)-timedelta(days=2),# live start was datetime(2022,6,21,19),
+                                        backtest_start= datetime(2019,6,21,19),#datetime.now().replace(minute=0, second=0, microsecond=0)-timedelta(days=2),# live start was datetime(2022,6,21,19),
                                         backtest_end = datetime.now().replace(minute=0, second=0, microsecond=0)-timedelta(hours=1)))
         logger.info("pfoptimizer terminated successfully...")
         return pd.DataFrame()
