@@ -491,9 +491,9 @@ def main(*args):
         ftx_timeframes = ['15s','1m','5m','15m','1h','4h','1d','3d','1w','2w','1M']
         # Getting the nb_of_days, or defaulting to 100
         try:
-            timeframe = [x for x in args if args in ftx_timeframes][0]
+            timeframe = [x for x in args if x in ftx_timeframes][0]
             if timeframe != '1h':
-                dirname = os.path.join(os.sep, 'tmp', f'{exchange_name}_{universe}_{timeframe}')
+                dirname = os.path.join(os.sep, 'tmp', f'{exchange_name}_{universe_filter}_{timeframe}')
                 if not os.path.exists(dirname):
                     os.umask(0)
                     os.makedirs(dirname, mode=0o777)
