@@ -39,7 +39,8 @@ async def get_history(dirname,
 async def build_history(futures,
                         exchange,
                         dirname=configLoader.get_mktdata_folder_path(),
-                        end=datetime.now(tz=None).replace(minute=0,second=0,microsecond=0)): # Runtime/Mktdata_database
+                        end=datetime.now(tz=None).replace(minute=0,second=0,microsecond=0),
+                        timeframe = '1h'): # Runtime/Mktdata_database
     '''for now, increments local files and then uploads to s3'''
     logger = logging.getLogger(LOGGER_NAME)
     logger.info("BUILDING COROUTINES")
@@ -59,7 +60,7 @@ async def build_history(futures,
         start = max(parquet.index) + timedelta(hours=1) if parquet is not None else history_start
         if start < end:
             logger.info("Adding coroutine " + parquet_name)
-            coroutines.append(rate_history(f, exchange, end, start, '1h', dirname))
+            coroutines.append(rate_history(f, exchange, end, start, timeframe, dirname))
 
     for f in futures['underlying'].unique():
         parquet_name = os.path.join(dirname, f + '_price.parquet')
@@ -67,7 +68,7 @@ async def build_history(futures,
         start = max(parquet.index) + timedelta(hours=1) if parquet is not None else history_start
         if start < end:
             logger.info("Adding coroutine " + parquet_name)
-            coroutines.append(spot_history(f + '/USD', exchange, end, start, '1h', dirname))
+            coroutines.append(spot_history(f + '/USD', exchange, end, start, timeframe, dirname))
 
     for f in list(futures.loc[futures['spotMargin'] == True, 'underlying'].unique()) + ['USD']:
         parquet_name = os.path.join(dirname, f + '_borrow.parquet')
@@ -79,7 +80,7 @@ async def build_history(futures,
 
     if coroutines:
         # run all coroutines
-        logger.info(f"Gathered {len(coroutines)} coroutines, processing them")
+        logger.info(f"Gathered {len(coroutines)} coroutines, processing them by batches of {safe_gather_limit}")
         await safe_gather(coroutines)
     else:
         logger.info("0 coroutines gathered, nothing to do")
@@ -380,15 +381,13 @@ async def fetch_trades_history(symbol,
             'volume':vwap[symbol.split('/USD')[0] + '_trades_volume'],
             'liquidation_intensity':vwap[symbol.split('/USD')[0] + '_trades_liquidation_intensity']}
 
-async def ftx_history_main_wrapper(exchange_name, run_type, universe, nb_of_days):
+async def ftx_history_main_wrapper(exchange_name, run_type, universe, nb_of_days,timeframe,dirname):
 
     exchange = await open_exchange(exchange_name,'')
     futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=True)).set_index('name')
     await exchange.load_markets()
 
     #universe should be either 'all', either a universe name, or a list of currencies
-    dir_name = configLoader.get_mktdata_folder_for_exchange(exchange_name)
-
     # In case universe was not max, is_wide, is_institutional
     # universe = [id for id, data in exchange.markets_by_id.items() if data['base'] in [x.upper() for x in [universe]] and data['contract']]
 
@@ -399,20 +398,20 @@ async def ftx_history_main_wrapper(exchange_name, run_type, universe, nb_of_days
 
     # Volume Screening
     if run_type == 'build':
-        logger.info("Building history for build")
-        await build_history(futures, exchange, dir_name)
+        logger.info(f'Building history for build timeframe={timeframe}')
+        await build_history(futures, exchange, dirname, timeframe=timeframe)
         await exchange.close()
     elif run_type == 'correct':
         raise Exception('bug. does not correct')
-        logger.info("Building history for correct")
-        hy_history = await get_history(dir_name, futures, history_start)
+        logger.info("correcting HOURLY history")
+        hy_history = await get_history(dirname, futures, history_start)
         end = datetime.now()-timedelta(days=nb_of_days)
         await correct_history(futures, exchange, hy_history[:end])
-        await build_history(futures, exchange, dir_name)
+        await build_history(futures, exchange, dirname) # only correct the hourly
         await exchange.close()
     elif run_type == 'get':
         logger.info("Getting history...")
-        hy_history = await get_history(dir_name, futures, 24 * nb_of_days)
+        hy_history = await get_history(dirname, futures, 24 * nb_of_days)
         await exchange.close()
         return hy_history
 
@@ -440,14 +439,14 @@ def main(*args):
         logger.critical("Cannot run histfeed from the provided params.")
         logger.critical(f'Parameters passed are {[arg for arg in args]}]')
         logger.critical("Missing parameters")
-        logger.critical("3 or 4 parameters should be passed : build/correct, exchange_name, universe_filter and, optionally, the number of days")
+        logger.critical("3 to 5 parameters should be passed : build/correct, exchange_name, universe_filter and, optionally, the number of days, timeframe")
         logger.critical("---> Terminating...")
         return -1
-    elif len(args) > 4:
+    elif len(args) > 5:
         logger.critical("Cannot run histfeed from the provided params.")
         logger.critical(f'Parameters passed are {[arg for arg in args]}]')
         logger.critical("Too many parameters")
-        logger.critical("3 or 4 parameters should be passed : build/correct, exchange_name, universe_filter and, optionally, the number of days")
+        logger.critical("3 to 5 parameters should be passed : build/correct, exchange_name, universe_filter and, optionally, the number of days, timeframe")
         logger.critical("---> Terminating...")
     else:
         # Getting exchange name, only ftx handled for now
@@ -477,8 +476,8 @@ def main(*args):
         # Getting the run_type
         try:
             run_type = [x for x in args if x in RUN_TYPES][0]
-        except IndexError:
-            logger.critical("Cannot find the run_type param. The run_type param should be passed explicitly : build/correct")
+        except IndexError as e:
+            logger.critical(f"Cannot find the run_type param. The run_type param should be passed explicitly : build/correct {str(e)}")
             logger.critical("---> Terminating...")
             sys.exit(1)
 
@@ -489,6 +488,23 @@ def main(*args):
             nb_of_days = 100
             logger.info("Cannot find the nb_of_days param. Defaulting to nb_of_days=100")
 
+        ftx_timeframes = ['15s','1m','5m','15m','1h','4h','1d','3d','1w','2w','1M']
+        # Getting the nb_of_days, or defaulting to 100
+        try:
+            timeframe = [x for x in args if args in ftx_timeframes][0]
+            if timeframe != '1h':
+                dirname = os.path.join(os.sep, 'tmp', f'{exchange_name}_{universe}_{timeframe}')
+                if not os.path.exists(dirname):
+                    os.umask(0)
+                    os.makedirs(dirname, mode=0o777)
+            else:
+                dirname = configLoader.get_mktdata_folder_for_exchange(exchange_name)
+
+        except IndexError:
+            timeframe = '1h'
+            logger.info(f"Cannot find the timeframe param. Defaulting to timeframe=1h")
+            dirname = configLoader.get_mktdata_folder_for_exchange(exchange_name)
+
         # Make sure the exchange repo exists in mktdata/, if not creates it
         mktdata_exchange_repo = configLoader.get_mktdata_folder_for_exchange(exchange_name)
         if not os.path.exists(mktdata_exchange_repo):
@@ -497,7 +513,7 @@ def main(*args):
 
         # Running histfeed
         logger.info(f'histfeed running with params {[arg for arg in args]}')
-        result = asyncio.run(ftx_history_main_wrapper(exchange_name, run_type, universe, nb_of_days))
+        result = asyncio.run(ftx_history_main_wrapper(exchange_name, run_type, universe, nb_of_days, timeframe,dirname))
         return result
         logger.info("histfeed terminated successfully...")
 
