@@ -1071,7 +1071,7 @@ class myFtx(ccxtpro.ftx):
                         self.exec_parameters[coin][_symbol]['edit_price_depth'] = 0
             # sliced limit order otherwise (targetting entry_level)
             else:
-                size = params['slice_size']
+                size = side * min([np.abs(original_size), params['slice_size']])
                 edit_price_depth = max([params['edit_price_depth'],(current_basket_price - self.exec_parameters[coin]['entry_level'])/params['diff']])
                 stop_depth = None
 
