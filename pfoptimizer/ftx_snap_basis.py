@@ -465,7 +465,7 @@ def cash_carry_optimizer(exchange, futures,
     # --------- verbose callback function: breaks down pnl during optimization
     progress_display=[]
     def callbackF(x, progress_display, print_with_flag=None):
-        if print_with_flag:
+        if print_with_flag is not None:
             progress_display += [pd.concat([
                 pd.Series({
                     'E_int': np.dot(x, E_intCarry),
@@ -537,7 +537,8 @@ def cash_carry_optimizer(exchange, futures,
             else:
                 logging.error(res['message'])
 
-    callbackF(res['x'], progress_display,res['message'])
+    if 'verbose' in optional_params:
+        callbackF(res['x'], progress_display,res['message'])
 
     def summarize():
         summary=pd.DataFrame()
