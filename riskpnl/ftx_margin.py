@@ -177,23 +177,18 @@ class BasisMarginCalculator(MarginCalculator):
     spot_marks, future_marks'''
 
     def __init__(self, account_leverage, collateralWeight, imfFactor,
-                 equity, spot_marks, future_marks,
-                 long_blowup=None, short_blowup=None, nb_blowups=None):
+                 equity, spot_marks, future_marks):
         super().__init__(account_leverage, collateralWeight, imfFactor)
-
-        if long_blowup is None:
-            long_blowup = self.LONG_BLOWUP
-        if short_blowup is None:
-            short_blowup = self.SHORT_BLOWUP
-        if nb_blowups is None:
-            nb_blowups = self.NB_BLOWUPS
 
         self._equity = equity
         self.spot_marks = spot_marks
         self.future_marks = future_marks
-        self._long_blowup = float(long_blowup)
-        self._short_blowup = float(short_blowup)
-        self._nb_blowups = int(nb_blowups)
+
+        pf_params = configLoader.get_pfoptimizer_params()
+        self._long_blowup = float(pf_params['LONG_BLOWUP']['value'])
+        self._short_blowup = float(pf_params['SHORT_BLOWUP']['value'])
+        self._nb_blowups = int(pf_params['NB_BLOWUPS']['value'])
+        self._open_order_headroom = float(pf_params['OPEN_ORDERS_HEADROOM']['value'])
 
     def futureMargins(self, weights):
         '''weights = {symbol: 'weight, 'mark'''
@@ -254,31 +249,31 @@ class BasisMarginCalculator(MarginCalculator):
         # assume all coins go either LONG_BLOWUP or SHORT_BLOWUP..what is the margin impact incl future pnl ?
         # up...
         future_up = {
-            symbol: {'weight': data['weight'] * (1 + self.LONG_BLOWUP), 'mark': data['mark'] * (1 + self.LONG_BLOWUP)}
+            symbol: {'weight': data['weight'] * (1 + self._long_blowup), 'mark': data['mark'] * (1 + self._long_blowup)}
             for symbol, data in future_weights.items()}
         spot_up = {
-            coin: {'weight': data['weight'] * (1 + self.LONG_BLOWUP), 'mark': data['mark'] * (1 + self.LONG_BLOWUP)}
+            coin: {'weight': data['weight'] * (1 + self._long_blowup), 'mark': data['mark'] * (1 + self._long_blowup)}
             for coin, data in spot_weights.items()}
         (collateral_up, im_short_up, mm_short_up) = self.spotMargins(spot_up)
         (im_fut_up, mm_fut_up) = self.futureMargins(future_up)
         sum_MM_up = sum(x for x in collateral_up.values()) - \
                     sum(x for x in mm_fut_up.values()) - \
                     sum(x for x in mm_short_up.values()) - \
-                    sum(x) * self.LONG_BLOWUP  # add futures pnl
+                    sum(x) * self._long_blowup  # add futures pnl
 
         # down...
         future_down = {
-            symbol: {'weight': data['weight'] * (1 - self.SHORT_BLOWUP), 'mark': data['mark'] * (1 - self.SHORT_BLOWUP)}
+            symbol: {'weight': data['weight'] * (1 - self._short_blowup), 'mark': data['mark'] * (1 - self._short_blowup)}
             for symbol, data in future_weights.items()}
         spot_down = {
-            coin: {'weight': data['weight'] * (1 - self.SHORT_BLOWUP), 'mark': data['mark'] * (1 - self.SHORT_BLOWUP)}
+            coin: {'weight': data['weight'] * (1 - self._short_blowup), 'mark': data['mark'] * (1 - self._short_blowup)}
             for coin, data in spot_weights.items()}
         (collateral_down, im_short_down, mm_short_down) = self.spotMargins(spot_down)
         (im_fut_down, mm_fut_down) = self.futureMargins(future_down)
         sum_MM_down = sum(x for x in collateral_down.values()) - \
                       sum(x for x in mm_fut_down.values()) - \
                       sum(x for x in mm_short_down.values()) + \
-                      sum(x) * self.SHORT_BLOWUP  # add the futures pnl
+                      sum(x) * self._short_blowup  # add the futures pnl
 
         # flat + a blowup_idx only shock
         (collateral, im_short, mm_short) = self.spotMargins(spot_weights)
@@ -291,7 +286,7 @@ class BasisMarginCalculator(MarginCalculator):
         IM = pd.DataFrame([collateral]).T - pd.DataFrame([im_short]).T
         IM = pd.concat([IM, -pd.DataFrame([im_fut]).T])  # IM.append(-pd.DataFrame([im_fut]).T)
         totalIM = self._equity - sum(x) - 0.1 * max([0, sum(x) - self._equity]) + sum(
-            IM[0]) - self._equity * self.OPEN_ORDERS_HEADROOM
+            IM[0]) - self._equity * self._open_order_headroom
         totalMM = self._equity - sum(x) - 0.03 * max([0, sum(x) - self._equity]) + min([sum_MM, sum_MM_up, sum_MM_down])
 
         return {'totalIM': totalIM,
