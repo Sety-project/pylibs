@@ -538,8 +538,8 @@ class myFtx(ccxtpro.ftx):
                                                            semaphore=self.rest_semaphor,
                                                            return_exceptions=True)
         for clientOrderId,external_status in zip(internal_order_internal_status.keys(),internal_order_external_status):
-            if isinstance(external_status, ccxt.OrderNotFound):
-                self.myLogger.warning(f'zombie {clientOrderId} not found')
+            if isinstance(external_status, Exception):
+                self.myLogger.warning(f'reconcile_orders {clientOrderId} : {external_status}')
                 continue
             if external_status['status'] != 'open':
                 self.lifecycle_cancel_or_reject(external_status | {'lifecycle_state': 'canceled', 'comment':'reconciled_zombie'})
@@ -846,7 +846,7 @@ class myFtx(ccxtpro.ftx):
         # log risk
         self.risk_reconciliations += [{'lifecycle_state': 'remote_risk', 'symbol':symbol_, 'delta_timestamp':self.risk_state[coin][symbol_]['delta_timestamp'],
                                        'delta':self.risk_state[coin][symbol_]['delta'],'netDelta':self.risk_state[coin]['netDelta'],
-                                       'pv':self.pv,'calculated_IM':self.margin.estimate(self,'IM'), 'margin_headroom':self.margin.actual_IM,
+                                       'pv':self.pv,'estimated_IM':self.margin.estimate(self,'IM'), 'actual_IM':self.margin.actual_IM,
                                        'pv error': self.pv-(previous_pv or 0),'total_delta error': self.total_delta-(previous_total_delta or 0)}
                                       for coin,coindata in self.risk_state.items()
                                       for symbol_ in coindata.keys() if symbol_ in self.markets]
@@ -932,13 +932,13 @@ class myFtx(ccxtpro.ftx):
                                                                   fill['price']))
 
         current = self.risk_state[coin][symbol]['delta']
-        initial = self.exec_parameters[coin][symbol]['target'] * fill['price'] - \
-                  self.exec_parameters[coin][symbol]['diff'] * fill['price']
         target = self.exec_parameters[coin][symbol]['target'] * fill['price']
+        diff = self.exec_parameters[coin][symbol]['diff'] * fill['price']
+        initial = self.exec_parameters[coin][symbol]['target'] * fill['price'] - diff
         self.myLogger.info('{} risk at {} ms: {}% done [current {}, initial {}, target {}]'.format(
             symbol,
             self.risk_state[coin][symbol]['delta_timestamp'],
-            (current - initial) / max([1e-18,self.exec_parameters[coin][symbol]['diff'] * fill['price']]) * 100,
+            (current - initial) / diff * 100,
             current,
             initial,
             target))
@@ -1018,7 +1018,7 @@ class myFtx(ccxtpro.ftx):
 
         # size to do:
         original_size = params['target'] - self.risk_state[coin][symbol]['delta']/mid
-        if (np.abs(original_size) < self.exec_parameters[coin][symbol]['sizeIncrement']):
+        if np.abs(original_size) < 0.01 * self.pv: #self.exec_parameters[coin][symbol]['sizeIncrement']:
             self.running_symbols.remove(symbol)
             self.myLogger.info(f'{symbol} done, {self.running_symbols} left to do')
             if self.running_symbols == []:
