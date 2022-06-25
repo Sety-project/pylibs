@@ -112,18 +112,18 @@ class MarginCalculator:
         amount = np.abs(size)
         return min(- 0.03 * amount * mark, 0.6 * self.future_IM(symbol ,size ,mark))
     def spot_IM(self ,symbol ,size ,mark):
-        amount = np.abs(size)
         # https://help.ftx.com/hc/en-us/articles/360031149632
         if size < 0:
-            collateral = amount
-            im_short = amount * max(1.1 / self._collateralWeightInitial[symbol] - 1,
-                                     self._imfFactor[f'{symbol}:USD'] * np.sqrt(amount / mark))
+            collateral = size
+            im_short = size * max(1.1 / self._collateralWeightInitial[symbol] - 1,
+                                     self._imfFactor[f'{symbol}:USD'] * np.sqrt(np.abs(size)))
         else:
-            collateral = amount * min(self._collateralWeight[symbol],
-                                      1.1 / (1 + self._imfFactor[f'{symbol}:USD'] * np.sqrt(amount / mark)))
+            collateral = size * min(self._collateralWeight[symbol],
+                                      1.1 / (1 + self._imfFactor[f'{symbol}:USD'] * np.sqrt(np.abs(size))))
             im_short = 0
-        return mark * (collateral - im_short)
+        return mark * (collateral + im_short)
     def spot_MM(self, symbol, size, mark):
+        raise Exception('fix formula (split collateral out')
         # https://help.ftx.com/hc/en-us/articles/360053007671-Spot-Margin-Trading-Explainer
         return min(- 0.03 * np.abs(size) * mark, 0.6 * self.future_IM(symbol, size, mark))
 
