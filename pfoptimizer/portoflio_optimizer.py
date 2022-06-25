@@ -12,7 +12,7 @@ import pandas as pd
 
 from pfoptimizer.ftx_snap_basis import *
 
-from riskpnl.ftx_portfolio import *
+from riskpnl.ftx_risk_pnl import *
 
 from utils.ftx_utils import fetch_futures, find_spot_ticker
 from utils.portfolio_optimizer_utils import *

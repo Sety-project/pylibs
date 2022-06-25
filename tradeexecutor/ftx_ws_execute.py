@@ -7,7 +7,8 @@ from utils.ftx_utils import *
 from utils.config_loader import *
 from utils.ccxt_utilities import *
 from histfeed.ftx_history import fetch_trades_history
-from riskpnl.ftx_portfolio import diff_portoflio, MarginCalculator
+from riskpnl.ftx_risk_pnl import diff_portoflio
+from riskpnl.ftx_margin import MarginCalculator
 from riskpnl.post_trade import batch_summarize_exec_logs
 
 import ccxtpro
@@ -298,7 +299,7 @@ class myFtx(ccxtpro.ftx):
                    | {key: mkt_data[key] for key in ['bid', 'bidVolume', 'ask', 'askVolume']}
 
         #4) mine genesis block
-        self.orders_lifecycle[clientOrderId] = [current]   # c'est l'order book
+        self.orders_lifecycle[clientOrderId] = [current]
 
         return clientOrderId
 
@@ -640,7 +641,7 @@ class myFtx(ccxtpro.ftx):
         # compute IM
         # Initializes a margin calculator that can understand the margin of an order
         # reconcile the margin of an exchange with the margin we calculate
-        self.margin_calculator = await MarginCalculator.build_margin_calculator(self)
+        self.margin_calculator = await MarginCalculator.margin_calculator_factory(self)
 
         # populates risk, pv and IM
         self.latest_order_reconcile_timestamp = self.exec_parameters['timestamp']
@@ -662,7 +663,7 @@ class myFtx(ccxtpro.ftx):
                                       tzinfo=timezone.utc).strftime(
                                       "%Y%m%d_%H%M%S") + '_request.json'))
 
-    async def update_exec_parameters(self): # cut in 10):   # le process minutely fait ca en gros
+    async def update_exec_parameters(self):
         '''scales order placement params with time'''
         frequency = timedelta(minutes=1)
         end = datetime.now(timezone.utc)
@@ -718,8 +719,10 @@ class myFtx(ccxtpro.ftx):
             for symbol, data in coin_data.items():
                 stdev = data['vwap'].std().squeeze()
                 if not (stdev>0): stdev = 1e-16
+
                 # edit_price_depth = how far to put limit on risk increasing orders
                 self.exec_parameters[coin][symbol]['edit_price_depth'] = stdev * np.sqrt(self.parameters['edit_price_tolerance']) * scaler
+
                 # aggressive_edit_price_depth = how far to put limit on risk reducing orders
                 self.exec_parameters[coin][symbol]['aggressive_edit_price_depth'] = self.parameters[
                                                                                         'aggressive_edit_price_tolerance'] * \
@@ -728,22 +731,24 @@ class myFtx(ccxtpro.ftx):
                 # edit_trigger_depth = how far to let the mkt go before re-pegging limit orders
                 self.exec_parameters[coin][symbol]['edit_trigger_depth'] = stdev * np.sqrt(
                     self.parameters['edit_trigger_tolerance']) * scaler
+
                 # stop_depth = how far to set the stop on risk reducing orders
                 self.exec_parameters[coin][symbol]['stop_depth'] = stdev * np.sqrt(self.parameters['stop_tolerance']) * scaler
+
                 # slice_size: cap IM impact to:
-                # - an equal share of margin headroom
+                # - an equal share of margin headroom (this assumes margin is refreshed !)
                 # - an expected time to trade consistent with edit_price_tolerance
                 # - risk
-                minProvideSize = self.exec_parameters[coin][symbol]['sizeIncrement']
-                incremental_margin_usd = self.margin_calculator.margin_cost(symbol,
-                                                          self.mid(symbol),
-                                                          self.exec_parameters[coin][symbol]['diff'],
-                                                          self.usd_balance)
-                margin_share = self.margin_headroom * np.abs(self.exec_parameters[coin][symbol]['diff']/ incremental_margin_usd ) / len(self.running_symbols)
+                incremental_margin_usd = self.margin_calculator.order_marginal_cost(symbol,
+                                                                                    self.exec_parameters[coin][symbol]['diff'],
+                                                                                    self.mid(symbol),
+                                                                                    'IM',
+                                                                                    'spot' if self.markets[symbol]['spot'] else 'future')
+                margin_share = self.margin_headroom * np.abs(self.exec_parameters[coin][symbol]['diff'] / incremental_margin_usd ) / len(self.running_symbols)
                 volume_share = self.parameters['slice_factor'] * self.parameters['edit_price_tolerance'] * \
                                data['volume'].mean()
                 self.exec_parameters[coin][symbol]['slice_size'] = max(
-                    [minProvideSize, min([margin_share, volume_share])])
+                    [self.exec_parameters[coin][symbol]['sizeIncrement'], min([margin_share, volume_share])])
 
         self.latest_exec_parameters_reconcile_timestamp = nowtime
         self.myLogger.info(f'scaled params by {scaler} at {nowtime}')
@@ -815,7 +820,7 @@ class myFtx(ccxtpro.ftx):
                                             if symbol in self.markets and 'delta' in data.keys()])
 
             # update IM
-            await self.update_margin_data(balances, positions)
+            await self.margin_calculator.refresh(self,risks)
 
             # update_exec_parameters
             await self.update_exec_parameters()
@@ -865,20 +870,9 @@ class myFtx(ccxtpro.ftx):
         self.margin_calculator.estimate(self.usd_balance, spot_weight, future_weight)
         self.calculated_IM = sum(value for value in self.margin_calculator.estimated_IM.values())
         # fetch IM
-        account_info = (await self.privateGetAccount())['result']
-        self.margin_calculator.update_actual(account_info)
-        self.margin_headroom = self.margin_calculator.actual_IM if float(
-            account_info['totalPositionSize']) else self.pv
+        await self.margin_calculator.update_actual(self)
+        self.margin_headroom = self.margin_calculator.actual_IM #if float(            account_info['totalPositionSize']) else self.pv
 
-    async def adjust_order_for_margin(self, size, symbol):
-        risks = await safe_gather([self.fetch_balance(), self.fetch_positions()])
-        await self.update_margin_data(*risks)
-        cost = self.margin_calculator.margin_cost(symbol,
-                                                  self.mid(symbol),
-                                                  size,
-                                                  self.usd_balance)
-        self.myLogger.warning(f'marginal cost {cost}, vs margin_headroom {self.margin_headroom} and calculated_IM {self.calculated_IM}')
-        return size * np.abs(self.margin_headroom / cost)
 
     # --------------------------------------------------------------------------------------------
     # ---------------------------------- WS loops, processors and message handlers ---------------
@@ -944,6 +938,9 @@ class myFtx(ccxtpro.ftx):
         self.risk_state[coin]['netDelta'] += fill_size
         self.total_delta += fill_size
 
+        #update margin
+        self.margin_calculator.add_instrument(symbol, fill_size, 'spot' if self.markets[symbol]['spot'] else 'future')
+
         # log event
         fill['clientOrderId'] = fill['info']['clientOrderId']
         fill['comment'] = 'websocket_fill'
@@ -957,13 +954,12 @@ class myFtx(ccxtpro.ftx):
 
         current = self.risk_state[coin][symbol]['delta']
         initial = self.exec_parameters[coin][symbol]['target'] * fill['price'] - \
-                  self.exec_parameters[coin][symbol][
-                      'diff'] * fill['price']
+                  self.exec_parameters[coin][symbol]['diff'] * fill['price']
         target = self.exec_parameters[coin][symbol]['target'] * fill['price']
         self.myLogger.info('{} risk at {} ms: {}% done [current {}, initial {}, target {}]'.format(
             symbol,
             self.risk_state[coin][symbol]['delta_timestamp'],
-            (current - initial) / (target - initial) * 100,
+            (current - initial) / max([1e-18,self.exec_parameters[coin][symbol]['diff'] * fill['price']]) * 100,
             current,
             initial,
             target))
@@ -1055,8 +1051,7 @@ class myFtx(ccxtpro.ftx):
         globalDelta = self.risk_state[coin]['netDelta'] + self.parameters['global_beta'] * (self.total_delta - self.risk_state[coin]['netDelta'])
         marginal_risk = np.abs(globalDelta/mid + original_size)-np.abs(globalDelta/mid)
 
-        # if increases risk, go passive. logique de comment on place les ordres.
-        # tu regardes le prix et le risk et tu decides comment tu places les ordres
+        # if increases risk, go passive.
         if marginal_risk>0:
             stop_depth = None
             current_basket_price = sum(self.mid(_symbol)*self.exec_parameters[coin][_symbol]['diff']
@@ -1084,8 +1079,7 @@ class myFtx(ccxtpro.ftx):
         self.peg_or_stopout(symbol,size,orderbook,edit_trigger_depth=params['edit_trigger_depth'],edit_price_depth=edit_price_depth,stop_depth=stop_depth)
 
     def peg_or_stopout(self,symbol,size,orderbook,edit_trigger_depth,edit_price_depth,stop_depth=None):
-        # il a tous les niveaux qu'il faut faire
-        '''places an order after checking OMS
+        '''places an order after checking OMS + margin
         creates or edits orders, pegging to orderbook
         goes taker when depth<increment
         size in coin, already filtered
@@ -1117,12 +1111,36 @@ class myFtx(ccxtpro.ftx):
                     asyncio.create_task(self.cancel_order(event_history[-1]['clientOrderId'],'duplicates'))
                     self.myLogger.warning('canceled duplicate {} order {}'.format(symbol,event_history[-1]['clientOrderId']))
 
+        # skip if there is inflight on the spread
+        if self.pending_new_histories(coin) != []:#TODO: rather incorporate orders_pending_new in risk, rather than block
+            if self.pending_new_histories(coin,symbol) != []:
+                self.myLogger.warning('orders {} should not be in flight'.format([order['clientOrderId'] for order in self.pending_new_histories(coin,symbol)[-1]]))
+            else:
+                # this happens mostly between pending_new and create_order on the other leg. not a big deal...
+                self.myLogger.warning('orders {} still in flight. holding off {}'.format(
+                    [order['clientOrderId'] for order in self.pending_new_histories(coin)[-1]],symbol))
+            await asyncio.sleep(0.2)
+            #await self.reconcile()
+            return
 
         # if no open order, create an order
         order_side = 'buy' if size>0 else 'sell'
         if len(event_histories)==0:
+            # trim size to margin allocation (equal for all running symbols)
+            marginal_IM = self.margin_calculator.order_marginal_cost(symbol, abs(size), mid, 'IM',
+                                                                      'spot' if self.markets[symbol]['spot'] else 'future')
+            headroom_estimate = self.margin_calculator.estimate(self,'IM')
+
+            # if looks out of margin, check before skipping
+            if headroom_estimate <= 0:
+                await self.margin_calculator.update_actual(self)
+                headroom_estimate = self.margin_calculator.actual_IM
+                if headroom_estimate <= 0: return
+
+            trimmed_size = np.abs( size * min(1, max(0,headroom_estimate) / max(1e-6, - marginal_IM) / len(self.running_symbols)))
+
             (postOnly, ioc) = (True, False) if edit_price_depth > priceIncrement else (False, True)
-            asyncio.create_task(self.create_order(symbol, 'limit', order_side, np.abs(size), price=edit_price,
+            asyncio.create_task(self.create_order(symbol, 'limit', order_side, trimmed_size, price=edit_price,
                                                   params={'postOnly': postOnly,'ioc': ioc,
                                                           'comment':'new' if edit_price_depth>0 else 'rush'}))
         # if only one and it's editable, stopout or peg or wait
@@ -1149,22 +1167,6 @@ class myFtx(ccxtpro.ftx):
                                                             'comment':'chase'},
                                                     previous_clientOrderId = order['clientOrderId']))
 
-        # # raise exception if it cannot create order
-        # ### see error_hierarchy in DerivativeArbitrage/venv/Lib/site-packages/ccxt/base/errors.py
-        # except ccxt.InvalidOrder as e: # is ExchangeError
-        #     if "Order not found" in str(e):
-        #         self.myLogger.warning(str(e) + str(order))
-        #     elif ("Size too small for provide" or "Size too small") in str(e):
-        #         # usually because filled btw remaining checked and order modify
-        #         self.myLogger.warning('{}: {} too small {}...or {} < {}'.format(order,np.abs(size),sizeIncrement,order['clientOrderId'].split('_')[2],order['timestamp']))
-        #     else:
-        #         self.myLogger.warning(str(e) + str(order))
-        # except ccxt.ExchangeError as e:  # is base error
-        #     if "Must modify either price or size" in str(e):
-        #         self.myLogger.warning(str(e) + str(order))
-        #     else:
-        #         self.myLogger.warning(str(e), exc_info=True)
-
     # ---------------------------------- low level
 
     async def edit_order(self,*args,**kwargs):
@@ -1174,52 +1176,34 @@ class myFtx(ccxtpro.ftx):
     async def create_order(self, symbol, type, side, amount, price=None, params={}):
         '''if acknowledged, place order. otherwise just reconcile
         orders_pending_new is blocking'''
-        coin = self.markets[symbol]['base']
-        # check that there is no inflight on the spread
-        if self.pending_new_histories(coin) != []:#TODO: rather incorporate orders_pending_new in risk, rather than block
-            if self.pending_new_histories(coin,symbol) != []:
-                self.myLogger.warning('orders {} should not be in flight'.format([order['clientOrderId'] for order in self.pending_new_histories(coin,symbol)[-1]]))
+        # set pending_new -> send rest -> if success, leave pending_new and give id. Pls note it may have been caught by handle_order by then.
+        clientOrderId = self.lifecycle_pending_new({'symbol': symbol,
+                                                    'type': type,
+                                                    'side': side,
+                                                    'amount': amount,
+                                                    'remaining': amount,
+                                                    'price': price,
+                                                    'comment': params['comment']})
+        try:
+            # REST request
+            order = await super().create_order(symbol, type, side, amount, price, params | {'clientOrderId':clientOrderId})
+        except Exception as e:
+            order = {'clientOrderId':clientOrderId,
+                     'timestamp':datetime.now().timestamp() * 1000,
+                     'lifecycle_state':'rejected',
+                     'comment':'create/'+str(e)}
+            self.lifecycle_cancel_or_reject(order)
+            # if not enough margin, recursive call on a reduced amount
+            if isinstance(e,ccxt.InsufficientFunds):
+                self.myLogger.warning(f'{clientOrderId} too big: {amount*self.mid(symbol)}')
+            elif isinstance(e,ccxt.RateLimitExceeded):
+                throttle = 200.0
+                self.myLogger.warning(f'{str(e)}: waiting {throttle} ms)')
+                await asyncio.sleep(throttle / 1000)
             else:
-                # this happens mostly between pending_new and create_order on the other leg. not a big deal...
-                self.myLogger.warning('orders {} still in flight. holding off {}'.format(
-                    [order['clientOrderId'] for order in self.pending_new_histories(coin)[-1]],symbol))
-            await asyncio.sleep(1)
-            #await self.reconcile()
+                raise e
         else:
-            # si ya pas d'order inflight, je veux envoyer un ordre.
-            # L'OMS c'est un dico de liste d'etats.
-            # il cree un nouvel clOrderId et le met dans le state pending new
-            # set pending_new -> send rest -> if success, leave pending_new and give id. Pls note it may have been caught by handle_order by then.
-            clientOrderId = self.lifecycle_pending_new({'symbol': symbol,
-                                                        'type': type,
-                                                        'side': side,
-                                                        'amount': amount,
-                                                        'remaining': amount,
-                                                        'price': price,
-                                                        'comment': params['comment']})
-            try:
-                # REST request pour envoyer l'ordre
-                order = await super().create_order(symbol, type, side, amount, price, params | {'clientOrderId':clientOrderId})
-            except Exception as e:
-                order = {'clientOrderId':clientOrderId,
-                         'timestamp':datetime.now().timestamp() * 1000,
-                         'lifecycle_state':'rejected',
-                         'comment':'create/'+str(e)}
-                self.lifecycle_cancel_or_reject(order)
-                # if not enough margin, recursive call on a reduced amount
-                if isinstance(e,ccxt.InsufficientFunds):
-                    margin_adjusted_amount = 0.9 * min([amount,np.abs(await self.adjust_order_for_margin(amount * (1 if side == 'buy' else -1), symbol))])
-                    #assert margin_adjusted_amount<amount,"margin_adjusted_amount<amount"
-                    self.myLogger.warning(f'{clientOrderId} could be adjusted from {amount*self.mid(symbol)} to {margin_adjusted_amount*self.mid(symbol)}')
-                    # if margin_adjusted_amount > self.exec_parameters[coin][symbol]['sizeIncrement']:
-                    #     params['comment'] = params['comment'] + '/' + 'margin_adjusted'
-                    #     await self.create_order(symbol, type, side, margin_adjusted_amount, price=None, params=params)
-                elif isinstance(e,ccxt.RateLimitExceeded):
-                    throttle = 200.0
-                    self.myLogger.warning(f'{str(e)}: waiting {throttle} ms)')
-                    await asyncio.sleep(throttle / 1000)
-            else:
-                self.lifecycle_sent(order)
+            self.lifecycle_sent(order)
 
     async def cancel_order(self, clientOrderId, trigger):
         '''set in flight, send cancel, set as pending cancel, set as canceled or insist'''

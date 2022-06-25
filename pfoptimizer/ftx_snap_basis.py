@@ -1,6 +1,6 @@
 import scipy.optimize as opt
 
-from riskpnl.ftx_portfolio import BasisMarginCalculator
+from riskpnl.ftx_margin import BasisMarginCalculator
 from histfeed.ftx_history import *
 from utils.portfolio_optimizer_utils import *
 
