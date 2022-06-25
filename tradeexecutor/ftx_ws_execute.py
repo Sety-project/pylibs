@@ -111,9 +111,7 @@ class myFtx(ccxtpro.ftx):
         self.pv = None
         self.usd_balance = None # it's handy for marginal calcs
         self.total_delta = None # in USD
-        self.margin_headroom = None
-        self.margin_calculator = None
-        self.calculated_IM = None
+        self.margin = None
 
         self.myLogger = logging.getLogger(__name__)
 
@@ -161,6 +159,7 @@ class myFtx(ccxtpro.ftx):
         return found
 
     def mid(self,symbol):
+        if symbol == 'USD/USD': return 1.0
         data = self.tickers[symbol] if symbol in self.tickers else self.markets[symbol]['info']
         return 0.5*(float(data['bid'])+float(data['ask']))
 
@@ -285,8 +284,8 @@ class myFtx(ccxtpro.ftx):
                     'delta':risk_data[symbol]['delta'],
                     'netDelta': risk_data['netDelta'],
                     'pv(wrong timestamp)':self.pv,
-                    'margin_headroom':self.margin_headroom,
-                    'IM_discrepancy':self.calculated_IM - self.margin_headroom}
+                    'margin_headroom':self.margin.actual_IM,
+                    'IM_discrepancy': self.margin.estimate(self,'IM') - self.margin.actual_IM}
 
         ## mkt details
         if symbol in self.tickers:
@@ -641,7 +640,7 @@ class myFtx(ccxtpro.ftx):
         # compute IM
         # Initializes a margin calculator that can understand the margin of an order
         # reconcile the margin of an exchange with the margin we calculate
-        self.margin_calculator = await MarginCalculator.margin_calculator_factory(self)
+        self.margin = await MarginCalculator.margin_calculator_factory(self)
 
         # populates risk, pv and IM
         self.latest_order_reconcile_timestamp = self.exec_parameters['timestamp']
@@ -739,12 +738,12 @@ class myFtx(ccxtpro.ftx):
                 # - an equal share of margin headroom (this assumes margin is refreshed !)
                 # - an expected time to trade consistent with edit_price_tolerance
                 # - risk
-                incremental_margin_usd = self.margin_calculator.order_marginal_cost(symbol,
-                                                                                    self.exec_parameters[coin][symbol]['diff'],
-                                                                                    self.mid(symbol),
+                incremental_margin_usd = self.margin.order_marginal_cost(symbol,
+                                                                         self.exec_parameters[coin][symbol]['diff'],
+                                                                         self.mid(symbol),
                                                                                     'IM',
-                                                                                    'spot' if self.markets[symbol]['spot'] else 'future')
-                margin_share = self.margin_headroom * np.abs(self.exec_parameters[coin][symbol]['diff'] / incremental_margin_usd ) / len(self.running_symbols)
+                                                                                    self.markets[symbol]['type'])
+                margin_share = self.margin.actual_IM * np.abs(self.exec_parameters[coin][symbol]['diff'] / incremental_margin_usd) / len(self.running_symbols)
                 volume_share = self.parameters['slice_factor'] * self.parameters['edit_price_tolerance'] * \
                                data['volume'].mean()
                 self.exec_parameters[coin][symbol]['slice_size'] = max(
@@ -820,7 +819,7 @@ class myFtx(ccxtpro.ftx):
                                             if symbol in self.markets and 'delta' in data.keys()])
 
             # update IM
-            await self.margin_calculator.refresh(self,risks)
+            await self.margin.refresh(self, risks)
 
             # update_exec_parameters
             await self.update_exec_parameters()
@@ -847,31 +846,11 @@ class myFtx(ccxtpro.ftx):
         # log risk
         self.risk_reconciliations += [{'lifecycle_state': 'remote_risk', 'symbol':symbol_, 'delta_timestamp':self.risk_state[coin][symbol_]['delta_timestamp'],
                                        'delta':self.risk_state[coin][symbol_]['delta'],'netDelta':self.risk_state[coin]['netDelta'],
-                                       'pv':self.pv,'calculated_IM':self.calculated_IM,'margin_headroom':self.margin_headroom,
+                                       'pv':self.pv,'calculated_IM':self.margin.estimate(self,'IM'), 'margin_headroom':self.margin.actual_IM,
                                        'pv error': self.pv-(previous_pv or 0),'total_delta error': self.total_delta-(previous_total_delta or 0)}
                                       for coin,coindata in self.risk_state.items()
                                       for symbol_ in coindata.keys() if symbol_ in self.markets]
         await self.risk_reconciliation_to_json()
-
-    async def update_margin_data(self, balances, positions):
-        spot_weight = {}
-        future_weight = {}
-        for position in positions:
-            if float(position['info']['netSize']) != 0:
-                symbol = position['symbol']
-                mid = self.mid(symbol)
-                future_weight |= {symbol: {'weight': float(position['info']['netSize']) * mid, 'mark': mid}}
-        for coin, balance in balances.items():
-            if coin != 'USD' and coin in self.currencies and balance['total'] != 0:
-                mid = self.mid(coin + '/USD')
-                spot_weight |= {(coin): {'weight': balance['total'] * mid, 'mark': mid}}
-        (spot_weight, future_weight) = MarginCalculator.add_pending_orders(self, spot_weight, future_weight)
-
-        self.margin_calculator.estimate(self.usd_balance, spot_weight, future_weight)
-        self.calculated_IM = sum(value for value in self.margin_calculator.estimated_IM.values())
-        # fetch IM
-        await self.margin_calculator.update_actual(self)
-        self.margin_headroom = self.margin_calculator.actual_IM #if float(            account_info['totalPositionSize']) else self.pv
 
 
     # --------------------------------------------------------------------------------------------
@@ -939,7 +918,7 @@ class myFtx(ccxtpro.ftx):
         self.total_delta += fill_size
 
         #update margin
-        self.margin_calculator.add_instrument(symbol, fill_size, 'spot' if self.markets[symbol]['spot'] else 'future')
+        self.margin.add_instrument(symbol, fill_size, self.markets[symbol]['type'])
 
         # log event
         fill['clientOrderId'] = fill['info']['clientOrderId']
@@ -989,8 +968,8 @@ class myFtx(ccxtpro.ftx):
         absolute_risk = sum(abs(data['netDelta']) for data in self.risk_state.values())
         if absolute_risk > self.pv * self.limit.delta_limit:
             self.myLogger.warning(f'absolute_risk {absolute_risk} > {self.pv * self.limit.delta_limit}')
-        if self.margin_headroom < self.pv/100:
-            self.myLogger.warning(f'IM {self.margin_headroom}  < 1%')
+        if self.margin.actual_IM < self.pv/100:
+            self.myLogger.warning(f'IM {self.margin.actual_IM}  < 1%')
 
     async def watch_ticker(self, symbol, params={}):
         '''watch_order_book is faster than watch_tickers so we DON'T LISTEN TO TICKERS. Dirty...'''
@@ -1119,25 +1098,28 @@ class myFtx(ccxtpro.ftx):
                 # this happens mostly between pending_new and create_order on the other leg. not a big deal...
                 self.myLogger.warning('orders {} still in flight. holding off {}'.format(
                     [order['clientOrderId'] for order in self.pending_new_histories(coin)[-1]],symbol))
-            await asyncio.sleep(0.2)
-            #await self.reconcile()
             return
 
         # if no open order, create an order
         order_side = 'buy' if size>0 else 'sell'
         if len(event_histories)==0:
             # trim size to margin allocation (equal for all running symbols)
-            marginal_IM = self.margin_calculator.order_marginal_cost(symbol, abs(size), mid, 'IM',
-                                                                      'spot' if self.markets[symbol]['spot'] else 'future')
-            headroom_estimate = self.margin_calculator.estimate(self,'IM')
+            marginal_IM = self.margin.order_marginal_cost(symbol, abs(size), mid, 'IM',
+                                                                      self.markets[symbol]['type'])
+            headroom_estimate = self.margin.estimate(self, 'IM')
 
-            # if looks out of margin, check before skipping
+            # if looks out of margin, skip
             if headroom_estimate <= 0:
-                await self.margin_calculator.update_actual(self)
-                headroom_estimate = self.margin_calculator.actual_IM
-                if headroom_estimate <= 0: return
+                return
+                #TODO: check before skipping?
+                #await self.margin_calculator.update_actual(self)
+                #headroom_estimate = self.margin_calculator.actual_IM
+                #if headroom_estimate <= 0: return
 
-            trimmed_size = np.abs( size * min(1, max(0,headroom_estimate) / max(1e-6, - marginal_IM) / len(self.running_symbols)))
+            trim_factor = max(0,headroom_estimate) / max(1e-6, - marginal_IM) / len(self.running_symbols)
+            trimmed_size = np.abs( size * min(1,trim_factor))
+            if trim_factor<1:
+                self.myLogger.warning(f'trimmed {size} {symbol} by {trim_factor}')
 
             (postOnly, ioc) = (True, False) if edit_price_depth > priceIncrement else (False, True)
             asyncio.create_task(self.create_order(symbol, 'limit', order_side, trimmed_size, price=edit_price,

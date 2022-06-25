@@ -11,17 +11,16 @@ class MarginCalculator:
         self._account_leverage = account_leverage
         self._collateralWeight = {f'{coin}/USD': collateralWeight[coin]
                                   for coin, data in collateralWeight.items() } |{'USD/USD' :1.0}
-        self._imfFactor = imfFactor
+        self._imfFactor = imfFactor | {'USD/USD:USD':0.0}
         self._collateralWeightInitial = {f'{coin}/USD': collateralWeightInitial
             ({'underlying': coin, 'collateralWeight': data})
                                          for coin, data in collateralWeight.items() } |{'USD/USD' :1.0}
-        self.estimated_IM = None        # dict
-        self.estimated_MM = None        # dict
+
         self.actual_futures_IM = None   # dict, keys by id not symbol
         self.actual_IM = None           # float
         self.actual_MM = None           # float
 
-        self.balances_and_positions = dict() # {symbol: {'size': size, 'spot_or_future': spot or future}}...includes USD/USD
+        self.balances_and_positions = dict() # {symbol: {'size': size, 'spot_or_swap': spot or future}}...includes USD/USD
         self.open_orders = dict() # {symbol: {'long':2,'short':1}}
 
     # --------------- slow explicit factory / reconcilators -------------
@@ -50,18 +49,19 @@ class MarginCalculator:
         self.balances_and_positions = dict()
 
         if risks is None:
-            await safe_gather([exchange.fetch_balance(), exchange.fetch_positions()])
-        balances = risks[0]
-        positions = risks[1]
+            risks = await safe_gather([exchange.fetch_positions(),exchange.fetch_balance()])
+        positions = risks[0]
+        balances = risks[1]
+
         for position in positions:
             if float(position['info']['netSize']) != 0:
                 symbol = position['symbol']
                 self.balances_and_positions[symbol] = {'size': float(position['info']['netSize']),
-                                                       'spot_or_future': 'future'}
+                                                       'spot_or_swap': 'swap'}
         for coin, balance in balances.items():
             if coin in exchange.currencies and balance['total'] != 0:
                 self.balances_and_positions[f'{coin}/USD'] = {'size' :balance['total'],
-                                                              'spot_or_future' :'spot'}
+                                                              'spot_or_swap' :'spot'}
 
     def set_open_orders(self, exchange):
         '''reset open orders and add all orders by side'''
@@ -72,7 +72,7 @@ class MarginCalculator:
             symbol = exchange.latest_value(clientOrderId, 'symbol')
             side = (1 if exchange.latest_value(clientOrderId, 'side') == 'buy' else -1)
             amount = exchange.latest_value(clientOrderId, 'remaining') * side
-            instrument_type = exchange.market(symbol)['spot_or_future']
+            instrument_type = exchange.markets[symbol]['type']
             self.add_open_order(symbol, side, amount, instrument_type)
 
     async def update_actual(self, exchange):
@@ -95,43 +95,43 @@ class MarginCalculator:
         '''size in coin'''
         increment = self.balances_and_positions[symbol]['size'] if symbol in self.balances_and_positions else 0
         self.balances_and_positions[symbol] = {'size' :size + increment,
-                                               'spot_or_future' :instrument_type}
+                                               'spot_or_swap' :instrument_type}
 
     def add_open_order(self, symbol, side, amount, instrument_type):
         if symbol not in self.open_orders:
-            self.open_orders[symbol] = {'spot_or_future' :instrument_type, 'longs': 0, 'shorts': 0}
+            self.open_orders[symbol] = {'spot_or_swap' :instrument_type, 'longs': 0, 'shorts': 0}
         self.open_orders[symbol]['longs' if side > 0 else 'shorts'] += amount
 
     # --------------- calculators -------------
 
-    def future_IM(self ,symbol ,size ,mark):
+    def swap_IM(self ,symbol ,size ,mark):
         amount = np.abs(size)
-        return - amount * max(1.0 / self._account_leverage,
+        return - mark * amount * max(1.0 / self._account_leverage,
                               self._imfFactor[symbol] * np.sqrt(amount / mark))
-    def future_MM(self ,symbol ,size ,mark):
+    def swap_MM(self ,symbol ,size ,mark):
         amount = np.abs(size)
-        return min(- 0.03 * amount, 0.6 * self.future_IM(symbol ,size ,mark))
+        return min(- 0.03 * amount * mark, 0.6 * self.future_IM(symbol ,size ,mark))
     def spot_IM(self ,symbol ,size ,mark):
         amount = np.abs(size)
         # https://help.ftx.com/hc/en-us/articles/360031149632
         if size < 0:
             collateral = amount
-            im_short = -amount * max(1.1 / self._collateralWeightInitial[symbol] - 1,
-                                     self._imfFactor[symbol] * np.sqrt(amount / mark))
+            im_short = amount * max(1.1 / self._collateralWeightInitial[symbol] - 1,
+                                     self._imfFactor[f'{symbol}:USD'] * np.sqrt(amount / mark))
         else:
             collateral = amount * min(self._collateralWeight[symbol],
-                                      1.1 / (1 + self._imfFactor[symbol] * np.sqrt(amount / mark)))
+                                      1.1 / (1 + self._imfFactor[f'{symbol}:USD'] * np.sqrt(amount / mark)))
             im_short = 0
-        return collateral - im_short
+        return mark * (collateral - im_short)
     def spot_MM(self, symbol, size, mark):
         # https://help.ftx.com/hc/en-us/articles/360053007671-Spot-Margin-Trading-Explainer
-        return min(- 0.03 * np.abs(size), 0.6 * self.future_IM(symbol, size, mark))
+        return min(- 0.03 * np.abs(size) * mark, 0.6 * self.future_IM(symbol, size, mark))
 
     def estimate(self, exchange, IM_or_MM, return_details = False):
         '''returns {symbol:margin}'''
 
         # first, compute margin for existing positions
-        margins = {symbol :self.__getattribute__(self ,instrument['spot_or_future' ] +'_ ' +IM_or_MM)(
+        margins = {symbol :self.__getattribute__(instrument['spot_or_swap']+'_'+IM_or_MM)(
             symbol,
             instrument['size'],
             exchange.mid(symbol))
@@ -140,33 +140,33 @@ class MarginCalculator:
         # modify for open orders
         for symbol ,open_order in self.open_orders.items():
             size_list = []
-            size_list[0] = self.balances_and_positions[symbol]['size'] \
-                if symbol in self.balances_and_positions else 0
-            size_list[1] = size_list[0] + open_order['longs']
-            size_list[2] = size_list[0] - open_order['shorts']
+            size_list.append(self.balances_and_positions[symbol]['size'] \
+                if symbol in self.balances_and_positions else 0)
+            size_list.append(size_list[0] + open_order['longs'])
+            size_list.append(size_list[0] - open_order['shorts'])
 
-            spot_or_future = 'spot' if exchange.markets[symbol]['spot'] else 'future'
-            margins[symbol] = min(MarginCalculator.__getattribute__(self, spot_or_future + '_' + IM_or_MM)(
+            spot_or_swap = exchange.markets[symbol]['type']
+            margins[symbol] = min(self.__getattribute__(spot_or_swap+ '_' + IM_or_MM)(
                 symbol, _size, exchange.mid(symbol)) for _size in size_list)
 
         return margins if return_details else sum(margins.values())
 
-    def order_marginal_cost(self, symbol, size, mid, IM_or_MM, spot_or_future):
+    def order_marginal_cost(self, symbol, size, mid, IM_or_MM, spot_or_swap):
         '''margin impact of an order'''
 
         size_list_before = []
-        size_list_before[0] = self.balances_and_positions[symbol]['size'] \
-            if symbol in self.balances_and_positions else 0
-        size_list_before[1] = size_list_before[0] + \
-                              (self.open_orders[symbol]['longs'] if symbol in self.open_orders else 0)
-        size_list_before[2] = size_list_before[0] - \
-                              (self.open_orders[symbol]['shorts'] if symbol in self.open_orders else 0)
+        size_list_before.append(self.balances_and_positions[symbol]['size'] \
+            if symbol in self.balances_and_positions else 0)
+        size_list_before.append(size_list_before[0] + \
+                              (self.open_orders[symbol]['longs'] if symbol in self.open_orders else 0))
+        size_list_before.append(size_list_before[0] - \
+                              (self.open_orders[symbol]['shorts'] if symbol in self.open_orders else 0))
 
-        size_list_after = size_list_before + [size] * 3
+        size_list_after = [ size_before + size for size_before in size_list_before]
 
-        new_margin = min(MarginCalculator.__getattribute__(self, spot_or_future + '_' + IM_or_MM)(
+        new_margin = min(self.__getattribute__(spot_or_swap + '_' + IM_or_MM)(
             symbol, _size, mid) for _size in size_list_after)
-        old_margin = min(MarginCalculator.__getattribute__(self, spot_or_future + '_' + IM_or_MM)(
+        old_margin = min(self.__getattribute__(spot_or_swap + '_' + IM_or_MM)(
             symbol, _size, mid) for _size in size_list_before)
 
         return new_margin - old_margin
