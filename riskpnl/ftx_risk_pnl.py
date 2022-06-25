@@ -323,7 +323,7 @@ async def fetch_portfolio(exchange,time):
     balances.reset_index(inplace=True)
 
     positions_list = [
-        pd.DataFrame([r['info'] for r in result], dtype=float).set_index('future')[['netSize', 'unrealizedPnl']] for
+        pd.DataFrame([r['info'] for r in result]).set_index('future')[['netSize', 'unrealizedPnl']].astype(float) for
         result in results[2::3]]
     positions = sum(positions_list) / len(positions_list)
     var = sum([pos * pos for pos in positions_list]) / len(positions_list) - positions * positions
