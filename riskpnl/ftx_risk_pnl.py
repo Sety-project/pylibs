@@ -255,16 +255,15 @@ async def diff_portoflio(exchange,future_weights) -> pd.DataFrame():
     target = future_weights.append(cash_weights)
 
     async def fetch_balances_positions(exchange: ccxt.Exchange) -> pd.DataFrame:
-        positions = pd.DataFrame([r['info'] for r in await exchange.fetch_positions(params={})],
-                                 dtype=float).rename(
+        positions = pd.DataFrame([r['info'] for r in await exchange.fetch_positions(params={})]).rename(
             columns={'future': 'name', 'netSize': 'total'})  # 'showAvgPrice':True})
 
-        balances = pd.DataFrame((await exchange.fetch_balance(params={}))['info']['result'],
-                                dtype=float)  # 'showAvgPrice':True})
+        balances = pd.DataFrame((await exchange.fetch_balance(params={}))['info']['result'])  # 'showAvgPrice':True})
         balances = balances[balances['coin'] != 'USD']
         balances['name'] = balances['coin'].apply(lambda c: c+'/USD')
 
         current = positions.append(balances)[['name', 'total']]
+        current['total'] = current['total'].astype(float)
         current = current[current['total'] != 0]
 
         return current

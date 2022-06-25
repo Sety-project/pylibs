@@ -1,8 +1,6 @@
 import scipy.optimize as opt
-
 from riskpnl.ftx_margin import BasisMarginCalculator
 from histfeed.ftx_history import *
-from utils.portfolio_optimizer_utils import *
 
 finite_diff_rel_step = 1e-4
 

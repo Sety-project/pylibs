@@ -1,26 +1,11 @@
 import copy
 import inspect
-import asyncio
-import sys
-import logging
-import os
-import numpy as np
-import shutil
 import datetime
-from datetime import timedelta
-import pandas as pd
-
 from pfoptimizer.ftx_snap_basis import *
-
 from riskpnl.ftx_risk_pnl import *
-
 from utils.ftx_utils import fetch_futures, find_spot_ticker
-from utils.portfolio_optimizer_utils import *
-from utils.async_utils import safe_gather
 from utils.config_loader import *
-
-from histfeed.ftx_history import get_history, build_history
-
+from histfeed.ftx_history import get_history
 from utils.ccxt_utilities import open_exchange
 
 run_i = 0
