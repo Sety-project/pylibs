@@ -79,7 +79,7 @@ async def build_history(futures,
 
     if coroutines:
         # run all coroutines
-        logger.info(f"Gathered {len(coroutines)} coroutines, processing them")
+        logger.info(f"Gathered {len(coroutines)} coroutines, processing them {safe_gather_limit} at a time")
         await safe_gather(coroutines)
     else:
         logger.info("0 coroutines gathered, nothing to do")

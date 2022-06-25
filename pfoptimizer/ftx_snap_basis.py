@@ -210,6 +210,8 @@ def update(futures,point_in_time,history,equity,
 
     # remove low yielding underlyings, except if were in previous portfolio.
     futures = futures[(futures['direction']!=0) | (futures.index.isin(previous_weights_index))]
+    if futures.empty:
+        raise Exception('empty future, are all data missing at that date ?')
 
     # compute realized=\int(carry) and E[\int(carry)]. We're done with direction so remove the max leverage.
     futures['intCarry'] = futures.apply(lambda f: f['intShortCarry'] if f['direction'] < 0 else f['intLongCarry'],axis=1)

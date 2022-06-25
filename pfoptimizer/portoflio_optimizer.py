@@ -165,9 +165,9 @@ async def perp_vs_cash(
 
     (intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow) = \
         forecast(
-                exchange, enriched, hy_history,
-                holding_period,  # to convert slippage into rate
-                signal_horizon,filename= log_file if 'verbose' in optional_params else ''
+            exchange, enriched, hy_history,
+            holding_period,  # to convert slippage into rate
+            signal_horizon,filename= log_file if 'verbose' in optional_params else ''
         )  # historical window for expectations
     updated = update(enriched, point_in_time, hy_history, equity,
                      intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow,
@@ -355,7 +355,7 @@ async def strategy_wrapper(**kwargs):
         slippage_override=slippage_override,
         backtest_start=kwargs['backtest_start'],
         backtest_end=kwargs['backtest_end'],
-        optional_params=['verbose'] if __debug__ else [])
+        optional_params=['verbose'] if (__debug__ and kwargs['backtest_start']==kwargs['backtest_end']) else [])
         for equity in kwargs['equity']
         for concentration_limit in kwargs['concentration_limit']
         for mktshare_limit in kwargs['mktshare_limit']
@@ -499,7 +499,7 @@ def main(*args):
                                         signal_horizon=sig_horizon,
                                         holding_period=hol_period,
                                         slippage_override=slippage_override,
-                                        backtest_start= datetime(2019,6,21,19),#datetime.now().replace(minute=0, second=0, microsecond=0)-timedelta(days=2),# live start was datetime(2022,6,21,19),
+                                        backtest_start= datetime(2020,12,25),#datetime.now().replace(minute=0, second=0, microsecond=0)-timedelta(days=2),# live start was datetime(2022,6,21,19),
                                         backtest_end = datetime.now().replace(minute=0, second=0, microsecond=0)-timedelta(hours=1)))
         logger.info("pfoptimizer terminated successfully...")
         return pd.DataFrame()
