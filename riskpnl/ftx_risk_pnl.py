@@ -1,4 +1,7 @@
 import time as t
+
+import pandas as pd
+
 from utils.ftx_utils import *
 from utils.config_loader import *
 from riskpnl.post_trade import *
@@ -665,7 +668,7 @@ async def risk_and_pnl_wrapper(exchange_name='ftx',subaccount='debug'):
     return plex
 
 async def risk_and_pnl(exchange):
-
+    end_time = datetime.utcnow()
     dirname = os.path.join(os.sep,'tmp','pnl')
 
     # initialize directory and previous_risk if needed
@@ -673,15 +676,15 @@ async def risk_and_pnl(exchange):
         os.umask(0)
         os.makedirs(dirname, mode=0o777)
 
-    risk_filename = os.path.join(os.sep,dirname,'latest_risk.csv')
+    risk_filename = os.path.join(os.sep,dirname,'all_risk.csv')
     if not os.path.isfile(risk_filename):
         previous_risk = pd.DataFrame()
         previous_risk = previous_risk.append(pd.DataFrame(index=[0], data=dict(
             zip(['time', 'coin', 'coinAmt', 'event_type', 'attribution', 'spot', 'mark'],
-                [datetime(2021, 12, 6), 'USD', 0.0, 'delta', 'USD', 1.0, 1.0]))))
+                [end_time - timedelta(hours=1), 'USD', 0.0, 'delta', 'USD', 1.0, 1.0]))))
         previous_risk = previous_risk.append(pd.DataFrame(index=[0], data=dict(
             zip(['time', 'coin', 'coinAmt', 'event_type', 'attribution', 'spot', 'mark'],
-                [datetime(2021, 12, 6), 'USD', 0.0, 'PV', 'USD', 1.0, 1.0]))))
+                [end_time - timedelta(hours=1), 'USD', 0.0, 'PV', 'USD', 1.0, 1.0]))))
         previous_risk.to_csv(risk_filename)
 
     # need to retrieve previous risk / marks
@@ -691,19 +694,23 @@ async def risk_and_pnl(exchange):
                 &(previous_risk['time']>start_time-timedelta(milliseconds= 1000))] #TODO: precision!
 
     # calculate risk
-    end_time = datetime.utcnow()  # 16s is to avoid looking into the future to fetch prices
+    # 16s is to avoid looking into the future to fetch prices
     end_portfolio = await fetch_portfolio(exchange, end_time - timedelta(seconds=14)) # it's live in fact, end_time just there for records
-    # archive risk
-    end_portfolio.to_csv(risk_filename)
-    shutil.copy2(risk_filename, os.path.join(dirname,end_time.strftime("%Y%m%d_%H%M%S") + '_risk.json'))
+    # accrue and archive risk
+    end_portfolio.to_csv(os.path.join(dirname,end_time.strftime("%Y%m%d_%H%M%S") + '_risk.json'))
+    pd.concat([previous_risk,end_portfolio],axis=1).to_csv(risk_filename)
 
     # calculate pnl
     pnl = await compute_plex(exchange,start=start_time,end=end_time,start_portfolio=start_portfolio,end_portfolio=end_portfolio)#margintest
     pnl.sort_values(by='time',ascending=True,inplace=True)
-    # archive pnl
-    pnl_filename = os.path.join(os.sep, dirname, 'latest_pnl.csv')
-    shutil.copy2(pnl_filename, os.path.join(dirname, end_time.strftime("%Y%m%d_%H%M%S") + '_pnl.json'))
+    # accrue and archive pnl
+    pnl.to_csv(os.path.join(dirname, end_time.strftime("%Y%m%d_%H%M%S") + '_pnl.json'))
 
+    pnl_filename = os.path.join(os.sep, dirname, 'all_pnl.csv')
+    if os.path.isfile(pnl_filename):
+        pd.concat([pd.read_csv(pnl_filename),pnl],axis=1).to_csv(pnl_filename)
+    else:
+        pnl.to_csv(pnl_filename)
 
 def ftx_portoflio_main(*argv):
     ''' TODO: improve input params'''
