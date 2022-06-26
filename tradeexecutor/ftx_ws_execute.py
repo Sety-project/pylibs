@@ -884,11 +884,12 @@ class myFtx(ccxtpro.ftx):
 
     def process_order_book(self, symbol, orderbook):
         with self.lock[symbol]:
-            previous_mid = self.mid(symbol)  # based on ticker, in general
+            previous_bbo_hash = sum(self.tickers[symbol][key] for key in ['bid','ask','bidVolume','askVolume'])
             self.populate_ticker(symbol, orderbook)
+            current_bbo_hash = sum(self.tickers[symbol][key] for key in ['bid','ask','bidVolume','askVolume'])
 
             # don't waste time on deep updates
-            if self.mid(symbol) != previous_mid:
+            if current_bbo_hash != previous_bbo_hash:
                 self.quoter(symbol, orderbook)
 
     # ---------------------------------- fills
@@ -1350,7 +1351,7 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
             exchange.logger.exception(f'unknown command {argv[0]}',exc_info=True)
             raise Exception(f'unknown command {argv[0]}', exc_info=True)
 
-        await exchange.build_state(target_portfolio, parameters)   # i
+        await exchange.build_state(target_portfolio, parameters | {'comment': argv[0]})   # i
         coros = [exchange.monitor_risk(),exchange.monitor_orders(),exchange.monitor_fills()]+ \
                 [exchange.monitor_order_book(symbol)
                  for symbol in exchange.running_symbols]

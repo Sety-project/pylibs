@@ -658,55 +658,52 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
 
     return cash_flows.sort_values(by='time',ascending=True)
 
-async def run_plex_wrapper(exchange_name='ftx',subaccount='debug'):
+async def risk_and_pnl_wrapper(exchange_name='ftx',subaccount='debug'):
     exchange = await open_exchange(exchange_name,subaccount)
-    plex= await run_plex(exchange)
+    plex= await risk_and_pnl(exchange)
     await exchange.close()
     return plex
 
-async def run_plex(exchange,dirname='/tmp/pnl/'):
+async def risk_and_pnl(exchange):
 
-    filename = dirname+'portfolio_history_'+exchange.describe()['id']+('_'+exchange.headers['FTX-SUBACCOUNT'] if 'FTX-SUBACCOUNT' in exchange.headers else '')+'.xlsx'
+    dirname = os.path.join(os.sep,'tmp','pnl')
+
+    # initialize directory and previous_risk if needed
     if not os.path.exists(dirname):
         os.umask(0)
         os.makedirs(dirname, mode=0o777)
-    if not os.path.isfile(filename):
-        risk_history = pd.DataFrame()
-        risk_history = risk_history.append(pd.DataFrame(index=[0], data=dict(
+
+    risk_filename = os.path.join(os.sep,dirname,'latest_risk.csv')
+    if not os.path.isfile(risk_filename):
+        previous_risk = pd.DataFrame()
+        previous_risk = previous_risk.append(pd.DataFrame(index=[0], data=dict(
             zip(['time', 'coin', 'coinAmt', 'event_type', 'attribution', 'spot', 'mark'],
                 [datetime(2021, 12, 6), 'USD', 0.0, 'delta', 'USD', 1.0, 1.0]))))
-        risk_history = risk_history.append(pd.DataFrame(index=[0], data=dict(
+        previous_risk = previous_risk.append(pd.DataFrame(index=[0], data=dict(
             zip(['time', 'coin', 'coinAmt', 'event_type', 'attribution', 'spot', 'mark'],
                 [datetime(2021, 12, 6), 'USD', 0.0, 'PV', 'USD', 1.0, 1.0]))))
-        pnl_history = pd.DataFrame()
-        with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
-            risk_history.to_excel(writer, sheet_name='risk')
-            pnl_history.to_excel(writer, sheet_name='pnl')
+        previous_risk.to_csv(risk_filename)
 
-    risk_history = pd.read_excel(filename,sheet_name='risk',index_col=0)
-    pnl_history = pd.read_excel(filename, sheet_name='pnl', index_col=0)
-    start_time = risk_history['time'].max()
-    start_portfolio = risk_history[(risk_history['time']<start_time+timedelta(milliseconds= 1000)) \
-                &(risk_history['time']>start_time-timedelta(milliseconds= 1000))] #TODO: precision!
+    # need to retrieve previous risk / marks
+    previous_risk = pd.read_csv(risk_filename,index_col=0)
+    start_time = previous_risk['time'].max()
+    start_portfolio = previous_risk[(previous_risk['time']<start_time+timedelta(milliseconds= 1000)) \
+                &(previous_risk['time']>start_time-timedelta(milliseconds= 1000))] #TODO: precision!
 
-    end_time = datetime.now() - timedelta(seconds=14)  # 16s is to avoid looking into the future to fetch prices
-    end_portfolio = await fetch_portfolio(exchange, end_time) # it's live in fact, end_time just there for records
+    # calculate risk
+    end_time = datetime.utcnow()  # 16s is to avoid looking into the future to fetch prices
+    end_portfolio = await fetch_portfolio(exchange, end_time - timedelta(seconds=14)) # it's live in fact, end_time just there for records
+    # archive risk
+    end_portfolio.to_csv(risk_filename)
+    shutil.copy2(risk_filename, os.path.join(dirname,end_time.strftime("%Y%m%d_%H%M%S") + '_risk.json'))
 
+    # calculate pnl
     pnl = await compute_plex(exchange,start=start_time,end=end_time,start_portfolio=start_portfolio,end_portfolio=end_portfolio)#margintest
     pnl.sort_values(by='time',ascending=True,inplace=True)
-    summary=pnl[pnl['time']>datetime(2022,6,21,19)].pivot_table(values='USDamt',
-                            index='time',
-                            columns='event_type',
-                            aggfunc='sum',
-                            margins=True,
-                            fill_value=0.0)
+    # archive pnl
+    pnl_filename = os.path.join(os.sep, dirname, 'latest_pnl.csv')
+    shutil.copy2(pnl_filename, os.path.join(dirname, end_time.strftime("%Y%m%d_%H%M%S") + '_pnl.json'))
 
-    with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
-        risk_history.append(end_portfolio,ignore_index=True).to_excel(writer, sheet_name='risk')
-        pnl_history.append(pnl, ignore_index=True).to_excel(writer, sheet_name='pnl')
-        summary.to_excel(writer, sheet_name='summary')
-
-    return summary
 
 def ftx_portoflio_main(*argv):
     ''' TODO: improve input params'''
@@ -739,7 +736,7 @@ def ftx_portoflio_main(*argv):
         if len(argv) < 3:
             argv.extend(['ftx', 'SysPerp'])
 
-        plex = asyncio.run(run_plex_wrapper(*argv[1:]))
+        plex = asyncio.run(risk_and_pnl_wrapper(*argv[1:]))
         print(plex.astype(int))
         return plex
 

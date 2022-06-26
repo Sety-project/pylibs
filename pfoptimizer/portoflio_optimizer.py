@@ -236,6 +236,7 @@ async def perp_vs_cash(
             cash_flow = row['previousWeight'].reset_index().rename(columns={'previousWeight':'amtUSD'})
             cash_flow['end_time'] = time
             cash_flow['bucket'] = 'weights'
+            #TODO dupe ...
             cash_flow.loc[cash_flow['name'] == 'total', 'amtUSD'] = cash_flow['amtUSD'].sum()
             pnl_list += [cash_flow]
 
@@ -247,6 +248,7 @@ async def perp_vs_cash(
             cash_flow = (row['RealizedCarry']*(time-prev_time).total_seconds()/365.25/24/3600).reset_index().rename(columns={'RealizedCarry':'amtUSD'})
             cash_flow['end_time'] = time
             cash_flow['bucket'] = 'carry(USD not annualized)'
+            # TODO dupe ?
             cash_flow.loc[cash_flow['name']=='total','amtUSD'] = cash_flow['amtUSD'].sum()
             pnl_list += [cash_flow]
 
