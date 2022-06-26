@@ -11,7 +11,7 @@ from utils.async_utils import safe_gather
 from utils.ccxt_utilities import open_exchange
 from histfeed.ftx_history import fetch_trades_history
 
-def batch_summarize_exec_logs(dirname = os.path.join(os.sep, 'tmp', 'tradeexecutor', 'archive'),
+def batch_summarize_exec_logs(dirname = os.path.join(os.sep, 'tmp', 'prod','tradeexecutor'),
                               start=datetime(1970,1,1),
                               end=datetime.now(),
                               add_history_context = False):
@@ -19,7 +19,7 @@ def batch_summarize_exec_logs(dirname = os.path.join(os.sep, 'tmp', 'tradeexecut
     add log_time column
     move unreadable log sets to unreadable subdir'''
     tab_list = ['request','parameters','by_symbol', 'by_clientOrderId', 'data', 'risk_recon'] + (['history'] if add_history_context else [])
-    all_files = os.listdir(dirname)
+    all_files = os.listdir(os.path.join(os.sep,dirname, 'archive'))
 
     all_dates = []
     date_string_length = len(end.strftime("%Y%m%d_%H%M%S"))
@@ -40,7 +40,7 @@ def batch_summarize_exec_logs(dirname = os.path.join(os.sep, 'tmp', 'tradeexecut
 
     for date in set(all_dates) - existing_dates:
         try:
-            new_logs = summarize_exec_logs(os.path.join(os.sep,dirname,date),add_history_context)
+            new_logs = summarize_exec_logs(os.path.join(os.sep,dirname,'archive',date),add_history_context)
             for key in tab_list:
                 new_logs[key]['log_time'] = datetime.strptime(date,"%Y%m%d_%H%M%S").replace(tzinfo=timezone.utc)
                 compiled_logs[key] = pd.concat([compiled_logs[key],new_logs[key]],axis=0)
@@ -51,12 +51,12 @@ def batch_summarize_exec_logs(dirname = os.path.join(os.sep, 'tmp', 'tradeexecut
                 os.makedirs(unreadable_path, mode=0o777)
 
             for suffix in ['events', 'request', 'risk_reconciliations']:
-                filename = os.path.join(os.sep, dirname,f'{date}_{suffix}.json')
+                filename = os.path.join(os.sep, dirname,'archive',f'{date}_{suffix}.json')
                 if os.path.isfile(filename):
                     shutil.move(filename, os.path.join(os.sep , unreadable_path,f'{date}_{suffix}.json'))
 
     for key,value in compiled_logs.items():
-        value.to_csv(os.path.join(os.sep, 'tmp', 'tradeexecutor',f'all_{key}.csv'))
+        value.to_csv(os.path.join(dirname,f'all_{key}.csv'))
 
 def summarize_exec_logs(path_date, add_history_context = False):
     '''compile json logs into DataFrame summaries'''
@@ -94,14 +94,17 @@ def summarize_exec_logs(path_date, add_history_context = False):
              'slice_ended' : clientOrderId_data['last_fill_event']['timestamp']}
         for clientOrderId,clientOrderId_data in temp_events.items()}).T.reset_index()
 
-    by_symbol = pd.DataFrame({
-        symbol:
-            {'time_to_execute':symbol_data['slice_ended'].max()-symbol_data['slice_started'].min(),
-             'slippage_bps': 10000*np.sign(symbol_data['filled'].sum())*((symbol_data['filled']*symbol_data['price']).sum()/symbol_data['filled'].sum()/request.loc[request['index']==symbol,'spot'].squeeze()-1),
-             'fee': 10000*symbol_data['fee'].sum()/np.abs((symbol_data['filled']*symbol_data['price']).sum()),
-             'filledUSD': (symbol_data['filled']*symbol_data['price']).sum()
-             }
-        for symbol,symbol_data in by_clientOrderId.groupby(by='symbol')}).T.reset_index()
+    try:
+        by_symbol = pd.DataFrame({
+            symbol:
+                {'time_to_execute':symbol_data['slice_ended'].max()-symbol_data['slice_started'].min(),
+                 'slippage_bps': 10000*np.sign(symbol_data['filled'].sum())*((symbol_data['filled']*symbol_data['price']).sum()/symbol_data['filled'].sum()/request.loc[request['index']==symbol,'spot'].squeeze()-1),
+                 'fee': 10000*symbol_data['fee'].sum()/np.abs((symbol_data['filled']*symbol_data['price']).sum()),
+                 'filledUSD': (symbol_data['filled']*symbol_data['price']).sum()
+                 }
+            for symbol,symbol_data in by_clientOrderId.groupby(by='symbol')}).T.reset_index()
+    except Exception as e:
+        raise e
 
     fill_history = []
     if add_history_context:
