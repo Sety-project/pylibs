@@ -1405,8 +1405,8 @@ def ftx_ws_spread_main(*argv):
                 print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")}  ALLDONE --> SLEEPING for 5 minutes...')
 
             elif isinstance(execution_status, myFtx.TimeBudgetExpired):
-                # Force flattens until it returns FILLED
-                while not isinstance(execution_status, myFtx.DoneDeal):
+                # Force flattens until it returns FILLED, give up 10 mins before funding time
+                while not isinstance(execution_status, myFtx.DoneDeal) and datetime.now().minute < 50:
                     execution_status = asyncio.run(ftx_ws_spread_main_wrapper(*(['flatten']+argv[1:])))
                     print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")}  TIMEOUT --> FLATTEN UNTIL FINISHED')
 
