@@ -180,8 +180,8 @@ async def perp_vs_cash(
     updated = None # safety
 
     # Run a trajectory
-    previous_time = point_in_time
     trajectory = pd.DataFrame()
+    pnl = pd.DataFrame()
 
     if backtest_start == backtest_end:
         initial_weight = previous_weights_input
@@ -190,55 +190,99 @@ async def perp_vs_cash(
         initial_weight = pd.DataFrame()
         initial_weight['optimalWeight'] = 0
     previous_weights = initial_weight
+    prev_time = point_in_time
+    prev_row = pd.Series(index=['previousWeight',
+                                    'index',
+                                    'spot',
+                                    'mark',
+                                    'RealizedCarry'],data=1)
 
     optimized = pd.DataFrame()
     while point_in_time <= backtest_end:
+        try:
+            updated = update(filtered, point_in_time, hy_history, equity,
+                             intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow,
+                             minimum_carry=minimum_carry,
+                             previous_weights_index=previous_weights.index)
 
-        updated = update(filtered, point_in_time, hy_history, equity,
-                         intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow,
-                         minimum_carry=minimum_carry,
-                         previous_weights_index=previous_weights.index)
+            optimized = cash_carry_optimizer(exchange, updated,
+                                             previous_weights_df=previous_weights,
+                                             holding_period=holding_period,
+                                             signal_horizon=signal_horizon,
+                                             concentration_limit=concentration_limit,
+                                             mktshare_limit=mktshare_limit,
+                                             equity=equity,
+                                             optional_params = optional_params + (['cost_blind']
+                                             if (point_in_time == backtest_start) & (backtest_start != backtest_end)
+                                             else [])) # Ignore costs on first time of a backtest
 
-        optimized = cash_carry_optimizer(exchange, updated,
-                                         previous_weights_df=previous_weights,
-                                         holding_period=holding_period,
-                                         signal_horizon=signal_horizon,
-                                         concentration_limit=concentration_limit,
-                                         mktshare_limit=mktshare_limit,
-                                         equity=equity,
-                                         optional_params = optional_params + (['cost_blind']
-                                         if (point_in_time == backtest_start) & (backtest_start != backtest_end)
-                                         else [])) # Ignore costs on first time of a backtest
+            optimized = optimized[
+                np.abs(optimized['optimalWeight']) >
+                optimized.apply(lambda f: float(exchange.market(f.name)['info']['minProvideSize'])
+                if f.name in exchange.markets_by_id else 0, axis=1)
+                ]
 
-        optimized = optimized[
-            np.abs(optimized['optimalWeight']) >
-            optimized.apply(lambda f: float(exchange.market(f.name)['info']['minProvideSize'])
-            if f.name in exchange.markets_by_id else 0, axis=1)
-            ]
+            optimized['time'] = point_in_time
+            previous_weights = optimized['optimalWeight'].drop(index=['USD', 'total'])
 
-        optimized['time'] = point_in_time
+            # increment
+            time = point_in_time
+            row = optimized.reset_index().rename({'name': 'symbol'}).set_index('name')
+            trajectory = pd.concat([trajectory,row])
+            trajectory.to_csv(os.path.join(os.sep,log_path,'trajectory.csv'))
 
-        # increment
-        trajectory = pd.concat([trajectory,optimized.reset_index().rename({'name': 'symbol'})])
-        previous_weights = optimized['optimalWeight'].drop(index=['USD', 'total'])
+            pnl_list = []
 
-        print(f'{str(point_in_time)} done')
-        point_in_time += timedelta(hours=1)
+            cash_flow = row['previousWeight'].reset_index().rename(columns={'previousWeight':'amtUSD'})
+            cash_flow['end_time'] = time
+            cash_flow['bucket'] = 'weights'
+            cash_flow.loc[cash_flow['name'] == 'total', 'amtUSD'] = cash_flow['amtUSD'].sum()
+            pnl_list += [cash_flow]
+
+            cash_flow = (10000*(1 - row['index']/row['spot'])).reset_index().rename(columns={0:'amtUSD'})
+            cash_flow['end_time'] = time
+            cash_flow['bucket'] = 'spot_vs_index(bps)'
+            pnl_list += [cash_flow]
+
+            cash_flow = (row['RealizedCarry']*(time-prev_time).total_seconds()/365.25/24/3600).reset_index().rename(columns={'RealizedCarry':'amtUSD'})
+            cash_flow['end_time'] = time
+            cash_flow['bucket'] = 'carry(USD not annualized)'
+            cash_flow.loc[cash_flow['name']=='total','amtUSD'] = cash_flow['amtUSD'].sum()
+            pnl_list += [cash_flow]
+
+            cash_flow = (-row['previousWeight'] * ((row['mark'] - row['spot'])-(prev_row['mark'] - prev_row['spot']))/prev_row['spot']).reset_index().rename(columns={0:'amtUSD'})
+            cash_flow['end_time'] = time
+            cash_flow['bucket'] = 'IR01(USD)'
+            cash_flow.loc[cash_flow['name'] == 'total', 'amtUSD'] = cash_flow['amtUSD'].sum()
+            pnl_list += [cash_flow]
+
+            pnl = pd.concat([pnl]+pnl_list,axis=0)
+            pnl.to_csv(os.path.join(os.sep,log_path,'pnl.csv'))
+
+            prev_time = time
+            prev_row = copy.deepcopy(row)
+
+        except Exception as e:
+            print(str(e))
+        finally:
+            print(f'{str(point_in_time)} done')
+            point_in_time += timedelta(hours=1)
 
     parameters = pd.Series({
-        'run_date': datetime.today(),
-        'universe': param_universe,
-        'exclusion_list': exclusion_list,
-        'type_allowed': type_allowed,
-        'signal_horizon': signal_horizon,
-        'holding_period': holding_period,
-        'slippage_override': slippage_override,
-        'concentration_limit': concentration_limit,
-        'equity': equity,
-        'slippage_scaler': slippage_scaler,
-        'slippage_orderbook_depth': slippage_orderbook_depth})
+            'run_date': datetime.today(),
+            'universe': param_universe,
+            'exclusion_list': exclusion_list,
+            'type_allowed': type_allowed,
+            'signal_horizon': signal_horizon,
+            'holding_period': holding_period,
+            'slippage_override': slippage_override,
+            'concentration_limit': concentration_limit,
+            'equity': equity,
+            'slippage_scaler': slippage_scaler,
+            'slippage_orderbook_depth': slippage_orderbook_depth})
+    parameters.to_csv(os.path.join(os.sep,log_path,'parameters.csv'))
 
-    # for live, just send last optimized
+# for live, just send last optimized
     if backtest_start == backtest_end:
         pfoptimizer_path = os.path.join(configLoader.get_config_folder_path(), "pfoptimizer")
 
@@ -264,71 +308,8 @@ async def perp_vs_cash(
         print(display)
 
         return optimized
-    else:
-        pnl_list = []
-        (prev_time,prev_row) = (trajectory['time'].min(), trajectory[trajectory['time']==trajectory['time'].min()].set_index('name'))
-        trajectory = trajectory[trajectory['time'] > trajectory['time'].min()]
-        for time,row in trajectory.groupby(by='time'):
-            row = row.set_index('name')
 
-            cash_flow = row['previousWeight'].reset_index().rename(columns={'previousWeight':'amtUSD'})
-            cash_flow['end_time'] = time
-            cash_flow['bucket'] = 'weights'
-            cash_flow.loc[cash_flow['name'] == 'total', 'amtUSD'] = cash_flow['amtUSD'].sum()
-            pnl_list += [cash_flow]
-
-            cash_flow = (10000*(1 - row['index']/row['spot'])).reset_index().rename(columns={0:'amtUSD'})
-            cash_flow['end_time'] = time
-            cash_flow['bucket'] = 'spot_vs_index(bps)'
-            pnl_list += [cash_flow]
-
-            cash_flow = (row['RealizedCarry']*(time-prev_time).total_seconds()/365.25/24/3600).reset_index().rename(columns={'RealizedCarry':'amtUSD'})
-            cash_flow['end_time'] = time
-            cash_flow['bucket'] = 'carry(USD not annualized)'
-            cash_flow.loc[cash_flow['name']=='total','amtUSD'] = cash_flow['amtUSD'].sum()
-            pnl_list += [cash_flow]
-
-            cash_flow = (-row['previousWeight'] * ((row['mark'] - row['spot'])-(prev_row['mark'] - prev_row['spot']))/prev_row['spot']).reset_index().rename(columns={0:'amtUSD'})
-            cash_flow['end_time'] = time
-            cash_flow['bucket'] = 'IR01(USD)'
-            cash_flow.loc[cash_flow['name'] == 'total', 'amtUSD'] = cash_flow['amtUSD'].sum()
-            pnl_list += [cash_flow]
-
-            prev_time = time
-            prev_row = copy.deepcopy(row)
-
-        pnl = pd.concat(pnl_list[3:],axis=0)
-
-        trajectory['slippage_override'] = slippage_override
-        trajectory['concentration_limit'] = concentration_limit
-        trajectory['signal_horizon'] = signal_horizon
-        trajectory['holding_period'] = holding_period
-
-        global run_i
-        log_file = os.path.join(log_path, 'run_'+str(run_i))
-        run_i += 1
-
-        parameters = pd.Series({
-            'run_date': datetime.today(),
-            'universe': param_universe,
-            'exclusion_list': exclusion_list,
-            'type_allowed': type_allowed,
-            'signal_horizon': signal_horizon,
-            'holding_period': holding_period,
-            'slippage_override':slippage_override,
-            'concentration_limit': concentration_limit,
-            'mktshare_limit': mktshare_limit,
-            'equity': equity,
-            'slippage_scaler': slippage_scaler,
-            'slippage_orderbook_depth': slippage_orderbook_depth,
-            'backtest_start': backtest_start,
-            'backtest_end': backtest_end})
-
-        trajectory.to_csv(f'{log_file}_trajectory.csv')
-        pnl.to_csv(f'{log_file}_pnl.csv')
-        parameters.to_csv(f'{log_file}_parameters.csv')
-
-        return trajectory
+    return trajectory
 
 async def strategy_wrapper(**kwargs):
 
@@ -499,7 +480,7 @@ def main(*args):
                                         signal_horizon=sig_horizon,
                                         holding_period=hol_period,
                                         slippage_override=slippage_override,
-                                        backtest_start= datetime(2020,12,25),#datetime.now().replace(minute=0, second=0, microsecond=0)-timedelta(days=2),# live start was datetime(2022,6,21,19),
+                                        backtest_start= datetime(2021,2,17),#datetime.now().replace(minute=0, second=0, microsecond=0)-timedelta(days=2),# live start was datetime(2022,6,21,19),
                                         backtest_end = datetime.now().replace(minute=0, second=0, microsecond=0)-timedelta(hours=1)))
         logger.info("pfoptimizer terminated successfully...")
         return pd.DataFrame()
