@@ -884,12 +884,11 @@ class myFtx(ccxtpro.ftx):
 
     def process_order_book(self, symbol, orderbook):
         with self.lock[symbol]:
-            previous_bbo_hash = sum(self.tickers[symbol][key] for key in ['bid','ask','bidVolume','askVolume'])
+            previous_mid = self.mid(symbol)  # based on ticker, in general
             self.populate_ticker(symbol, orderbook)
-            current_bbo_hash = sum(self.tickers[symbol][key] for key in ['bid','ask','bidVolume','askVolume'])
 
             # don't waste time on deep updates
-            if current_bbo_hash != previous_bbo_hash:
+            if self.mid(symbol) != previous_mid:
                 self.quoter(symbol, orderbook)
 
     # ---------------------------------- fills
