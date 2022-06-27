@@ -94,9 +94,17 @@ def summarize_exec_logs(path_date, add_history_context = False):
 
              'filled' : clientOrderId_data['last_fill_event']['filled']*(1 if clientOrderId_data['last_fill_event']['side']=='buy' else -1),
              'price' : clientOrderId_data['last_fill_event']['price'],
-             'fee': sum(data.loc[data['clientOrderId']==clientOrderId,'fee'].dropna().apply(lambda x:x['cost']*(1 if x['currency']=='USD' else np.NAN))),
+             #TODO: what happens when there are only partial fills ?
+             'fee': sum(x['cost']*(1 if x['currency']=='USD' else
+                                   (x['currency'] == clientOrderId_data['last_fill_event']['price'] if clientOrderId_data['inception_event']['symbol'][:3] else
+                                    np.NAN))
+                        for x in clientOrderId_data['last_fill_event']['fees']),
              'slice_ended' : clientOrderId_data['last_fill_event']['timestamp']}
         for clientOrderId,clientOrderId_data in temp_events.items()}).T.reset_index()
+
+    if __debug__:
+        partially = data[(data['amount'] != data['filled']) & (data['filled'] > 0)]
+        pass
 
     try:
         by_symbol = pd.DataFrame({
