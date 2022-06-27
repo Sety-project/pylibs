@@ -258,7 +258,7 @@ class myFtx(ccxtpro.ftx):
         '''self.orders_lifecycle = {clientId:[{key:data}]}
         order_event:trigger,symbol'''
         #1) resolve clientID
-        nowtime = datetime.now().timestamp() * 1000
+        nowtime = datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000
         clientOrderId = order_event['comment'] + '_' + order_event['symbol'] + '_' + str(int(nowtime))
 
         #2) validate block
@@ -315,7 +315,7 @@ class myFtx(ccxtpro.ftx):
             return
 
         # 3) new block
-        nowtime = datetime.now().timestamp() * 1000
+        nowtime = datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000
         eventID = clientOrderId + '_' + str(int(nowtime))
         current = order_event | {'eventID':eventID,
                                  'lifecycle_state':'sent',
@@ -347,7 +347,7 @@ class myFtx(ccxtpro.ftx):
             return
 
         # 3) new block
-        nowtime = datetime.now().timestamp() * 1000
+        nowtime = datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000
         eventID = clientOrderId + '_' + str(int(nowtime))
         current = order_event | {'eventID': eventID,
                                  'remote_timestamp': None,
@@ -371,7 +371,7 @@ class myFtx(ccxtpro.ftx):
             return
 
         # 3) new block
-        nowtime = datetime.now().timestamp() * 1000
+        nowtime = datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000
         eventID = clientOrderId + '_' + str(int(nowtime))
         current = order_event | {'eventID': eventID,
                                  'lifecycle_state': 'cancel_sent',
@@ -392,7 +392,7 @@ class myFtx(ccxtpro.ftx):
         pass
 
         # 3) new block
-        nowtime = datetime.now().timestamp()*1000
+        nowtime = datetime.utcnow().replace(tzinfo=timezone.utc).timestamp()*1000
         eventID = clientOrderId + '_' + str(int(nowtime))
         current = order_event | {'eventID': eventID,
                                  'remote_timestamp': order_event['timestamp']}
@@ -435,7 +435,7 @@ class myFtx(ccxtpro.ftx):
         coin = self.markets[symbol]['base']
         size_threshold = self.exec_parameters[coin][symbol]['sizeIncrement'] / 2
 
-        nowtime = datetime.now().timestamp()*1000
+        nowtime = datetime.utcnow().replace(tzinfo=timezone.utc).timestamp()*1000
         eventID = clientOrderId + '_' + str(int(nowtime))
         current = order_event | {'eventID':eventID,
                                  'fillId': order_event['id'],
@@ -464,7 +464,7 @@ class myFtx(ccxtpro.ftx):
         #     nowtime = order_event['timestamp']
         # else:
         #     nowtime = order_event['timestamp'][0]
-        nowtime = datetime.now().timestamp() * 1000
+        nowtime = datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000
         eventID = clientOrderId + '_' + str(int(nowtime))
         current = order_event | {'eventID':eventID,
                                  'lifecycle_state': order_event['lifecycle_state'],
@@ -692,7 +692,7 @@ class myFtx(ccxtpro.ftx):
                                for coin in coin_list}
 
         # get times series of target baskets, compute quantile of increments and add to last price
-        nowtime = datetime.now().timestamp() * 1000
+        nowtime = datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000
         time_limit = self.exec_parameters['timestamp'] + self.parameters['time_budget']*1000
 
         if nowtime > time_limit:
@@ -780,7 +780,7 @@ class myFtx(ccxtpro.ftx):
             positions = risks[0]
             balances = risks[1]
             markets = risks[2]
-            risk_timestamp = datetime.now().timestamp() * 1000
+            risk_timestamp = datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000
 
             # delta is noisy for perps, so override to delta 1.
             self.pv = 0
@@ -884,11 +884,12 @@ class myFtx(ccxtpro.ftx):
 
     def process_order_book(self, symbol, orderbook):
         with self.lock[symbol]:
-            previous_mid = self.mid(symbol)  # based on ticker, in general
+            previous_bbo_hash = sum(self.tickers[symbol][key] for key in ['bid','ask','bidVolume','askVolume'])
             self.populate_ticker(symbol, orderbook)
+            current_bbo_hash = sum(self.tickers[symbol][key] for key in ['bid','ask','bidVolume','askVolume'])
 
             # don't waste time on deep updates
-            if self.mid(symbol) != previous_mid:
+            if current_bbo_hash != previous_bbo_hash:
                 self.quoter(symbol, orderbook)
 
     # ---------------------------------- fills
@@ -1171,7 +1172,7 @@ class myFtx(ccxtpro.ftx):
             order = await super().create_order(symbol, type, side, amount, price, params | {'clientOrderId':clientOrderId})
         except Exception as e:
             order = {'clientOrderId':clientOrderId,
-                     'timestamp':datetime.now().timestamp() * 1000,
+                     'timestamp':datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000,
                      'lifecycle_state':'rejected',
                      'comment':'create/'+str(e)}
             self.lifecycle_cancel_or_reject(order)
@@ -1350,7 +1351,7 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
             exchange.logger.exception(f'unknown command {argv[0]}',exc_info=True)
             raise Exception(f'unknown command {argv[0]}', exc_info=True)
 
-        await exchange.build_state(target_portfolio, parameters)   # i
+        await exchange.build_state(target_portfolio, parameters | {'comment': argv[0]})   # i
         coros = [exchange.monitor_risk(),exchange.monitor_orders(),exchange.monitor_fills()]+ \
                 [exchange.monitor_order_book(symbol)
                  for symbol in exchange.running_symbols]
@@ -1394,7 +1395,7 @@ def ftx_ws_spread_main(*argv):
         while True:
 
             execution_status = asyncio.run(ftx_ws_spread_main_wrapper(*argv)) # --> I am filled or I timed out and I have flattened position
-            print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")}  EXIT with execution_status={execution_status}')
+            print(f'{datetime.utcnow().replace(tzinfo=timezone.utc).strftime("%Y%m%d_%H%M%S")}  EXIT with execution_status={execution_status}')
 
             if not isinstance(execution_status, myFtx.NothingToDo):
                 exec_logs = batch_summarize_exec_logs()
@@ -1402,16 +1403,16 @@ def ftx_ws_spread_main(*argv):
             if isinstance(execution_status, myFtx.DoneDeal):
                 # Wait for 5 minutes and start over
                 t.sleep(60 * 5)
-                print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")}  ALLDONE --> SLEEPING for 5 minutes...')
+                print(f'{datetime.utcnow().replace(tzinfo=timezone.utc).strftime("%Y%m%d_%H%M%S")}  ALLDONE --> SLEEPING for 5 minutes...')
 
             elif isinstance(execution_status, myFtx.TimeBudgetExpired):
                 # Force flattens until it returns FILLED, give up 10 mins before funding time
-                while not isinstance(execution_status, myFtx.DoneDeal) and datetime.now().minute < 50:
+                while not isinstance(execution_status, myFtx.DoneDeal) and datetime.utcnow().replace(tzinfo=timezone.utc).minute < 50:
                     execution_status = asyncio.run(ftx_ws_spread_main_wrapper(*(['flatten']+argv[1:])))
-                    print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")}  TIMEOUT --> FLATTEN UNTIL FINISHED')
+                    print(f'{datetime.utcnow().replace(tzinfo=timezone.utc).strftime("%Y%m%d_%H%M%S")}  TIMEOUT --> FLATTEN UNTIL FINISHED')
 
             else:
-                print(f'{datetime.now().strftime("%Y%m%d_%H%M%S")}  UNCAUGHT --> EXCEPTION NOT CAUGHT')
+                print(f'{datetime.utcnow().replace(tzinfo=timezone.utc).strftime("%Y%m%d_%H%M%S")}  UNCAUGHT --> EXCEPTION NOT CAUGHT')
 
     else:
         logging.info(f'commands: sysperp [ftx][debug], flatten [ftx][debug],unwind [ftx][debug], spread [ftx][debug][coin][cash in usd]')

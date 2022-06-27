@@ -91,7 +91,7 @@ async def mkt_speed(exchange, symbol, target_depth=10000):
     nowtime = datetime.now(tz=timezone.utc)
     trades=pd.DataFrame(await exchange.fetch_trades(symbol))
     if trades.shape[0] == 0: return 9999999
-    nowtime = nowtime + timedelta(microseconds=int(0.5*(nowtime.microsecond-datetime.now().microsecond))) ### to have unbiased ref
+    nowtime = nowtime + timedelta(microseconds=int(0.5*(nowtime.microsecond-datetime.utcnow().replace(tzinfo=timezone.utc).microsecond))) ### to have unbiased ref
 
     trades['size']=(trades['price']*trades['amount']).cumsum()
 
@@ -236,9 +236,9 @@ async def fetch_futures(exchange,includeExpired=False,includeIndex=False,params=
 
         mark =  exchange.safe_number(market, 'mark')
         imfFactor =  exchange.safe_number(market, 'imfFactor')
-        expiryTime = dateutil.parser.isoparse(exchange.safe_string(market, 'expiry')).replace(tzinfo=None) if exchange.safe_string(market, 'type') == 'future' else np.NaN
+        expiryTime = dateutil.parser.isoparse(exchange.safe_string(market, 'expiry')).replace(tzinfo=timezone.utc) if exchange.safe_string(market, 'type') == 'future' else np.NaN
         if exchange.safe_string(market,'type') == 'future':
-            future_carry = calc_basis(mark, market['index'], expiryTime, datetime.now())
+            future_carry = calc_basis(mark, market['index'], expiryTime, datetime.utcnow().replace(tzinfo=timezone.utc))
         elif market['name'] in perp_list:
             future_carry = funding_rates[exchange.safe_string(market, 'name')]
         else:

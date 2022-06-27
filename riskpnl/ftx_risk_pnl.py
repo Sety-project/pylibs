@@ -1,4 +1,8 @@
 import time as t
+
+import dateutil.parser
+import pandas as pd
+
 from utils.ftx_utils import *
 from utils.config_loader import *
 from riskpnl.post_trade import *
@@ -20,7 +24,7 @@ async def carry_portfolio_greeks(exchange,futures,params={'positive_carry_on_bal
     positions = pd.DataFrame([r['info'] for r in await exchange.fetch_positions(params={}) if r['info']['netSize']!=0],dtype=float)#'showAvgPrice':True})
 
     greeks = pd.DataFrame(columns=pd.MultiIndex.from_tuples([], names=['underlyingType',"underlying", "margining", "expiry","name","contractType"]))
-    updated=str(datetime.now())
+    updated=str(datetime.utcnow().replace(tzinfo=timezone.utc))
     rho=0.4
 
     for x in positions:
@@ -336,7 +340,7 @@ async def fetch_portfolio(exchange,time):
         unrealizedPnL= positions['unrealizedPnl'].sum()
         positions['coin'] = 'USD'
         positions['coinAmt'] = positions['netSize']
-        positions['time']=time.replace(tzinfo=None)
+        positions['time'] = time
         positions['event_type'] = 'delta'
         positions['attribution'] = positions['future']
         positions['mark'] = positions['attribution'].apply(lambda f: markets.loc[f,'price'])
@@ -360,7 +364,7 @@ async def fetch_portfolio(exchange,time):
     balances = balances[balances['total'] != 0.0].fillna(0.0)
     balances['coinAmt'] =balances['total']
     balances.loc[balances['coin']=='USD','coinAmt'] += unrealizedPnL
-    balances['time']=time.replace(tzinfo=None)
+    balances['time'] = time
     balances['event_type'] = 'delta'
     balances['coin'] = balances['coin'].apply(lambda f:f.replace('_LOCKED', ''))
     balances['attribution'] = balances['coin']
@@ -370,7 +374,7 @@ async def fetch_portfolio(exchange,time):
     balances['additional'] = unrealizedPnL
 
     PV = pd.DataFrame(index=['total'],columns=['time','coin','coinAmt','event_type','attribution','spot','mark'])
-    PV.loc['total','time'] = time.replace(tzinfo=None)
+    balances['time'] = time
     PV.loc['total','coin'] = 'USD'
     PV.loc['total','coinAmt'] = (balances['coinAmt'] * balances['mark']).sum() + unrealizedPnL
     PV.loc['total','event_type'] = 'PV'
@@ -381,7 +385,7 @@ async def fetch_portfolio(exchange,time):
 
     IM = pd.DataFrame(index=['total'],
                       columns=['time','coin','coinAmt','event_type','attribution','spot','mark'])
-    IM.loc['total','time'] = time.replace(tzinfo=None)
+    balances['time'] = time
     IM.loc['total','coin'] = 'USD'
     account_data = pd.DataFrame((await exchange.privateGetAccount())['result'])[['marginFraction', 'totalPositionSize', 'initialMarginRequirement']]
     if not account_data.empty:
@@ -555,7 +559,7 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
     # rescale inflows, or recompute if needed
     cash_flows['USDamt'] *= cash_flows['coin'].apply(lambda f: end_of_day.loc[f,'spot'])
     cash_flows['end_mark'] = cash_flows['attribution'].apply(lambda f: end_of_day.loc[f,'mark'])
-    cash_flows['start_time']=cash_flows['time']
+    cash_flows['time'] = cash_flows['time'].apply(lambda t:dateutil.parser.parse(t).replace(tzinfo=timezone.utc))
 
     if not future_trades.empty:# TODO: below code relies on trades ordering being preserved to this point :(
         cash_flows.loc[cash_flows['event_type']=='future_trade','USDamt']=(\
@@ -650,63 +654,63 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
     unexplained['end_mark'] = 1.0
     cash_flows = cash_flows.append(unexplained[['start_time','time', 'coin', 'USDamt', 'event_type', 'attribution', 'end_mark']], ignore_index=True)
 
-    cash_flows['start_time'] = cash_flows['start_time'].apply(lambda t: t if type(t)!=str else dateutil.parser.isoparse(t).replace(tzinfo=None))
-    cash_flows['time'] = cash_flows['time'].apply(lambda t: t if type(t)!=str else dateutil.parser.isoparse(t).replace(tzinfo=None))
     cash_flows['underlying'] = cash_flows['attribution'].apply(lambda f:
                             futures.loc[f,'underlying'] if f in futures.index
                             else f)
 
     return cash_flows.sort_values(by='time',ascending=True)
 
-async def run_plex_wrapper(exchange_name='ftx',subaccount='debug'):
+async def risk_and_pnl_wrapper(exchange_name='ftx',subaccount='debug'):
     exchange = await open_exchange(exchange_name,subaccount)
-    plex= await run_plex(exchange)
+    plex= await risk_and_pnl(exchange)
     await exchange.close()
     return plex
 
-async def run_plex(exchange,dirname='/tmp/pnl/'):
+async def risk_and_pnl(exchange):
+    end_time = datetime.utcnow().replace(tzinfo=timezone.utc)
+    dirname = os.path.join(os.sep,'tmp','pnl')
 
-    filename = dirname+'portfolio_history_'+exchange.describe()['id']+('_'+exchange.headers['FTX-SUBACCOUNT'] if 'FTX-SUBACCOUNT' in exchange.headers else '')+'.xlsx'
+    # initialize directory and previous_risk if needed
     if not os.path.exists(dirname):
         os.umask(0)
         os.makedirs(dirname, mode=0o777)
-    if not os.path.isfile(filename):
-        risk_history = pd.DataFrame()
-        risk_history = risk_history.append(pd.DataFrame(index=[0], data=dict(
+
+    risk_filename = os.path.join(os.sep,dirname,'all_risk.csv')
+    if not os.path.isfile(risk_filename):
+        previous_risk = pd.DataFrame()
+        previous_risk = previous_risk.append(pd.DataFrame(index=[0], data=dict(
             zip(['time', 'coin', 'coinAmt', 'event_type', 'attribution', 'spot', 'mark'],
-                [datetime(2021, 12, 6), 'USD', 0.0, 'delta', 'USD', 1.0, 1.0]))))
-        risk_history = risk_history.append(pd.DataFrame(index=[0], data=dict(
+                [end_time - timedelta(hours=1), 'USD', 0.0, 'delta', 'USD', 1.0, 1.0]))))
+        previous_risk = previous_risk.append(pd.DataFrame(index=[0], data=dict(
             zip(['time', 'coin', 'coinAmt', 'event_type', 'attribution', 'spot', 'mark'],
-                [datetime(2021, 12, 6), 'USD', 0.0, 'PV', 'USD', 1.0, 1.0]))))
-        pnl_history = pd.DataFrame()
-        with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
-            risk_history.to_excel(writer, sheet_name='risk')
-            pnl_history.to_excel(writer, sheet_name='pnl')
+                [end_time - timedelta(hours=1), 'USD', 0.0, 'PV', 'USD', 1.0, 1.0]))))
+        previous_risk.to_csv(risk_filename)
 
-    risk_history = pd.read_excel(filename,sheet_name='risk',index_col=0)
-    pnl_history = pd.read_excel(filename, sheet_name='pnl', index_col=0)
-    start_time = risk_history['time'].max()
-    start_portfolio = risk_history[(risk_history['time']<start_time+timedelta(milliseconds= 1000)) \
-                &(risk_history['time']>start_time-timedelta(milliseconds= 1000))] #TODO: precision!
+    # need to retrieve previous risk / marks
+    previous_risk = pd.read_csv(risk_filename,index_col=0)
+    previous_risk['time'] = previous_risk['time'].apply(lambda date: pd.to_datetime(date).replace(tzinfo=timezone.utc))
+    start_time = previous_risk['time'].max()
+    start_portfolio = previous_risk[(previous_risk['time']<start_time+timedelta(milliseconds= 1000)) \
+                &(previous_risk['time']>start_time-timedelta(milliseconds= 1000))] #TODO: precision!
 
-    end_time = datetime.now() - timedelta(seconds=14)  # 16s is to avoid looking into the future to fetch prices
-    end_portfolio = await fetch_portfolio(exchange, end_time) # it's live in fact, end_time just there for records
+    # calculate risk
+    # 16s is to avoid looking into the future to fetch prices
+    end_portfolio = await fetch_portfolio(exchange, end_time - timedelta(seconds=14)) # it's live in fact, end_time just there for records
+    # accrue and archive risk
+    end_portfolio.to_csv(os.path.join(dirname,end_time.strftime("%Y%m%d_%H%M%S") + '_risk.json'))
+    pd.concat([previous_risk,end_portfolio],axis=0).to_csv(risk_filename)
 
+    # calculate pnl
     pnl = await compute_plex(exchange,start=start_time,end=end_time,start_portfolio=start_portfolio,end_portfolio=end_portfolio)#margintest
     pnl.sort_values(by='time',ascending=True,inplace=True)
-    summary=pnl[pnl['time']>datetime(2022,6,21,19)].pivot_table(values='USDamt',
-                            index='time',
-                            columns='event_type',
-                            aggfunc='sum',
-                            margins=True,
-                            fill_value=0.0)
+    # accrue and archive pnl
+    pnl.to_csv(os.path.join(dirname, end_time.strftime("%Y%m%d_%H%M%S") + '_pnl.json'))
 
-    with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
-        risk_history.append(end_portfolio,ignore_index=True).to_excel(writer, sheet_name='risk')
-        pnl_history.append(pnl, ignore_index=True).to_excel(writer, sheet_name='pnl')
-        summary.to_excel(writer, sheet_name='summary')
-
-    return summary
+    pnl_filename = os.path.join(os.sep, dirname, 'all_pnl.csv')
+    if os.path.isfile(pnl_filename):
+        pd.concat([pd.read_csv(pnl_filename,index_col=0),pnl],axis=0).to_csv(pnl_filename)
+    else:
+        pnl.to_csv(pnl_filename)
 
 def ftx_portoflio_main(*argv):
     ''' TODO: improve input params'''
@@ -739,8 +743,7 @@ def ftx_portoflio_main(*argv):
         if len(argv) < 3:
             argv.extend(['ftx', 'SysPerp'])
 
-        plex = asyncio.run(run_plex_wrapper(*argv[1:]))
-        print(plex.astype(int))
+        plex = asyncio.run(risk_and_pnl_wrapper(*argv[1:]))
         return plex
 
     elif argv[0] == 'log_reader':

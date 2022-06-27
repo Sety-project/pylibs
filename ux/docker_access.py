@@ -108,8 +108,8 @@ def add_row_to_table(filtered_cn_list):
         container_startedAt = container.attrs['State']['StartedAt']   # --> deduct uptime
         container_createdAt = datetime.datetime.strptime(container_createdAt[:-7], '%Y-%m-%dT%H:%M:%S.%f')
         container_startedAt = datetime.datetime.strptime(container_startedAt[:-7], '%Y-%m-%dT%H:%M:%S.%f')
-        createdAt_duration_in_s = int((datetime.datetime.now() - container_createdAt).total_seconds())
-        startedAt_duration_in_s = int((datetime.datetime.now() - container_startedAt).total_seconds())
+        createdAt_duration_in_s = int((datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc) - container_createdAt).total_seconds())
+        startedAt_duration_in_s = int((datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc) - container_startedAt).total_seconds())
 
         container_createdAt = _format_time(createdAt_duration_in_s, "")
         container_runningFrom = _format_time(startedAt_duration_in_s, "")

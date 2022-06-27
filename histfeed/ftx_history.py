@@ -9,14 +9,14 @@ from utils.ftx_utils import *
 from utils.io_utils import *
 from utils.config_loader import *
 
-history_start = datetime(2019, 11, 26)
+history_start = datetime(2019, 11, 26).replace(tzinfo=timezone.utc)
 LOGGER_NAME = __name__
 
 # all rates annualized, all volumes daily in usd
 async def get_history(dirname,
                       futures,
                       start_or_nb_hours,
-                      end=datetime.now(tz=None).replace(minute=0,second=0,microsecond=0)
+                      end=datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0,second=0,microsecond=0)
                       ):
     data = pd.concat(await safe_gather((
             [async_from_parquet(dirname + os.sep + f + '_funding.parquet')
@@ -34,12 +34,13 @@ async def get_history(dirname,
         data[f + '_rate_size']*=data[f + '_price_o']
 
     start = end - timedelta(hours=start_or_nb_hours) if isinstance(start_or_nb_hours, int) else start_or_nb_hours
+    data.index = [t.replace(tzinfo=timezone.utc) for t in data.index]
     return data[~data.index.duplicated()].sort_index()[start:end]
 
 async def build_history(futures,
                         exchange,
                         dirname=configLoader.get_mktdata_folder_path(),
-                        end=datetime.now(tz=None).replace(minute=0,second=0,microsecond=0)): # Runtime/Mktdata_database
+                        end=datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0,second=0,microsecond=0)): # Runtime/Mktdata_database
     '''for now, increments local files and then uploads to s3'''
     logger = logging.getLogger(LOGGER_NAME)
     logger.info("BUILDING COROUTINES")
@@ -48,7 +49,7 @@ async def build_history(futures,
     for _, f in futures[futures['type'] == 'perpetual'].iterrows():
         parquet_name = os.path.join(dirname, f.name + '_funding.parquet')
         parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
-        start = max(parquet.index)+timedelta(hours=1) if parquet is not None else history_start
+        start = max(parquet.index).replace(tzinfo=timezone.utc)+timedelta(hours=1) if parquet is not None else history_start
         if start < end:
             logger.info("Adding coroutine " + parquet_name)
             coroutines.append(funding_history(f, exchange, start, end, dirname))
@@ -56,7 +57,7 @@ async def build_history(futures,
     for _, f in futures.iterrows():
         parquet_name = os.path.join(dirname, f.name + '_futures.parquet')
         parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
-        start = max(parquet.index) + timedelta(hours=1) if parquet is not None else history_start
+        start = max(parquet.index).replace(tzinfo=timezone.utc) + timedelta(hours=1) if parquet is not None else history_start
         if start < end:
             logger.info("Adding coroutine " + parquet_name)
             coroutines.append(rate_history(f, exchange, end, start, '1h', dirname))
@@ -64,7 +65,7 @@ async def build_history(futures,
     for f in futures['underlying'].unique():
         parquet_name = os.path.join(dirname, f + '_price.parquet')
         parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
-        start = max(parquet.index) + timedelta(hours=1) if parquet is not None else history_start
+        start = max(parquet.index).replace(tzinfo=timezone.utc) + timedelta(hours=1) if parquet is not None else history_start
         if start < end:
             logger.info("Adding coroutine " + parquet_name)
             coroutines.append(spot_history(f + '/USD', exchange, end, start, '1h', dirname))
@@ -72,7 +73,7 @@ async def build_history(futures,
     for f in list(futures.loc[futures['spotMargin'] == True, 'underlying'].unique()) + ['USD']:
         parquet_name = os.path.join(dirname, f + '_borrow.parquet')
         parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
-        start = max(parquet.index) + timedelta(hours=1) if parquet is not None else history_start
+        start = max(parquet.index).replace(tzinfo=timezone.utc) + timedelta(hours=1) if parquet is not None else history_start
         if start < end:
             logger.info("Adding coroutine " + parquet_name)
             coroutines.append(borrow_history(f, exchange, end, start, dirname))
@@ -406,7 +407,7 @@ async def ftx_history_main_wrapper(exchange_name, run_type, universe, nb_of_days
         raise Exception('bug. does not correct')
         logger.info("Building history for correct")
         hy_history = await get_history(dir_name, futures, history_start)
-        end = datetime.now()-timedelta(days=nb_of_days)
+        end = datetime.utcnow().replace(tzinfo=timezone.utc)-timedelta(days=nb_of_days)
         await correct_history(futures, exchange, hy_history[:end])
         await build_history(futures, exchange, dir_name)
         await exchange.close()
