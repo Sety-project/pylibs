@@ -250,13 +250,13 @@ async def rate_history(future,exchange,
         data['rate_c'] = data.apply(
             lambda y: calc_basis(y['mark_c'],
                                  indexes.loc[y.name, 'indexes_c'], future['expiryTime'],
-                                 datetime.fromtimestamp(int(y.name / 1000), tz=None)), axis=1)
+                                 datetime.fromtimestamp(int(y.name / 1000), tz=timezone.utc)), axis=1)
         data['rate_h'] = data.apply(
             lambda y: calc_basis(y['mark_h'], indexes.loc[y.name, 'indexes_h'], future['expiryTime'],
-                                 datetime.fromtimestamp(int(y.name / 1000), tz=None)), axis=1)
+                                 datetime.fromtimestamp(int(y.name / 1000), tz=timezone.utc)), axis=1)
         data['rate_l'] = data.apply(
             lambda y: calc_basis(y['mark_l'], indexes.loc[y.name, 'indexes_l'], future['expiryTime'],
-                                 datetime.fromtimestamp(int(y.name / 1000), tz=None)), axis=1)
+                                 datetime.fromtimestamp(int(y.name / 1000), tz=timezone.utc)), axis=1)
     elif future['type'] == 'perpetual': ### 1h funding = (mark/spot-1)/24
         data['rate_T'] = None
         data['rate_c'] = (mark['mark_c'] / indexes['indexes_c'] - 1)*365.25
