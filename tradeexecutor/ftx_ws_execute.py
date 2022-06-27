@@ -705,6 +705,8 @@ class myFtx(ccxtpro.ftx):
             raise myFtx.TimeBudgetExpired('')
 
         def basket_vwap_quantile(series_list, diff_list, quantile):
+            if quantile <= 0: return -1e18
+            if quantile >= 1: return +1e18
             series = pd.concat([serie * coef for serie, coef in zip(series_list, diff_list)], join='inner', axis=1)
             return series.sum(axis=1).quantile(quantile)
 
@@ -718,7 +720,7 @@ class myFtx(ccxtpro.ftx):
             # rush_level = what level on basket is so good good that you go market on both legs
             self.exec_parameters[coin]['rush_level'] = basket_vwap_quantile(
                 [data['vwap'] for data in coin_data.values()],
-                [self.exec_parameters[coin][symbol]['diff'] for symbol in coin_data.keys()],
+                [self.exec_parameters[coin][symbol]['target'] * self.mid(symbol) - self.risk_state[coin][symbol]['delta'] for symbol in coin_data.keys()],
                 self.parameters['rush_tolerance'])
             for symbol, data in coin_data.items():
                 stdev = data['vwap'].std().squeeze()
@@ -738,6 +740,9 @@ class myFtx(ccxtpro.ftx):
 
                 # stop_depth = how far to set the stop on risk reducing orders
                 self.exec_parameters[coin][symbol]['stop_depth'] = stdev * np.sqrt(self.parameters['stop_tolerance']) * scaler
+
+                # used to get proper rush live levels. in coin.
+                self.exec_parameters[coin][symbol]['update_time_delta'] = self.risk_state[coin][symbol]['delta'] / self.mid(symbol)
 
                 # slice_size: cap IM impact to:
                 # - an equal share of margin headroom (this assumes margin is refreshed !)
@@ -1038,10 +1043,10 @@ class myFtx(ccxtpro.ftx):
         # if increases risk, go passive.
         if marginal_risk>0:
             stop_depth = None
-            current_basket_price = sum(self.mid(_symbol)*self.exec_parameters[coin][_symbol]['diff']
+            current_basket_price = sum(self.mid(_symbol) * self.exec_parameters[coin][_symbol]['update_time_delta']
                                        for _symbol in self.exec_parameters[coin].keys() if _symbol in self.markets)
             # mkt order if target reached.
-            if current_basket_price + 2 * np.abs(params['diff']) * params['takerVsMakerFee'] * mid < self.exec_parameters[coin]['rush_level']:
+            if current_basket_price + 2 * np.abs(params[coin]['update_time_delta']) * params['takerVsMakerFee'] * mid < self.exec_parameters[coin]['rush_level']:
                 # (np.abs(netDelta+size)-np.abs(netDelta))/np.abs(size)*params['edit_price_depth'] # equate: profit if done ~ marginal risk * stdev
                 size = np.sign(original_size) * min([np.abs(original_size), params['slice_size']])
                 edit_price_depth = 0
@@ -1129,7 +1134,7 @@ class myFtx(ccxtpro.ftx):
             (postOnly, ioc) = (True, False) if edit_price_depth > priceIncrement else (False, True)
             asyncio.create_task(self.create_order(symbol, 'limit', order_side, trimmed_size, price=edit_price,
                                                   params={'postOnly': postOnly,'ioc': ioc,
-                                                          'comment':'new' if edit_price_depth>0 else 'rush'}))
+                                                          'comment':'new' if edit_price_depth > priceIncrement else 'rush'}))
         # if only one and it's editable, stopout or peg or wait
         elif (self.latest_value(event_histories[0][-1]['clientOrderId'],'remaining') >= sizeIncrement) \
                 and event_histories[0][-1]['lifecycle_state'] in self.acknowledgedStates:
@@ -1138,13 +1143,13 @@ class myFtx(ccxtpro.ftx):
 
             # panic stop. we could rather place a trailing stop: more robust to latency, but less generic.
             if (stop_depth and order_distance > stop_trigger)\
-                    or edit_price_depth <= 0.0:
+                    or edit_price_depth <= priceIncrement:
                 size = self.latest_value(order['clientOrderId'],'remaining')
                 price = sweep_price_atomic(orderbook, size * mid)
                 asyncio.create_task( self.edit_order(symbol, 'limit', order_side, size,
                                                      price = price,
                                                      params={'ioc':True,'postOnly':False,
-                                                             'comment':'stop' if edit_price_depth>0 else 'rush'},
+                                                             'comment':'stop' if edit_price_depth > priceIncrement else 'rush'},
                                                      previous_clientOrderId = order['clientOrderId']))
             # peg limit order
             elif order_distance > edit_trigger and (np.abs(edit_price-order['price']) >= priceIncrement):
