@@ -277,7 +277,7 @@ async def diff_portoflio(exchange,future_weights) -> pd.DataFrame():
 
     # join, diff, coin
     result = target.set_index('name')[['optimalUSD']].join(current.set_index('name')[['total']],how='outer')
-    result=result.fillna(0.0).reset_index().rename(columns={'total':'currentCoin'})
+    result = result.fillna(0.0).reset_index().rename(columns={'total':'currentCoin'})
 
     result['name'] = result['name'].apply(lambda x: x.replace('_LOCKED', ''))
     result['coin'] = result['name'].apply(lambda x: exchange.market(x)['base'])
@@ -286,7 +286,10 @@ async def diff_portoflio(exchange,future_weights) -> pd.DataFrame():
     result['optimalCoin'] = result['optimalUSD'] / result['spot_price']
     result['currentUSD'] = result['currentCoin'] * result['spot_price']
     result['minProvideSize'] = result['name'].apply(lambda f: float(exchange.market(f)['info']['minProvideSize']))
-    result['diffCoin']= result.apply(lambda f: float(exchange.amount_to_precision(exchange.market(f['name'])['symbol'],f['optimalCoin']-f['currentCoin'])),axis=1)
+    if result.empty:
+        result['diffCoin'] = 0
+    else:
+        result['diffCoin']= result.apply(lambda f: float(exchange.amount_to_precision(exchange.market(f['name'])['symbol'],f['optimalCoin']-f['currentCoin'])),axis=1)
     result['diffUSD'] = result['diffCoin']*result['spot_price']
 
     result = result[np.abs(result['diffCoin'])>0]
@@ -374,7 +377,7 @@ async def fetch_portfolio(exchange,time):
     balances['additional'] = unrealizedPnL
 
     PV = pd.DataFrame(index=['total'],columns=['time','coin','coinAmt','event_type','attribution','spot','mark'])
-    balances['time'] = time
+    PV.loc['total','time'] = time
     PV.loc['total','coin'] = 'USD'
     PV.loc['total','coinAmt'] = (balances['coinAmt'] * balances['mark']).sum() + unrealizedPnL
     PV.loc['total','event_type'] = 'PV'
@@ -385,7 +388,7 @@ async def fetch_portfolio(exchange,time):
 
     IM = pd.DataFrame(index=['total'],
                       columns=['time','coin','coinAmt','event_type','attribution','spot','mark'])
-    balances['time'] = time
+    IM.loc['total','time'] = time
     IM.loc['total','coin'] = 'USD'
     account_data = pd.DataFrame((await exchange.privateGetAccount())['result'])[['marginFraction', 'totalPositionSize', 'initialMarginRequirement']]
     if not account_data.empty:
@@ -698,8 +701,9 @@ async def risk_and_pnl(exchange):
     end_portfolio = await fetch_portfolio(exchange, end_time - timedelta(seconds=14)) # it's live in fact, end_time just there for records
     # accrue and archive risk
     end_portfolio.to_csv(os.path.join(dirname,end_time.strftime("%Y%m%d_%H%M%S") + '_risk.json'))
-    pd.concat([previous_risk,end_portfolio],axis=0).to_csv(risk_filename)
-
+    all_risk = pd.concat([previous_risk,end_portfolio],axis=0)
+    #all_risk['time'] = all_risk['time'].apply(lambda t: pd.to_datetime(t).replace(tzinfo=timezone.utc))
+    all_risk.to_csv(risk_filename)
     # calculate pnl
     pnl = await compute_plex(exchange,start=start_time,end=end_time,start_portfolio=start_portfolio,end_portfolio=end_portfolio)#margintest
     pnl.sort_values(by='time',ascending=True,inplace=True)
@@ -708,7 +712,10 @@ async def risk_and_pnl(exchange):
 
     pnl_filename = os.path.join(os.sep, dirname, 'all_pnl.csv')
     if os.path.isfile(pnl_filename):
-        pd.concat([pd.read_csv(pnl_filename,index_col=0),pnl],axis=0).to_csv(pnl_filename)
+        all_pnl = pd.concat([pd.read_csv(pnl_filename,index_col=0),pnl],axis=0)
+        #all_pnl['time'] = all_pnl['time'].apply(lambda t: pd.to_datetime(t).replace(tzinfo=timezone.utc))
+        #all_pnl['start_time'] = all_pnl['start_time'].apply(lambda t: pd.to_datetime(t).replace(tzinfo=timezone.utc))
+        all_pnl.to_csv(pnl_filename)
     else:
         pnl.to_csv(pnl_filename)
 

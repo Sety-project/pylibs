@@ -184,7 +184,7 @@ def rate_history(future,exchange,
         data['rate/c'] = data.apply(
             lambda y: calc_basis(y['mark/c'],
                                  indexes.loc[y.name, future['instrument_name']+'/indexes/c'], future['expiryTime'],
-                                 datetime.fromtimestamp(int(y.name / 1000), tz=None)), axis=1)
+                                 datetime.fromtimestamp(int(y.name / 1000), tz=timez)), axis=1)
     elif future['type'] == 'swap': ### 1h funding = (mark/spot-1)/24
         data['rate/c'] = (data['mark/c'] / indexes[future['instrument_name']+'/indexes/c'] - 1)*365.25
     else:
