@@ -28,7 +28,7 @@ async def refresh_universe(exchange, universe_filter):
         futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=False)).set_index('name')
         markets = await exchange.fetch_markets()
 
-        universe_start = datetime(2021, 12, 1)
+        universe_start = datetime(2021, 12, 1).replace(tzinfo=timezone.utc)
         universe_end = datetime(year=datetime.utcnow().replace(tzinfo=timezone.utc).year, month=datetime.utcnow().replace(tzinfo=timezone.utc).month, day=datetime.utcnow().replace(tzinfo=timezone.utc).day) - timedelta(days=1)
         borrow_decile = 0.5
 

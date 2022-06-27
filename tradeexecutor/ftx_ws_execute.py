@@ -1426,4 +1426,10 @@ def main(*args):
             - sysperp ftx SysPerp
             - flatten ftx SysPerp
     '''
-    ftx_ws_spread_main(*sys.argv[1:])
+    try:
+        ftx_ws_spread_main(*sys.argv[1:])
+    except Exception as e:
+        filename = os.path.join(os.sep, 'tmp','tradeexecutor', 'errors.txt')
+        with open(filename,'a+') as fp:
+            fp.write(str(e))
+        raise e

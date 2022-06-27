@@ -762,5 +762,11 @@ def ftx_portoflio_main(*argv):
 
 
 def main(*args):
-    ftx_portoflio_main(*sys.argv[1:])
+    try:
+        ftx_portoflio_main(*sys.argv[1:])
+    except Exception as e:
+        filename = os.path.join(os.sep, 'tmp','pnl', 'errors.txt')
+        with open(filename,'a+') as fp:
+            fp.write(str(e))
+        raise e
 

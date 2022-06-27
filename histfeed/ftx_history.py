@@ -498,7 +498,13 @@ def main(*args):
 
         # Running histfeed
         logger.info(f'histfeed running with params {[arg for arg in args]}')
-        result = asyncio.run(ftx_history_main_wrapper(exchange_name, run_type, universe, nb_of_days))
+        try:
+            result = asyncio.run(ftx_history_main_wrapper(exchange_name, run_type, universe, nb_of_days))
+        except Exception as e:
+            filename = os.path.join(os.sep, 'tmp', 'histfeed', 'errors.txt')
+            with open(filename, 'a+') as fp:
+                fp.write(str(e))
+            raise e
         return result
         logger.info("histfeed terminated successfully...")
 
