@@ -36,7 +36,7 @@ def batch_summarize_exec_logs(dirname = os.path.join(os.sep, 'tmp', 'prod','trad
         except Exception as e:# always outside (start,end)
             continue
 
-    tab_list = ['request', 'parameters', 'by_symbol', 'by_clientOrderId', 'data', 'risk_recon'] + (
+    tab_list = ['request', 'parameters','by_coin', 'by_symbol', 'by_clientOrderId', 'data', 'risk_recon'] + (
         ['history'] if add_history_context else [])
     try:
         if rebuild: raise('not an exception: just skip history on rebuild=True')
@@ -88,6 +88,7 @@ def summarize_exec_logs(path_date, add_history_context = False):
     by_clientOrderId = pd.DataFrame({
         clientOrderId:
             {'symbol':clientOrderId_data['inception_event']['symbol'],
+             'coin': clientOrderId_data['inception_event']['symbol'].split('/')[0],
              'slice_started' : clientOrderId_data['inception_event']['timestamp'],
              'mid_at_inception' : 0.5*(clientOrderId_data['inception_event']['bid']+clientOrderId_data['inception_event']['ask']),
              'amount' : clientOrderId_data['inception_event']['amount']*(1 if clientOrderId_data['last_fill_event']['side']=='buy' else -1),
@@ -106,17 +107,23 @@ def summarize_exec_logs(path_date, add_history_context = False):
         partially = data[(data['amount'] != data['filled']) & (data['filled'] > 0)]
         pass
 
-    try:
-        by_symbol = pd.DataFrame({
-            symbol:
-                {'time_to_execute':symbol_data['slice_ended'].max()-symbol_data['slice_started'].min(),
-                 'slippage_bps': 10000*np.sign(symbol_data['filled'].sum())*((symbol_data['filled']*symbol_data['price']).sum()/symbol_data['filled'].sum()/request.loc[request['index']==symbol,'spot'].squeeze()-1),
-                 'fee': 10000*symbol_data['fee'].sum()/np.abs((symbol_data['filled']*symbol_data['price']).sum()),
-                 'filledUSD': (symbol_data['filled']*symbol_data['price']).sum()
-                 }
-            for symbol,symbol_data in by_clientOrderId.groupby(by='symbol')}).T.reset_index()
-    except Exception as e:
-        raise e
+    by_symbol = pd.DataFrame({
+        symbol:
+            {'time_to_execute':symbol_data['slice_ended'].max()-symbol_data['slice_started'].min(),
+             'slippage_bps': 10000*np.sign(symbol_data['filled'].sum())*((symbol_data['filled']*symbol_data['price']).sum()/symbol_data['filled'].sum()/request.loc[request['index']==symbol,'spot'].squeeze()-1),
+             'fee': 10000*symbol_data['fee'].sum()/np.abs((symbol_data['filled']*symbol_data['price']).sum()),
+             'filledUSD': (symbol_data['filled']*symbol_data['price']).sum(),
+             'coin': symbol.split('/')[0]
+             }
+        for symbol,symbol_data in by_clientOrderId.groupby(by='symbol')}).T.reset_index()
+
+    by_coin = pd.DataFrame({
+        coin:
+            {'premium_vs_inception_bps': (coin_data['slippage_bps']*coin_data['filledUSD']).sum()/coin_data['filledUSD'].apply(np.abs).sum()*2,
+             'perleg_fee_bps': coin_data['fee'].sum()/coin_data['filledUSD'].apply(np.abs).sum()*2,
+             'perleg_filled_USD': coin_data['filledUSD'].apply(np.abs).sum()/2
+             }
+        for coin,coin_data in by_symbol.groupby(by='coin')}).T.reset_index()
 
     fill_history = []
     if add_history_context:
@@ -154,9 +161,20 @@ def summarize_exec_logs(path_date, add_history_context = False):
                                              by_symbol['filledUSD'].apply(np.abs).sum()]})],
                           axis=0,ignore_index=True)
 
+    by_coin = pd.concat([by_coin,
+                           pd.DataFrame({'index': ['average'],
+                                         'fee': [(by_coin['perleg_filled_USD'].apply(np.abs) * by_symbol['perleg_fee_bps']).sum() /
+                                                 by_symbol['perleg_filled_USD'].apply(np.abs).sum()],
+                                         'perleg_filled_USD': by_symbol['perleg_filled_USD'].apply(np.abs).sum(),
+                                         'premium_vs_inception_bps': [
+                                             (by_symbol['perleg_filled_USD'].apply(np.abs) * by_symbol['premium_vs_inception_bps']).sum() /
+                                             by_symbol['perleg_filled_USD'].apply(np.abs).sum()]})],
+                          axis=0,ignore_index=True)
+
     return {
         'request':request,
         'parameters':parameters,
+        'by_coin':by_coin,
         'by_symbol':by_symbol,
         'by_clientOrderId':by_clientOrderId,
         'data':data,
