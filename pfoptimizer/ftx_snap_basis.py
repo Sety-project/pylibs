@@ -77,7 +77,7 @@ async def enricher(exchange,
 
     if not futures[futures['type'] == 'future'].empty:
         futures.loc[futures['type'] == 'future', 'basis_mid'] = futures[futures['type'] == 'future'].apply(
-            lambda f: calc_basis(f['mark'], f['index'], f['expiryTime'], datetime.now()), axis=1)
+            lambda f: calc_basis(f['mark'], f['index'], f['expiryTime'], datetime.utcnow().replace(tzinfo=timezone.utc)), axis=1)
 
     #### fill in borrow for spotMargin==False ot OTC override
     futures.loc[futures['spotMargin'] == False,'borrow']=999
@@ -136,8 +136,8 @@ def enricher_wrapper(exchange_name: str,type: str,depth: int) ->pd.DataFrame():
         (intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow) = forecast(
             exchange, enriched, hy_history,
             HOLDING_PERIOD, SIGNAL_HORIZON,  # to convert slippage into rate
-            filename='Runtime/logs/portfolio_optimizer/history.xlsx')  # historical window for expectations)
-        point_in_time = max(hy_history.index)
+            filename='')#'Runtime/logs/portfolio_optimizer/history.xlsx')  # historical window for expectations. don;t do it bc of xlxs
+        point_in_time = max(hy_history.index).replace(tzinfo=timezone.utc)
         updated = update(enriched, point_in_time, hy_history, depth,
                                      intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short,
                                      E_intUSDborrow, E_intBorrow)
@@ -172,7 +172,7 @@ def update(futures,point_in_time,history,equity,
         lambda f: history.loc[point_in_time, f.name + '_rate_T'],axis=1)
     futures.loc[futures['type'] == 'future', 'basis_mid'] = futures[futures['type'] == 'future'].apply(
         lambda f: calc_basis(f['mark'], f['index'],
-                             dateutil.parser.isoparse(f['expiry']).replace(tzinfo=None),
+                             dateutil.parser.isoparse(f['expiry']).replace(tzinfo=timezone.utc),
                              point_in_time), axis=1)
 
     # spot carries
@@ -315,7 +315,7 @@ async def fetch_rate_slippage(input_futures,
                               params={'override_slippage':True,'fee_mode':'retail'}) -> None:
 
     futures=input_futures.copy()
-    point_in_time=datetime.now()
+    point_in_time=datetime.utcnow().replace(tzinfo=timezone.utc)
     markets=await exchange.fetch_markets()
 
     if params['override_slippage']==True:

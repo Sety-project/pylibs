@@ -141,7 +141,7 @@ def deribit_smile_genesisvolatility(currency,start):
     '''
 
     # just read from file, since we only have 30d using LITE
-    nrows = int(1 + (datetime.datetime.now() - start).total_seconds() / 3600)
+    nrows = int(1 + (datetime.datetime.utcnow().replace(tzinfo=timezone.utc) - start).total_seconds() / 3600)
     data = pd.read_excel('Runtime/Deribit_Mktdata_database/genesisvolatility/manual.xlsx',index_col=0,header=[0,1],sheet_name=currency,nrows=nrows)/100
     return data
 

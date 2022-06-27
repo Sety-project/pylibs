@@ -13,7 +13,7 @@ from histfeed.ftx_history import fetch_trades_history
 
 def batch_summarize_exec_logs(dirname = os.path.join(os.sep, 'tmp', 'prod','tradeexecutor'),
                               start=datetime(1970,1,1),
-                              end=datetime.now(),
+                              end=datetime.utcnow().replace(tzinfo=timezone.utc),
                               rebuild = True,
                               add_history_context = False):
     '''pd.concat all logs

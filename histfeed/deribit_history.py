@@ -75,7 +75,7 @@ def get_history(derivative, start = 'cache', end = datetime(2022,4,25,7),
     return data
 
 def build_history(derivative,exchange,
-        end = (datetime.now(tz=None).replace(minute=0,second=0,microsecond=0)),
+        end = (datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0,second=0,microsecond=0)),
         dirname = 'Runtime/Deribit_Mktdata_database'):
     '''for now, increments local files and then uploads to s3'''
 

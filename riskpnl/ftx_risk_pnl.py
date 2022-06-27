@@ -1,5 +1,6 @@
 import time as t
 
+import dateutil.parser
 import pandas as pd
 
 from utils.ftx_utils import *
@@ -23,7 +24,7 @@ async def carry_portfolio_greeks(exchange,futures,params={'positive_carry_on_bal
     positions = pd.DataFrame([r['info'] for r in await exchange.fetch_positions(params={}) if r['info']['netSize']!=0],dtype=float)#'showAvgPrice':True})
 
     greeks = pd.DataFrame(columns=pd.MultiIndex.from_tuples([], names=['underlyingType',"underlying", "margining", "expiry","name","contractType"]))
-    updated=str(datetime.now())
+    updated=str(datetime.utcnow().replace(tzinfo=timezone.utc))
     rho=0.4
 
     for x in positions:
@@ -339,7 +340,7 @@ async def fetch_portfolio(exchange,time):
         unrealizedPnL= positions['unrealizedPnl'].sum()
         positions['coin'] = 'USD'
         positions['coinAmt'] = positions['netSize']
-        positions['time']=time.replace(tzinfo=None)
+        positions['time'] = time
         positions['event_type'] = 'delta'
         positions['attribution'] = positions['future']
         positions['mark'] = positions['attribution'].apply(lambda f: markets.loc[f,'price'])
@@ -363,7 +364,7 @@ async def fetch_portfolio(exchange,time):
     balances = balances[balances['total'] != 0.0].fillna(0.0)
     balances['coinAmt'] =balances['total']
     balances.loc[balances['coin']=='USD','coinAmt'] += unrealizedPnL
-    balances['time']=time.replace(tzinfo=None)
+    balances['time'] = time
     balances['event_type'] = 'delta'
     balances['coin'] = balances['coin'].apply(lambda f:f.replace('_LOCKED', ''))
     balances['attribution'] = balances['coin']
@@ -373,7 +374,7 @@ async def fetch_portfolio(exchange,time):
     balances['additional'] = unrealizedPnL
 
     PV = pd.DataFrame(index=['total'],columns=['time','coin','coinAmt','event_type','attribution','spot','mark'])
-    PV.loc['total','time'] = time.replace(tzinfo=None)
+    balances['time'] = time
     PV.loc['total','coin'] = 'USD'
     PV.loc['total','coinAmt'] = (balances['coinAmt'] * balances['mark']).sum() + unrealizedPnL
     PV.loc['total','event_type'] = 'PV'
@@ -384,7 +385,7 @@ async def fetch_portfolio(exchange,time):
 
     IM = pd.DataFrame(index=['total'],
                       columns=['time','coin','coinAmt','event_type','attribution','spot','mark'])
-    IM.loc['total','time'] = time.replace(tzinfo=None)
+    balances['time'] = time
     IM.loc['total','coin'] = 'USD'
     account_data = pd.DataFrame((await exchange.privateGetAccount())['result'])[['marginFraction', 'totalPositionSize', 'initialMarginRequirement']]
     if not account_data.empty:
@@ -558,7 +559,7 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
     # rescale inflows, or recompute if needed
     cash_flows['USDamt'] *= cash_flows['coin'].apply(lambda f: end_of_day.loc[f,'spot'])
     cash_flows['end_mark'] = cash_flows['attribution'].apply(lambda f: end_of_day.loc[f,'mark'])
-    cash_flows['start_time']=cash_flows['time']
+    cash_flows['time'] = cash_flows['time'].apply(lambda t:dateutil.parser.parse(t).replace(tzinfo=timezone.utc))
 
     if not future_trades.empty:# TODO: below code relies on trades ordering being preserved to this point :(
         cash_flows.loc[cash_flows['event_type']=='future_trade','USDamt']=(\
@@ -653,8 +654,6 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
     unexplained['end_mark'] = 1.0
     cash_flows = cash_flows.append(unexplained[['start_time','time', 'coin', 'USDamt', 'event_type', 'attribution', 'end_mark']], ignore_index=True)
 
-    cash_flows['start_time'] = cash_flows['start_time'].apply(lambda t: t if type(t)!=str else dateutil.parser.isoparse(t).replace(tzinfo=None))
-    cash_flows['time'] = cash_flows['time'].apply(lambda t: t if type(t)!=str else dateutil.parser.isoparse(t).replace(tzinfo=None))
     cash_flows['underlying'] = cash_flows['attribution'].apply(lambda f:
                             futures.loc[f,'underlying'] if f in futures.index
                             else f)
@@ -668,7 +667,7 @@ async def risk_and_pnl_wrapper(exchange_name='ftx',subaccount='debug'):
     return plex
 
 async def risk_and_pnl(exchange):
-    end_time = datetime.utcnow()
+    end_time = datetime.utcnow().replace(tzinfo=timezone.utc)
     dirname = os.path.join(os.sep,'tmp','pnl')
 
     # initialize directory and previous_risk if needed
@@ -689,6 +688,7 @@ async def risk_and_pnl(exchange):
 
     # need to retrieve previous risk / marks
     previous_risk = pd.read_csv(risk_filename,index_col=0)
+    previous_risk['time'] = previous_risk['time'].apply(lambda date: pd.to_datetime(date).replace(tzinfo=timezone.utc))
     start_time = previous_risk['time'].max()
     start_portfolio = previous_risk[(previous_risk['time']<start_time+timedelta(milliseconds= 1000)) \
                 &(previous_risk['time']>start_time-timedelta(milliseconds= 1000))] #TODO: precision!
@@ -698,7 +698,7 @@ async def risk_and_pnl(exchange):
     end_portfolio = await fetch_portfolio(exchange, end_time - timedelta(seconds=14)) # it's live in fact, end_time just there for records
     # accrue and archive risk
     end_portfolio.to_csv(os.path.join(dirname,end_time.strftime("%Y%m%d_%H%M%S") + '_risk.json'))
-    pd.concat([previous_risk,end_portfolio],axis=1).to_csv(risk_filename)
+    pd.concat([previous_risk,end_portfolio],axis=0).to_csv(risk_filename)
 
     # calculate pnl
     pnl = await compute_plex(exchange,start=start_time,end=end_time,start_portfolio=start_portfolio,end_portfolio=end_portfolio)#margintest
@@ -708,7 +708,7 @@ async def risk_and_pnl(exchange):
 
     pnl_filename = os.path.join(os.sep, dirname, 'all_pnl.csv')
     if os.path.isfile(pnl_filename):
-        pd.concat([pd.read_csv(pnl_filename),pnl],axis=1).to_csv(pnl_filename)
+        pd.concat([pd.read_csv(pnl_filename,index_col=0),pnl],axis=0).to_csv(pnl_filename)
     else:
         pnl.to_csv(pnl_filename)
 
@@ -744,7 +744,6 @@ def ftx_portoflio_main(*argv):
             argv.extend(['ftx', 'SysPerp'])
 
         plex = asyncio.run(risk_and_pnl_wrapper(*argv[1:]))
-        print(plex.astype(int))
         return plex
 
     elif argv[0] == 'log_reader':

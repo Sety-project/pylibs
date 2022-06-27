@@ -468,7 +468,7 @@ def strategies_main(*argv):
         prev_portfolio = copy.deepcopy(portfolio)
 
         if run_i%100==0:
-            print('{} at {}'.format(run_i,datetime.now()))
+            print('{} at {}'.format(run_i,datetime.utcnow().replace(tzinfo=timezone.utc)))
 
     display = pd.concat(series,axis=1)
     display.loc[(['predict','actual'],slice(None),slice(None))] = display.loc[(['predict','actual'],slice(None),slice(None))].cumsum(axis=1)
