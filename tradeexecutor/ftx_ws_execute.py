@@ -592,11 +592,16 @@ class myFtx(ccxtpro.ftx):
             [max([np.abs(weights.loc[data['symbol'], 'diffUSD'])
                   for data in trades_history_list if data['coin']==coin])
              for coin in coin_list])[-min(self.parameters['max_nb_coins'],len(coin_list))]
+        equity = float((await self.privateGetAccount())['result']['totalAccountValue'])
+        diff_threshold = max(diff_threshold,self.parameters['significance_threshold'] * equity)
 
         data_dict = {coin: coin_data
                      for coin, coin_data in full_dict.items() if
                      all(data['volume'] * self.parameters['time_budget'] > np.abs(data['diff']) for data in coin_data.values())
-                     and any(np.abs(data['diff']) >= max(diff_threshold/data['spot_price'], float(self.markets[symbol]['info']['minProvideSize'])) for symbol, data in coin_data.items())}
+                     and any(np.abs(data['diff']) >= max(
+                         diff_threshold/data['spot_price'],
+                         float(self.markets[symbol]['info']['minProvideSize']))
+                             for symbol, data in coin_data.items())}
         if data_dict =={}:
             self.exec_parameters = {'timestamp': end.timestamp() * 1000}
             raise myFtx.DoneDeal('nothing to do')
@@ -1018,7 +1023,7 @@ class myFtx(ccxtpro.ftx):
 
         # size to do:
         original_size = params['target'] - self.risk_state[coin][symbol]['delta']/mid
-        if np.abs(original_size) < 0.01 * self.pv: #self.exec_parameters[coin][symbol]['sizeIncrement']:
+        if np.abs(original_size) < self.parameters['significance_threshold'] * self.pv: #self.exec_parameters[coin][symbol]['sizeIncrement']:
             self.running_symbols.remove(symbol)
             self.myLogger.info(f'{symbol} done, {self.running_symbols} left to do')
             if self.running_symbols == []:
