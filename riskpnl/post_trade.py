@@ -14,13 +14,18 @@ from histfeed.ftx_history import fetch_trades_history
 def batch_summarize_exec_logs(dirname = os.path.join(os.sep, 'tmp', 'prod','tradeexecutor'),
                               start=datetime(1970,1,1),
                               end=datetime.now(),
+                              rebuild = True,
                               add_history_context = False):
     '''pd.concat all logs
     add log_time column
     move unreadable log sets to unreadable subdir'''
-    tab_list = ['request','parameters','by_symbol', 'by_clientOrderId', 'data', 'risk_recon'] + (['history'] if add_history_context else [])
-    all_files = os.listdir(os.path.join(os.sep,dirname, 'archive'))
+    archive_dirname = os.path.join(os.sep,dirname, 'archive')
+    unreadable_dirname = os.path.join(os.sep, archive_dirname, 'unreadable')
+    if not os.path.exists(unreadable_dirname):
+        os.umask(0)
+        os.makedirs(unreadable_dirname, mode=0o777)
 
+    all_files = os.listdir(archive_dirname)
     all_dates = []
     date_string_length = len(end.strftime("%Y%m%d_%H%M%S"))
     for f in all_files:
@@ -31,32 +36,31 @@ def batch_summarize_exec_logs(dirname = os.path.join(os.sep, 'tmp', 'prod','trad
         except Exception as e:# always outside (start,end)
             continue
 
+    tab_list = ['request', 'parameters', 'by_symbol', 'by_clientOrderId', 'data', 'risk_recon'] + (
+        ['history'] if add_history_context else [])
     try:
+        if rebuild: raise('not an exception: just skip history on rebuild=True')
         compiled_logs = {tab: pd.read_csv(os.path.join(os.sep,dirname,f'all_{tab}.csv'),index_col='index') for tab in tab_list}
-        existing_dates = set(compiled_logs['request']['log_time'].apply(lambda d: d.strftime("%Y%m%d_%H%M%S").replace(tzinfo=timezone.utc)))
+        existing_dates = set(compiled_logs['request']['log_time'].unique())
     except Exception as e:
         compiled_logs = {tab:pd.DataFrame() for tab in tab_list}
         existing_dates = set()
 
     for date in set(all_dates) - existing_dates:
         try:
-            new_logs = summarize_exec_logs(os.path.join(os.sep,dirname,'archive',date),add_history_context)
+            new_logs = summarize_exec_logs(os.path.join(os.sep,archive_dirname,date),add_history_context)
             for key in tab_list:
                 new_logs[key]['log_time'] = datetime.strptime(date,"%Y%m%d_%H%M%S").replace(tzinfo=timezone.utc)
                 compiled_logs[key] = pd.concat([compiled_logs[key],new_logs[key]],axis=0)
         except Exception as e:
-            unreadable_path = os.path.join(os.sep, 'tmp', 'tradeexecutor', 'archive', 'unreadable')
-            if not os.path.exists(unreadable_path):
-                os.umask(0)
-                os.makedirs(unreadable_path, mode=0o777)
-
             for suffix in ['events', 'request', 'risk_reconciliations']:
-                filename = os.path.join(os.sep, dirname,'archive',f'{date}_{suffix}.json')
+                filename = f'{date}_{suffix}.json'
                 if os.path.isfile(filename):
-                    shutil.move(filename, os.path.join(os.sep , unreadable_path,f'{date}_{suffix}.json'))
+                    shutil.copy2(os.path.join(os.sep, archive_dirname, filename), os.path.join(os.sep, unreadable_dirname, filename))
 
     for key,value in compiled_logs.items():
         value.to_csv(os.path.join(dirname,f'all_{key}.csv'))
+
 
 def summarize_exec_logs(path_date, add_history_context = False):
     '''compile json logs into DataFrame summaries'''
@@ -90,7 +94,7 @@ def summarize_exec_logs(path_date, add_history_context = False):
 
              'filled' : clientOrderId_data['last_fill_event']['filled']*(1 if clientOrderId_data['last_fill_event']['side']=='buy' else -1),
              'price' : clientOrderId_data['last_fill_event']['price'],
-             'fee': sum(data.loc[data['clientOrderId']==clientOrderId,'fee'].dropna().apply(lambda x:x['cost'])),
+             'fee': sum(data.loc[data['clientOrderId']==clientOrderId,'fee'].dropna().apply(lambda x:x['cost']*(1 if x['currency']=='USD' else np.NAN))),
              'slice_ended' : clientOrderId_data['last_fill_event']['timestamp']}
         for clientOrderId,clientOrderId_data in temp_events.items()}).T.reset_index()
 
