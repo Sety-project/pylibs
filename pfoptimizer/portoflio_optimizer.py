@@ -29,7 +29,7 @@ async def refresh_universe(exchange, universe_filter):
         markets = await exchange.fetch_markets()
 
         universe_start = datetime(2021, 12, 1)
-        universe_end = datetime(year=datetime.now().year, month=datetime.now().month, day=datetime.now().day) - timedelta(days=1)
+        universe_end = datetime(year=datetime.utcnow().replace(tzinfo=timezone.utc).year, month=datetime.utcnow().replace(tzinfo=timezone.utc).month, day=datetime.utcnow().replace(tzinfo=timezone.utc).day) - timedelta(days=1)
         borrow_decile = 0.5
 
         screening_params = universe_params["screening"]
@@ -105,7 +105,7 @@ async def perp_vs_cash(
     print(f'running {[(i, values[i]) for i in args]} ')
 
     futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=False)).set_index('name')
-    now_time = datetime.now()
+    now_time = datetime.utcnow().replace(tzinfo=timezone.utc)
 
     # Qualitative filtering
     universe = await refresh_universe(exchange, param_universe)
@@ -161,7 +161,7 @@ async def perp_vs_cash(
     if not os.path.exists(log_path):
         os.umask(0)
         os.makedirs(log_path, mode=0o777)
-    log_file = os.path.join(log_path, "history.xlsx")
+    log_file = ''# TODO still on xlsx os.path.join(log_path, "history.csv")
 
     (intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow) = \
         forecast(
@@ -482,8 +482,8 @@ def main(*args):
                                         signal_horizon=sig_horizon,
                                         holding_period=hol_period,
                                         slippage_override=slippage_override,
-                                        backtest_start= datetime(2021,2,17),#datetime.now().replace(minute=0, second=0, microsecond=0)-timedelta(days=2),# live start was datetime(2022,6,21,19),
-                                        backtest_end = datetime.now().replace(minute=0, second=0, microsecond=0)-timedelta(hours=1)))
+                                        backtest_start= datetime(2021,2,17),#datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0, second=0, microsecond=0)-timedelta(days=2),# live start was datetime(2022,6,21,19),
+                                        backtest_end = datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0, second=0, microsecond=0)-timedelta(hours=1)))
         logger.info("pfoptimizer terminated successfully...")
         return pd.DataFrame()
     else:
