@@ -137,8 +137,24 @@ async def perp_vs_cash(
         equity = start_portfolio.loc[start_portfolio['event_type'] == 'PV', 'usdAmt'].values[0]
 
     # Run a trajectory
+    log_path = os.path.join(os.sep, "tmp", "pfoptimizer")
+    if not os.path.exists(log_path):
+        os.umask(0)
+        os.makedirs(log_path, mode=0o777)
+    log_file = ''# TODO still on xlsx os.path.join(log_path, "history.csv")
     if backtest_start and backtest_end:
-        point_in_time = backtest_start
+        trajectory_filename = os.path.join(os.sep,log_path, 'trajectory.csv')
+        pnl_filename = os.path.join(os.sep, log_path, 'pnl.csv')
+        if os.path.isfile(trajectory_filename) and os.path.isfile(pnl_filename):
+            trajectory = pd.read_csv(trajectory_filename)
+            pnl = pd.read_csv(pnl_filename)
+            point_in_time = max(backtest_start,
+                                pnl['end_time'].apply(lambda t: pd.to_datetime(t).replace(tzinfo=timezone.utc)).max(),
+                                trajectory['time'].apply(lambda t: pd.to_datetime(t).replace(tzinfo=timezone.utc)).max())
+        else:
+            trajectory = pd.DataFrame()
+            pnl = pd.DataFrame()
+            point_in_time = backtest_start
     else:
         point_in_time = now_time.replace(minute=0, second=0, microsecond=0)-timedelta(hours=1)
         backtest_start = point_in_time
@@ -156,13 +172,6 @@ async def perp_vs_cash(
     hy_history = await get_history(dir_name, enriched, start_or_nb_hours=backtest_start-signal_horizon-holding_period, end=backtest_end)
     enriched = market_capacity(enriched, hy_history)
 
-    # ------- build derived data history
-    log_path = os.path.join(os.sep, "tmp", "pfoptimizer")
-    if not os.path.exists(log_path):
-        os.umask(0)
-        os.makedirs(log_path, mode=0o777)
-    log_file = ''# TODO still on xlsx os.path.join(log_path, "history.csv")
-
     (intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow) = \
         forecast(
             exchange, enriched, hy_history,
@@ -178,10 +187,6 @@ async def perp_vs_cash(
     filtered = updated.loc[~np.isnan(updated['E_intCarry'])]
     filtered = filtered.sort_values(by='E_intCarry', ascending=False)
     updated = None # safety
-
-    # Run a trajectory
-    trajectory = pd.DataFrame()
-    pnl = pd.DataFrame()
 
     if backtest_start == backtest_end:
         initial_weight = previous_weights_input
@@ -482,7 +487,7 @@ def main(*args):
                                         signal_horizon=sig_horizon,
                                         holding_period=hol_period,
                                         slippage_override=slippage_override,
-                                        backtest_start= datetime(2021,2,17),#datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0, second=0, microsecond=0)-timedelta(days=2),# live start was datetime(2022,6,21,19),
+                                        backtest_start= datetime(2021,2,17).replace(tzinfo=timezone.utc),#.replace(minute=0, second=0, microsecond=0)-timedelta(days=2),# live start was datetime(2022,6,21,19),
                                         backtest_end = datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0, second=0, microsecond=0)-timedelta(hours=1)))
         logger.info("pfoptimizer terminated successfully...")
         return pd.DataFrame()
