@@ -11,7 +11,7 @@ from utils.async_utils import safe_gather
 from utils.ccxt_utilities import open_exchange
 from histfeed.ftx_history import fetch_trades_history
 
-def batch_summarize_exec_logs(dirname = os.path.join(os.sep, 'tmp', 'prod','tradeexecutor'),
+def batch_summarize_exec_logs(dirname = os.path.join(os.sep, 'tmp', 'tradeexecutor'),
                               start=datetime(1970,1,1),
                               end=datetime.now(),
                               rebuild = True,
@@ -119,7 +119,7 @@ def summarize_exec_logs(path_date, add_history_context = False):
 
     by_coin = pd.DataFrame({
         coin:
-            {'premium_vs_inception_bps': (coin_data['slippage_bps']*coin_data['filledUSD']).sum()/coin_data['filledUSD'].apply(np.abs).sum()*2,
+            {'premium_vs_inception_bps': (coin_data['slippage_bps']*coin_data['filledUSD'].apply(np.abs)).sum()/coin_data['filledUSD'].apply(np.abs).sum()*2,
              'perleg_fee_bps': coin_data['fee'].sum()/coin_data['filledUSD'].apply(np.abs).sum()*2,
              'perleg_filled_USD': coin_data['filledUSD'].apply(np.abs).sum()/2
              }
@@ -163,12 +163,12 @@ def summarize_exec_logs(path_date, add_history_context = False):
 
     by_coin = pd.concat([by_coin,
                            pd.DataFrame({'index': ['average'],
-                                         'fee': [(by_coin['perleg_filled_USD'].apply(np.abs) * by_symbol['perleg_fee_bps']).sum() /
-                                                 by_symbol['perleg_filled_USD'].apply(np.abs).sum()],
-                                         'perleg_filled_USD': by_symbol['perleg_filled_USD'].apply(np.abs).sum(),
+                                         'perleg_fee_bps': [(by_coin['perleg_filled_USD'].apply(np.abs) * by_coin['perleg_fee_bps']).sum() /
+                                                 by_coin['perleg_filled_USD'].apply(np.abs).sum()],
+                                         'perleg_filled_USD': by_coin['perleg_filled_USD'].apply(np.abs).sum(),
                                          'premium_vs_inception_bps': [
-                                             (by_symbol['perleg_filled_USD'].apply(np.abs) * by_symbol['premium_vs_inception_bps']).sum() /
-                                             by_symbol['perleg_filled_USD'].apply(np.abs).sum()]})],
+                                             (by_coin['perleg_filled_USD'].apply(np.abs) * by_coin['premium_vs_inception_bps']).sum() /
+                                             by_coin['perleg_filled_USD'].apply(np.abs).sum()]})],
                           axis=0,ignore_index=True)
 
     return {
