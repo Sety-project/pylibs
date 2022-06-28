@@ -773,6 +773,9 @@ def main(*args):
         ftx_portoflio_main(*sys.argv[1:])
     except Exception as e:
         filename = os.path.join(os.sep, 'tmp','pnl', 'errors.txt')
+        if not os.path.exists(os.path.join(os.sep, 'tmp','pnl')):
+            os.umask(0)
+            os.makedirs(os.path.join(os.sep, 'tmp','pnl'), mode=0o777)
         with open(filename,'a+') as fp:
             fp.write(str(e))
         raise e
