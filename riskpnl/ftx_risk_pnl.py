@@ -770,6 +770,7 @@ def ftx_portoflio_main(*argv):
 
 def main(*args):
     try:
+        raise Exception('test')
         ftx_portoflio_main(*sys.argv[1:])
     except Exception as e:
         filename = os.path.join(os.sep, 'tmp','pnl', 'errors.txt')
