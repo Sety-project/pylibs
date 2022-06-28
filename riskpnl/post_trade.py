@@ -87,6 +87,7 @@ def summarize_exec_logs(path_date, add_history_context = False):
     # pick biggest 'filled' for each clientOrderId
     temp_events = {clientOrderId:
                        {'inception_event':clientOrderId_data[clientOrderId_data['lifecycle_state']=='pending_new'].iloc[0],
+                        'ack_event':clientOrderId_data[(clientOrderId_data['lifecycle_state'] == 'acknowledged')&(clientOrderId_data['comment'] == 'websocket_acknowledgment')].iloc[0],
                         'last_fill_event':clientOrderId_data[clientOrderId_data['filled']>0].iloc[-1]}
                    for clientOrderId, clientOrderId_data in data.groupby(by='clientOrderId') if clientOrderId_data['filled'].max()>0}
     by_clientOrderId = pd.DataFrame({
@@ -94,6 +95,7 @@ def summarize_exec_logs(path_date, add_history_context = False):
             {'symbol':clientOrderId_data['inception_event']['symbol'],
              'coin': clientOrderId_data['inception_event']['symbol'].split('/')[0],
              'slice_started' : clientOrderId_data['inception_event']['timestamp'],
+             'tick_to_order_local': clientOrderId_data['ack_event']['timestamp'] - clientOrderId_data['inception_event']['timestamp'],
              'mid_at_inception' : 0.5*(clientOrderId_data['inception_event']['bid']+clientOrderId_data['inception_event']['ask']),
              'amount' : clientOrderId_data['inception_event']['amount']*(1 if clientOrderId_data['last_fill_event']['side']=='buy' else -1),
 
