@@ -1,3 +1,4 @@
+import logging
 import os
 import asyncio
 import pandas as pd
@@ -46,6 +47,7 @@ def batch_summarize_exec_logs(dirname = os.path.join(os.sep, 'tmp', 'tradeexecut
         compiled_logs = {tab:pd.DataFrame() for tab in tab_list}
         existing_dates = set()
 
+    removed_logs = []
     for date in set(all_dates) - existing_dates:
         try:
             new_logs = summarize_exec_logs(os.path.join(os.sep,archive_dirname,date),add_history_context)
@@ -55,12 +57,14 @@ def batch_summarize_exec_logs(dirname = os.path.join(os.sep, 'tmp', 'tradeexecut
         except Exception as e:
             for suffix in ['events', 'request', 'risk_reconciliations']:
                 filename = f'{date}_{suffix}.json'
-                if os.path.isfile(filename):
-                    shutil.copy2(os.path.join(os.sep, archive_dirname, filename), os.path.join(os.sep, unreadable_dirname, filename))
+                if os.path.isfile(os.path.join(os.sep, archive_dirname, filename)):
+                    removed_logs.extend(filename)
+                    shutil.move(os.path.join(os.sep, archive_dirname, filename), os.path.join(os.sep, unreadable_dirname, filename))
+    print(f'moved {len(removed_logs)} logs to unreadable')
 
     for key,value in compiled_logs.items():
         value.to_csv(os.path.join(dirname,f'all_{key}.csv'))
-
+    print(f'printed summaries to {dirname}')
 
 def summarize_exec_logs(path_date, add_history_context = False):
     '''compile json logs into DataFrame summaries'''
