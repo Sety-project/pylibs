@@ -1,6 +1,9 @@
 import copy
 import inspect
 import datetime
+
+import pandas as pd
+
 from pfoptimizer.ftx_snap_basis import *
 from riskpnl.ftx_risk_pnl import *
 from utils.ftx_utils import Static, find_spot_ticker
@@ -233,36 +236,37 @@ async def perp_vs_cash(
 
             # increment
             time = point_in_time
-            row = optimized.reset_index().rename({'name': 'symbol'}).set_index('name')
+            row = optimized.reset_index()
             trajectory = pd.concat([trajectory,row])
             trajectory.to_csv(os.path.join(os.sep,log_path,'trajectory.csv'))
 
             pnl_list = []
-
-            cash_flow = row['previousWeight'].reset_index().rename(columns={'previousWeight':'amtUSD'})
+            cash_flow = copy.deepcopy(row)
             cash_flow['end_time'] = time
+
+            # weights
+            cash_flow['amtUSD'] = cash_flow['previousWeight']
             cash_flow['bucket'] = 'weights'
             #TODO dupe ...
-            cash_flow.loc[cash_flow['name'] == 'total', 'amtUSD'] = cash_flow['amtUSD'].sum()
-            pnl_list += [cash_flow]
-
-            cash_flow = (10000*(1 - row['index']/row['spot'])).reset_index().rename(columns={0:'amtUSD'})
-            cash_flow['end_time'] = time
-            cash_flow['bucket'] = 'spot_vs_index(bps)'
-            pnl_list += [cash_flow]
-
-            cash_flow = (row['RealizedCarry']*(time-prev_time).total_seconds()/365.25/24/3600).reset_index().rename(columns={'RealizedCarry':'amtUSD'})
-            cash_flow['end_time'] = time
-            cash_flow['bucket'] = 'carry(USD not annualized)'
-            # TODO dupe ?
             cash_flow.loc[cash_flow['name']=='total','amtUSD'] = cash_flow['amtUSD'].sum()
-            pnl_list += [cash_flow]
+            pnl_list += [cash_flow[['name','end_time','bucket','amtUSD']]]
 
-            cash_flow = (-row['previousWeight'] * ((row['mark'] - row['spot'])-(prev_row['mark'] - prev_row['spot']))/prev_row['spot']).reset_index().rename(columns={0:'amtUSD'})
-            cash_flow['end_time'] = time
+            # spot_vs_index
+            cash_flow['amtUSD'] = 10000*(1 - cash_flow['index']/cash_flow['spot'])
+            cash_flow['bucket'] = 'spot_vs_index(bps)'
+            pnl_list += [cash_flow[['name','end_time','bucket','amtUSD']].drop(cash_flow[cash_flow['name'].isin(['USD','total'])].index)]
+
+            #carry
+            cash_flow['amtUSD'] = cash_flow['RealizedCarry']*(time-prev_time).total_seconds()/365.25/24/3600
+            cash_flow['bucket'] = 'carry(USD not annualized)'
+            cash_flow.loc[cash_flow['name'] == 'total', 'amtUSD'] = cash_flow['amtUSD'].sum()
+            pnl_list += [cash_flow[['name','end_time','bucket','amtUSD']]]
+
+            # IR01
+            cash_flow['amtUSD'] = (-cash_flow['previousWeight'] * ((cash_flow['mark'] - cash_flow['spot'])-(prev_row['mark'] - prev_row['spot']))/prev_row['spot'])
             cash_flow['bucket'] = 'IR01(USD)'
             cash_flow.loc[cash_flow['name'] == 'total', 'amtUSD'] = cash_flow['amtUSD'].sum()
-            pnl_list += [cash_flow]
+            pnl_list += [cash_flow[['name','end_time','bucket','amtUSD']]]
 
             pnl = pd.concat([pnl]+pnl_list,axis=0)
             pnl.to_csv(os.path.join(os.sep,log_path,'pnl.csv'))
@@ -290,7 +294,7 @@ async def perp_vs_cash(
             'slippage_orderbook_depth': slippage_orderbook_depth})
     parameters.to_csv(os.path.join(os.sep,log_path,'parameters.csv'))
 
-# for live, just send last optimized
+    # for live, just send last optimized
     if backtest_start == backtest_end:
         pfoptimizer_path = os.path.join(configLoader.get_config_folder_path(), "pfoptimizer")
 
@@ -473,13 +477,13 @@ def main(*args):
                 res.to_excel(writer, sheet_name=str(equity))
         print(pd.concat({res.loc['total', 'optimalWeight']: res[['optimalWeight', 'ExpectedCarry']] / res.loc['total', 'optimalWeight'] for res in res}, axis=1))
     elif run_type == 'backtest':
-        for equity in [[1000]]:
-            for concentration_limit in [[1]]:
+        for equity in [[pf_params["EQUITY"]["value"]]]:
+            for concentration_limit in [[pf_params["CONCENTRATION_LIMIT"]["value"]]]:
                 for mktshare_limit in [[pf_params["MKTSHARE_LIMIT"]["value"]]]:
                     for minimum_carry in [[pf_params["MINIMUM_CARRY"]["value"]]]:
-                        for sig_horizon in [[timedelta(hours=h) for h in [48]]]:
-                            for hol_period in [[timedelta(hours=h) for h in [2]]]:
-                                for slippage_override in [[0.000]]:
+                        for sig_horizon in [[timedelta(hours=h) for h in [pf_params["SIGNAL_HORIZON"]["value"]]]]:
+                            for hol_period in [[timedelta(hours=h) for h in [pf_params["HOLDING_PERIOD"]["value"]]]]:
+                                for slippage_override in [[pf_params["SLIPPAGE_OVERRIDE"]["value"]]]:
                                     asyncio.run(strategy_wrapper(
                                         exchange_name=exchange_name,
                                         equity=equity,
