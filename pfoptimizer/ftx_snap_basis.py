@@ -116,7 +116,7 @@ async def enricher(exchange,
 
 def enricher_wrapper(exchange_name: str,type: str,depth: int) ->pd.DataFrame():
     async def enricher_subwrapper(exchange_name,type,depth):
-
+        exclusion_list = configLoader.get_pfoptimizer_params()['EXCLUSION_LIST']['value']
         exchange = await open_exchange(exchange_name,'')
         markets = await exchange.fetch_markets()
         futures = pd.DataFrame(await fetch_futures(exchange,includeIndex=False)).set_index('name')
@@ -125,7 +125,7 @@ def enricher_wrapper(exchange_name: str,type: str,depth: int) ->pd.DataFrame():
             & (futures.apply(lambda f: float(find_spot_ticker(markets, f, 'ask')), axis=1) > 0.0)
             & (futures['tokenizedEquity'] != True)]
 
-        filtered = futures[~futures['underlying'].isin(EXCLUSION_LIST)]
+        filtered = futures[~futures['underlying'].isin(exclusion_list)]
         type = ['future','perpetual'] if type == 'all' else [type]
         enriched = await enricher(exchange, filtered, timedelta(weeks=1), equity=1.0,
                                   slippage_override=-999, slippage_orderbook_depth=depth,

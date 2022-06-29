@@ -739,11 +739,13 @@ def ftx_portoflio_main(*argv):
 
     elif argv[0] == 'risk':
         if len(argv) < 3:
-            argv.extend(['ftx', 'SysPerp'])
-        while True:
+            argv.extend(['ftx', 'SysPerp','1'])
+        i = 0
+        while i< int(argv[3]):
             risk=asyncio.run(live_risk_wrapper(argv[1], argv[2]))
             print(risk.astype(int))
             t.sleep(5)
+            i += 1
         return risk
 
     elif argv[0] == 'plex':

@@ -2,11 +2,11 @@
 # -*- coding: utf-8 -*-
 # This program is dedicated to the public domain under the CC0 license.
 
-#from histfeed.ftx_history import *
-#from pfoptimizer.portoflio_optimizer import *
-#from riskpnl.ftx_portfolio import *
-#from tradeexecutor.ftx_ws_execute import *
-#from histfeed.ftx_history import ftx_history_main_wrapper
+from histfeed.ftx_history import *
+from pfoptimizer.portoflio_optimizer import strategy_wrapper,enricher_wrapper
+from riskpnl.ftx_risk_pnl import ftx_portoflio_main
+from tradeexecutor.ftx_ws_execute import *
+from histfeed.ftx_history import ftx_history_main_wrapper
 import logging
 from ux.docker_access import *
 from telegram import ParseMode
@@ -67,47 +67,52 @@ def echo(update, context):
             log.to_excel(os.path.join(os.sep, "tmp", "ux", 'chathistory.xlsx'))
 
         if split_message[0] == 'hist':
-            argv = ['build']+split_message[1:]
-            #data = ftx_history_main_wrapper(*argv)
+            split_message[0] = 'get'
+            exchange_name = 'ftx'
+            run_type = split_message[0]
+            universe = configLoader.get_bases(split_message[1])
+            nb_of_days = int(split_message[2])
+            data = asyncio.run(ftx_history_main_wrapper(exchange_name, run_type, universe, nb_of_days))
         elif split_message[0] == 'basis':
-            type='future' if len(split_message)<2 else str(split_message[1])
-            depth=1000 if len(split_message)<3 else int(split_message[2])
+            type = 'perpetual' if len(split_message)<2 else str(split_message[1])
+            depth = 0 if len(split_message)<3 else int(split_message[2])
             exchange_name = 'ftx' if len(split_message) < 4 else split_message[3]
-            #data = enricher_wrapper(exchange_name,type,depth)
-        elif update.effective_message.chat['first_name'] in whitelist:
+            data = enricher_wrapper(exchange_name,type,depth)
+#        elif update.effective_message.chat['first_name'] in whitelist:
+        elif split_message[0] in ['risk','plex','fromoptimal']:
+            # Call pyrun with the good params
+            data = ftx_portoflio_main(*split_message)
+        elif split_message[0] == 'sysperp':
+            # Call pyrun with the good params
+            #data = strategies_main(*split_message)
             pass
-            # if split_message[0] in ['risk','plex','fromoptimal']:
-            #     # Call pyrun with the good params
-            #     data = ftx_portoflio_main(*split_message)
-            # elif split_message[0] == 'sysperp':
-            #     # Call pyrun with the good params
-            #     #data = strategies_main(*split_message)
-            #     pass
-            # elif split_message[0] == 'execute':
-            #     # Call pyrun with the good params
-            #     data = ftx_ws_spread_main(*split_message)[0]
-            # else:
-            #     raise Exception('unknown command, type /help')
-            # else:
-            #     raise Exception('unknown command, type /help')
+        elif split_message[0] == 'execute':
+            # Call pyrun with the good params
+            data = ftx_ws_spread_main(*split_message)[0]
+        else:
+            raise Exception('unknown command, type /help')
 
-            # filename = os.path.join(os.sep, "tmp", "ux", 'telegram_file.xlsx')
-            # data.to_excel(filename)
-            # with open(filename, "rb") as file:
-            #     update.message.bot.sendDocument(update.message['chat']['id'], document=file)
+        dirname = os.path.join(os.sep, "tmp", "ux")
+        filename = os.path.join(os.sep,dirname,'telegram_file.csv')
+        if not os.path.exists(dirname):
+            os.umask(000)
+            os.makedirs(dirname, mode=0o777)
+        data.to_csv(filename)
+        with open(filename, "rb") as file:
+            update.message.bot.sendDocument(update.message['chat']['id'], document=file)
 
-            # msg = update.message.reply_text(docker_status(split_message[0]))
-            # msg = docker_status(split_message[0])
-            # msg = [[1,2,3,234,542,12],[1,2,3,234,542,12],[1,2,3,234,542,12],[1,2,3,234,542,12]]
-            # update.message.reply_text(f'<pre>{msg}</pre>', parse_mode=ParseMode.HTML)
-            # if len(msg) > 4096:
-            #     for x in range(0, len(msg), 4096):
-            #         update.message.reply_text(msg[x:x + 4096], parse_mode=ParseMode.HTML)
-            # else:
-            #     update.message.reply_text(msg, parse_mode=ParseMode.HTML)
-            if user_msg == 'docker ps':
-                response = docker_ps()
-                update.message.reply_text(f'<pre>{response}</pre>', parse_mode=ParseMode.HTML)
+#            msg = update.message.reply_text(docker_status(split_message[0]))
+#            msg = docker_status(split_message[0])
+#            msg = [[1,2,3,234,542,12],[1,2,3,234,542,12],[1,2,3,234,542,12],[1,2,3,234,542,12]]
+#            update.message.reply_text(f'<pre>{msg}</pre>', parse_mode=ParseMode.HTML)
+#            if len(msg) > 4096:
+#                for x in range(0, len(msg), 4096):
+#                    update.message.reply_text(msg[x:x + 4096], parse_mode=ParseMode.HTML)
+#           else:
+#               update.message.reply_text(msg, parse_mode=ParseMode.HTML)
+        if user_msg == 'docker ps':
+            response = docker_ps()
+            update.message.reply_text(f'<pre>{response}</pre>', parse_mode=ParseMode.HTML)
 
     except Exception as e:
         update.message.reply_text(str(e))
