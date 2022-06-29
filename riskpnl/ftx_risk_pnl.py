@@ -313,7 +313,6 @@ async def fetch_portfolio(exchange,time):
          for coro in ['fetch_markets', 'fetch_balance', 'fetch_positions']]
     results = await safe_gather(p)
 
-
     # avg to reduce impact of latency
     markets_list = []
     for result in results[0::3]:
@@ -414,6 +413,8 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
     end_time = end.timestamp()
     params={'start_time':start_time,'end_time':end_time}
 
+    # time: paydate, coin:numeraire, USDamt: cn amount first, will be converted at EOD later, event_type:..., attribution: for risk attribution (may be != coin)
+
     cash_flows=pd.DataFrame(columns=['time','coin','USDamt','event_type','attribution'])
 
     deposits= pd.DataFrame((await exchange.privateGetWalletDeposits(params))['result'],dtype=float)
@@ -433,7 +434,7 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
 
     funding = pd.DataFrame((await exchange.privateGetFundingPayments(params))['result'], dtype=float)
     if not funding.empty:
-        funding['coin'] = 'USD'
+        funding['coin'] = funding['future'].apply(lambda c: c.replace('-PERP',''))
         funding['USDamt'] = -funding['payment']
         funding['attribution'] = funding['future']
         funding['event_type'] = 'funding'
@@ -547,10 +548,11 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
                 mark_ticker = spot_ticker
 
             params={'start_time':point_in_time.timestamp(), 'end_time':point_in_time.timestamp()+15}
+            coros = safe_gather([exchange.fetch_ohlcv(ticker, timeframe='15s', params=params) for ticker in [spot_ticker,mark_ticker]])
             result=result.append(pd.Series(
                 {'attribution': f.replace('_LOCKED', ''),
-                'spot':(await exchange.fetch_ohlcv(spot_ticker, timeframe='15s', params=params))[0][1],
-                'mark':(await exchange.fetch_ohlcv(mark_ticker, timeframe='15s', params=params))[0][1]
+                'spot':coros[0][0][1],
+                'mark':coros[1][0][1]
                  }),ignore_index=True)
             logging.info('had to snap '+f)
 
@@ -646,8 +648,8 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
             cash_flows = cash_flows.append(future_portfolio[['start_time','time','coin','USDamt','event_type','attribution','end_mark']], ignore_index=True)
 
     unexplained=pd.DataFrame()
-    unexplained['USDamt']=end_portfolio.loc[end_portfolio['event_type']=='PV','coinAmt'].values - \
-                start_portfolio.loc[start_portfolio['event_type']=='PV','coinAmt'].values - \
+    unexplained['USDamt']=end_portfolio.loc[end_portfolio['event_type']=='PV','usdAmt'].values - \
+                start_portfolio.loc[start_portfolio['event_type']=='PV','usdAmt'].values - \
                 cash_flows['USDamt'].sum()
     unexplained['coin'] = 'USD'
     unexplained['attribution'] = 'USD'
