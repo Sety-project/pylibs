@@ -60,11 +60,11 @@ def echo(update, context):
         split_message = update.effective_message.text.lower().split()
         whitelist = ['daviidarr','Stephan', 'Victor']
         if not update.effective_message.chat['first_name'] in whitelist:
-            update.message.reply_text("Hey " + update.effective_message.chat['first_name'] + ": my code is so slow you have time to read that")
+            update.message.reply_text("Hey " + update.effective_message.chat['first_name'] + ": get in touch for whitelisting.")
             log=pd.DataFrame({'first_name':[update.effective_message.chat['first_name']],
                               'date':[str(update.effective_message['date'])],
                               'message':[update.effective_message['text']]})
-            log.to_excel(os.path.join(os.sep, "tmp", "ux", 'chathistory.xlsx'))
+            log.to_csv(os.path.join(os.sep, "tmp", "ux", 'chathistory.csv'))
 
         if split_message[0] == 'hist':
             split_message[0] = 'get'
@@ -84,8 +84,7 @@ def echo(update, context):
             data = ftx_portoflio_main(*split_message)
         elif split_message[0] == 'sysperp':
             # Call pyrun with the good params
-            update.message.reply_text('no sysperp for you')
-            #data = strategies_main(*split_message)
+            data = strategy_wrapper(*split_message)
         elif split_message[0] == 'execute':
             # Call pyrun with the good params
             update.message.reply_text('no execute for you')
@@ -128,6 +127,7 @@ def main(*args):
     # Create the Updater and pass it your bot's token.
     # Make sure to set use_context=True to use the new context based callbacks
     # Post version 12 this will no longer be necessary
+
     updater = Updater('1752990518:AAF0NpZBMgBzRTSfoaDDk69Zr5AdtoKtWGk', use_context=True)
 
     # Get the dispatcher to register handlers

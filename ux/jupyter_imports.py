@@ -7,6 +7,8 @@ import pandas as pd
 
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
+from matplotlib import cm
+import matplotlib.pyplot as plt
 import cufflinks as cf
 cf.go_offline()
 cf.set_config_file(offline=False, world_readable=True)

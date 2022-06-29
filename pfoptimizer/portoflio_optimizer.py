@@ -3,20 +3,19 @@ import inspect
 import datetime
 from pfoptimizer.ftx_snap_basis import *
 from riskpnl.ftx_risk_pnl import *
-from utils.ftx_utils import fetch_futures, find_spot_ticker
+from utils.ftx_utils import Static, find_spot_ticker
 from utils.config_loader import *
 from histfeed.ftx_history import get_history
 from utils.ccxt_utilities import open_exchange
+from utils.logger import build_logging
 
 run_i = 0
 
 LOGGER_NAME = __name__
 
-async def refresh_universe(exchange, universe_filter):
+async def refresh_universe(exchange, universe_filter,logger=None):
     ''' Reads from universe.json '''
     ''' futures need to be enriched first before this can run '''
-
-    logger = logging.getLogger(LOGGER_NAME)
 
     dir_name = configLoader.get_mktdata_folder_for_exchange(exchange.describe()['id'])
     universe_params = configLoader.get_universe_params()
@@ -25,7 +24,7 @@ async def refresh_universe(exchange, universe_filter):
         universe = configLoader.get_bases(universe_filter)
         return universe
     except FileNotFoundError as e:
-        futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=False)).set_index('name')
+        futures = pd.DataFrame(await Static.fetch_futures(exchange)).set_index('name')
         markets = await exchange.fetch_markets()
 
         universe_start = datetime(2021, 12, 1).replace(tzinfo=timezone.utc)
@@ -91,6 +90,7 @@ async def perp_vs_cash(
         exclusion_list,
         backtest_start=None, # None means live-only
         backtest_end=None,
+        logger=None,
         optional_params=[]):# verbose,warm_start
 
     # Load defaults params
@@ -102,13 +102,13 @@ async def perp_vs_cash(
 
     frame = inspect.currentframe()
     args, _, _, values = inspect.getargvalues(frame)
-    print(f'running {[(i, values[i]) for i in args]} ')
+    logger.info(f'running {[(i, values[i]) for i in args]} ')
 
-    futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=False)).set_index('name')
+    futures = pd.DataFrame(await Static.fetch_futures(exchange)).set_index('name')
     now_time = datetime.utcnow().replace(tzinfo=timezone.utc)
 
     # Qualitative filtering
-    universe = await refresh_universe(exchange, param_universe)
+    universe = await refresh_universe(exchange, param_universe,logger)
     universe = [instrument_name for instrument_name in universe if instrument_name.split("-")[0] not in exclusion_list]
     # universe = universe[~universe['underlying'].isin(exclusion_list)]
     type_allowed = param_type_allowed
@@ -146,11 +146,11 @@ async def perp_vs_cash(
         trajectory_filename = os.path.join(os.sep,log_path, 'trajectory.csv')
         pnl_filename = os.path.join(os.sep, log_path, 'pnl.csv')
         if os.path.isfile(trajectory_filename) and os.path.isfile(pnl_filename):
-            trajectory = pd.read_csv(trajectory_filename)
-            pnl = pd.read_csv(pnl_filename)
+            trajectory = pd.read_csv(trajectory_filename,parse_dates=['time'],index_col=0)
+            pnl = pd.read_csv(pnl_filename,parse_dates=['end_time'],index_col=0)
             point_in_time = max(backtest_start,
-                                pnl['end_time'].apply(lambda t: pd.to_datetime(t).replace(tzinfo=timezone.utc)).max(),
-                                trajectory['time'].apply(lambda t: pd.to_datetime(t).replace(tzinfo=timezone.utc)).max())
+                                pnl['end_time'].apply(lambda t: t.replace(tzinfo=timezone.utc)).max(),
+                                trajectory['time'].apply(lambda t: t.replace(tzinfo=timezone.utc)).max())
         else:
             trajectory = pd.DataFrame()
             pnl = pd.DataFrame()
@@ -217,6 +217,7 @@ async def perp_vs_cash(
                                              concentration_limit=concentration_limit,
                                              mktshare_limit=mktshare_limit,
                                              equity=equity,
+                                             logger=logger,
                                              optional_params = optional_params + (['cost_blind']
                                              if (point_in_time == backtest_start) & (backtest_start != backtest_end)
                                              else [])) # Ignore costs on first time of a backtest
@@ -270,9 +271,9 @@ async def perp_vs_cash(
             prev_row = copy.deepcopy(row)
 
         except Exception as e:
-            print(str(e))
+            logger.critical(str(e))
         finally:
-            print(f'{str(point_in_time)} done')
+            logger.info(f'{str(point_in_time)} done')
             point_in_time += timedelta(hours=1)
 
     parameters = pd.Series({
@@ -343,6 +344,7 @@ async def strategy_wrapper(**kwargs):
         slippage_override=slippage_override,
         backtest_start=kwargs['backtest_start'],
         backtest_end=kwargs['backtest_end'],
+        logger=kwargs['logger'],
         optional_params=['verbose'] if (__debug__ and kwargs['backtest_start']==kwargs['backtest_end']) else [])
         for equity in kwargs['equity']
         for concentration_limit in kwargs['concentration_limit']
@@ -371,8 +373,7 @@ def main(*args):
             - main ftx sysperp [signal_horizon] [holding_period], backtest, depth [signal_horizon] [holding_period]
    '''
 
-    set_logger("pfoptimizer")
-    logger = logging.getLogger(LOGGER_NAME)
+    logger = build_logging("pfoptimizer")
 
     # RUN_MODE = ["prod", "debug"]
     RUN_TYPES = ["sysperp", "backtest", "depth"]
@@ -415,18 +416,18 @@ def main(*args):
     try:
         horizons = [x for x in args if x[0].isnumeric()]
         if len(horizons) == 1:
-            logger.info(f"Should explicitly pass 2 horizons, or None to use default config")
+            logger.critical(f"Should explicitly pass 2 horizons, or None to use default config")
             logger.critical("---> Terminating...")
             sys.exit(1)
         elif len(horizons) == 2:
-            logger.info(f"Guessing horizons from params")
-            logger.info(f"Assuming holding_horizon is smaller than signal_horizon ")
+            logger.critical(f"Guessing horizons from params")
+            logger.critical(f"Assuming holding_horizon is smaller than signal_horizon ")
             horizons = sorted([parse_time_param(x) for x in horizons])
             holding_period = horizons[0]
             signal_horizon = horizons[1]
         else:
             # Using config horizons
-            logger.info(f"No horizons were found or could not implicit horizons --> defaulting to config/{configLoader.get_pfoptimizer_params_filename()}...")
+            logger.critical(f"No horizons were found or could not implicit horizons --> defaulting to config/{configLoader.get_pfoptimizer_params_filename()}...")
             holding_period = parse_time_param(pf_params["HOLDING_PERIOD"]["value"])
             signal_horizon = parse_time_param(pf_params["SIGNAL_HORIZON"]["value"])
     except IndexError:
@@ -434,7 +435,7 @@ def main(*args):
             logger.critical("---> Terminating...")
             sys.exit(1)
 
-    logger.info(f'Running main {run_type} holding_period={holding_period} signal_horizon={signal_horizon}')
+    logger.critical(f'Running main {run_type} holding_period={holding_period} signal_horizon={signal_horizon}')
 
     if run_type == 'sysperp':
         res = asyncio.run(strategy_wrapper(
@@ -448,7 +449,8 @@ def main(*args):
             holding_period=[holding_period],
             slippage_override=[pf_params["SLIPPAGE_OVERRIDE"]["value"]],
             backtest_start=None,
-            backtest_end=None))[0]
+            backtest_end=None,
+            logger=logger))[0]
     elif run_type == 'depth':
         global UNIVERSE
         UNIVERSE = 'max'  # set universe to 'max'
@@ -464,7 +466,8 @@ def main(*args):
             holding_period=[holding_period],
             slippage_override=[pf_params["SLIPPAGE_OVERRIDE"]["value"]],
             backtest_start=None,
-            backtest_end=None))
+            backtest_end=None,
+            logger=logger))
         with pd.ExcelWriter('Runtime/logs/portfolio_optimizer/depth.xlsx', engine='xlsxwriter') as writer:
             for res, equity in zip(res, equities):
                 res.to_excel(writer, sheet_name=str(equity))
@@ -488,13 +491,14 @@ def main(*args):
                                         holding_period=hol_period,
                                         slippage_override=slippage_override,
                                         backtest_start= datetime(2021,2,17).replace(tzinfo=timezone.utc),#.replace(minute=0, second=0, microsecond=0)-timedelta(days=2),# live start was datetime(2022,6,21,19),
-                                        backtest_end = datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0, second=0, microsecond=0)-timedelta(hours=1)))
-        logger.info("pfoptimizer terminated successfully...")
+                                        backtest_end = datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0, second=0, microsecond=0)-timedelta(hours=1),
+                                        logger=logger))
+        logger.critical("pfoptimizer terminated successfully...")
         return pd.DataFrame()
     else:
         logger.critical(f'commands: sysperp [signal_horizon] [holding_period], backtest, depth [signal_horizon] [holding_period]')
 
-    logger.info("pfoptimizer terminated successfully...")
+    logger.critical("pfoptimizer terminated successfully...")
     return res
 
 def parse_time_param(param):
@@ -511,25 +515,3 @@ def parse_time_param(param):
         horizon = int(param.split('w')[0])
         horizon = timedelta(weeks=horizon)
     return horizon
-
-def set_logger(app_name):
-    ''' Function that sets a logger for the app, for debugging purposes '''
-
-    time_date_stamp = strftime("%Y%m%d_%H%M%S")
-    filepath = os.path.join(os.sep, 'tmp', app_name)
-    if not os.path.exists(filepath):
-        os.umask(0)
-        os.makedirs(filepath, mode=0o777)
-
-    logging.basicConfig()
-    logger = logging.getLogger(LOGGER_NAME)
-    logger.setLevel(logging.INFO)
-
-    # Create file handler which logs even debug messages
-    filename = os.path.join(filepath, app_name + '_' + time_date_stamp + '.log')
-    fh = logging.FileHandler(filename)
-    fh.setFormatter(logging.Formatter('%(asctime)s %(name)s %(levelname)s %(message)s'))
-    fh.setLevel(logging.DEBUG)
-    logger.addHandler(fh)
-
-    logger.info("Logger ready")
