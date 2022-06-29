@@ -23,7 +23,8 @@ import ccxtpro
 # 'max_cache_size': mkt data cache
 # 'message_cache_size': missed messages cache
 # 'entry_tolerance': green light if basket better than quantile(entry_tolerance)
-# 'rush_tolerance': mkt on both legs if basket better than quantile(rush_tolerance)
+# 'rush_in_tolerance': mkt enter on both legs if basket better than quantile(rush_tolerance)
+# 'rush_out_tolerance': mkt close on both legs if basket worse than quantile(rush_tolerance)
 # 'stdev_window': stdev horizon for scaling parameters. in sec.
 # 'edit_price_tolerance': place on edit_price_tolerance (in minutes) *  stdev
 # 'aggressive_edit_price_tolerance': in priceIncrement
@@ -290,7 +291,7 @@ class myFtx(ccxtpro.ftx):
                 current['order'] = order_event['id']
                 current['id'] = None
                 assert 'amount' in current,"'amount' in current"
-                self.lifecycle_fill(current)
+                #self.lifecycle_fill(current)
             else:
                 current['lifecycle_state'] = 'rejected'
                 self.lifecycle_cancel_or_reject(current)
@@ -679,11 +680,16 @@ class myFtx(ccxtpro.ftx):
                 [data['vwap'] for data in coin_data.values()],
                 [self.exec_parameters[coin][symbol]['diff'] for symbol in coin_data.keys()],
                 self.parameters['entry_tolerance'])
-            # rush_level = what level on basket is so good good that you go market on both legs
-            self.exec_parameters[coin]['rush_level'] = basket_vwap_quantile(
+            # rush_in_level = what level on basket is so good that you go in at market on both legs
+            self.exec_parameters[coin]['rush_in_level'] = basket_vwap_quantile(
                 [data['vwap'] for data in coin_data.values()],
                 [self.exec_parameters[coin][symbol]['target'] * self.mid(symbol) - self.risk_state[coin][symbol]['delta'] for symbol in coin_data.keys()],
-                self.parameters['rush_tolerance'])
+                self.parameters['rush_in_tolerance'])
+            # rush_out_level = what level on basket is so bad that you go out at market on both legs
+            self.exec_parameters[coin]['rush_out_level'] = basket_vwap_quantile(
+                [data['vwap'] for data in coin_data.values()],
+                [self.exec_parameters[coin][symbol]['target'] * self.mid(symbol) - self.risk_state[coin][symbol]['delta'] for symbol in coin_data.keys()],
+                self.parameters['rush_out_tolerance'])
             for symbol, data in coin_data.items():
                 if symbol not in self.running_symbols:
                     continue
@@ -706,7 +712,7 @@ class myFtx(ccxtpro.ftx):
                 self.exec_parameters[coin][symbol]['stop_depth'] = stdev * np.sqrt(self.parameters['stop_tolerance']) * scaler
 
                 # used to get proper rush live levels. in coin.
-                self.exec_parameters[coin][symbol]['update_time_delta'] = self.risk_state[coin][symbol]['delta'] / self.mid(symbol)
+                self.exec_parameters[coin][symbol]['update_time_delta'] = self.exec_parameters[coin][symbol]['target'] - self.risk_state[coin][symbol]['delta'] / self.mid(symbol)
 
                 # slice_size: cap IM impact to:
                 # - an equal share of margin headroom (this assumes margin is refreshed !)
@@ -1010,14 +1016,26 @@ class myFtx(ccxtpro.ftx):
             current_basket_price = sum(self.mid(_symbol) * self.exec_parameters[coin][_symbol]['update_time_delta']
                                        for _symbol in self.exec_parameters[coin].keys() if _symbol in self.markets)
             # mkt order if target reached.
-            if current_basket_price + 2 * np.abs(params['update_time_delta']) * params['takerVsMakerFee'] * mid < self.exec_parameters[coin]['rush_level']:
-                # (np.abs(netDelta+size)-np.abs(netDelta))/np.abs(size)*params['edit_price_depth'] # equate: profit if done ~ marginal risk * stdev
-                size = np.sign(original_size) * min([np.abs(original_size), params['slice_size']])
+            if current_basket_price + 2 * np.abs(params['update_time_delta']) * params['takerVsMakerFee'] * mid < self.exec_parameters[coin]['rush_in_level'] \
+                or current_basket_price - 2 * np.abs(params['update_time_delta']) * params['takerVsMakerFee'] * mid > self.exec_parameters[coin]['rush_out_level']:
+                # TODO: could replace current_basket_price by two way sweep after if
+                # rush both legs
                 edit_price_depth = 0
                 for _symbol in self.exec_parameters[coin]:
                     if _symbol in self.markets:
                         self.exec_parameters[coin][_symbol]['edit_price_depth'] = 0
-            # limit order if level is acceptable
+
+                # also change target to 0 for rush_out
+                if current_basket_price - 2 * np.abs(params['update_time_delta']) * params['takerVsMakerFee'] * mid > self.exec_parameters[coin]['rush_out_level']:
+                    original_size = 0 - self.risk_state[coin][symbol]['delta'] / mid
+                    for _symbol in self.exec_parameters[coin]:
+                        if _symbol in self.markets:
+                            self.exec_parameters[coin][_symbol]['target'] = 0
+
+                # need to respect margin constraint anyway
+                size = np.sign(original_size) * min([np.abs(original_size), params['slice_size']])
+
+            # limit order if level is acceptable (saves margin compared to faraway order)
             elif current_basket_price < self.exec_parameters[coin]['entry_level']:
                 size = np.sign(original_size) * min([np.abs(original_size), params['slice_size']])
                 edit_price_depth = params['edit_price_depth']
