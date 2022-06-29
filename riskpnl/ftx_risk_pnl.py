@@ -15,7 +15,7 @@ async def carry_portfolio_greeks(exchange,futures,params={'positive_carry_on_bal
     careful: carry on balances cannot be overal positive.
     '''
     markets = await exchange.fetch_markets()
-    futures = await fetch_futures(exchange)
+    futures = await Static.fetch_futures(exchange)
 
     balances=pd.DataFrame((await exchange.fetch_balance(params={}))['info']['result'],dtype=float)#'showAvgPrice':True})
     balances=balances[(balances['total']!=0.0)&(balances['coin']!='USD')].fillna(0.0)
@@ -168,7 +168,7 @@ async def live_risk_wrapper(exchange_name='ftx',subaccount='SysPerp'):
     exchange = await open_exchange(exchange_name,subaccount)
 
     # contruct markets_by_id
-    futures = pd.DataFrame(await fetch_futures(exchange,includeIndex=True)).set_index('name')
+    futures = pd.DataFrame(await Static.fetch_futures(exchange)).set_index('name')
     risk = await live_risk(exchange,futures)
     await exchange.close()
     return risk
@@ -335,7 +335,7 @@ async def fetch_portfolio(exchange,time):
     positions.reset_index(inplace=True)
 
     # go ahead
-    futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=True, includeIndex=True))
+    futures = pd.DataFrame(await Static.fetch_futures(exchange))
     futures = futures.set_index('name')
     if not positions.empty:
         positions = positions[positions['netSize'] != 0.0].fillna(0.0)
@@ -408,7 +408,7 @@ async def fetch_portfolio(exchange,time):
     ],axis=0,ignore_index=True)
 
 async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
-    futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=True, includeIndex=True)).set_index('name')
+    futures = pd.DataFrame(await Static.fetch_futures(exchange)).set_index('name')
     start_time = start.timestamp()
     end_time = end.timestamp()
     params={'start_time':start_time,'end_time':end_time}
@@ -434,7 +434,7 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
 
     funding = pd.DataFrame((await exchange.privateGetFundingPayments(params))['result'], dtype=float)
     if not funding.empty:
-        funding['coin'] = funding['future'].apply(lambda c: c.replace('-PERP',''))
+        funding['coin'] = 'USD'
         funding['USDamt'] = -funding['payment']
         funding['attribution'] = funding['future']
         funding['event_type'] = 'funding'
@@ -548,7 +548,7 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
                 mark_ticker = spot_ticker
 
             params={'start_time':point_in_time.timestamp(), 'end_time':point_in_time.timestamp()+15}
-            coros = safe_gather([exchange.fetch_ohlcv(ticker, timeframe='15s', params=params) for ticker in [spot_ticker,mark_ticker]])
+            coros = await safe_gather([exchange.fetch_ohlcv(ticker, timeframe='15s', params=params) for ticker in [spot_ticker,mark_ticker]])
             result=result.append(pd.Series(
                 {'attribution': f.replace('_LOCKED', ''),
                 'spot':coros[0][0][1],
@@ -704,8 +704,8 @@ async def risk_and_pnl(exchange):
     # accrue and archive risk
     end_portfolio.to_csv(os.path.join(dirname,end_time.strftime("%Y%m%d_%H%M%S") + '_risk.json'))
     all_risk = pd.concat([previous_risk,end_portfolio],axis=0)
-    #all_risk['time'] = all_risk['time'].apply(lambda t: pd.to_datetime(t).replace(tzinfo=timezone.utc))
     all_risk.to_csv(risk_filename)
+
     # calculate pnl
     pnl = await compute_plex(exchange,start=start_time,end=end_time,start_portfolio=start_portfolio,end_portfolio=end_portfolio)#margintest
     pnl.sort_values(by='time',ascending=True,inplace=True)
@@ -742,11 +742,13 @@ def ftx_portoflio_main(*argv):
     elif argv[0] == 'risk':
         if len(argv) < 3:
             argv.extend(['ftx', 'SysPerp','1'])
+        if len(argv) < 4:
+            argv.extend(['1'])
         i = 0
-        while i< int(argv[3]):
+        while i < int(argv[3]):
             risk=asyncio.run(live_risk_wrapper(argv[1], argv[2]))
             print(risk.astype(int))
-            t.sleep(5)
+            t.sleep(10)
             i += 1
         return risk
 
@@ -769,7 +771,7 @@ def ftx_portoflio_main(*argv):
         return log
 
     else:
-        print(f'commands: fromOptimal[ftx, SysPerp]\nrisk[ftx, SysPerp],plex[ftx, SysPerp,timedelta(days=1)],log_reader[latest],batch_log_reader[]')
+        print(f'commands: fromOptimal[ftx, SysPerp]\nrisk[ftx, SysPerp,nb of runs],plex[ftx, SysPerp,timedelta(days=1)],log_reader[latest],batch_log_reader[]')
 
 
 def main(*args):

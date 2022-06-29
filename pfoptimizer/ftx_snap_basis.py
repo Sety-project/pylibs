@@ -62,7 +62,7 @@ async def enricher(exchange,
     for col in coin_details.columns:
         coin_details[col] = pd.to_numeric(coin_details[col], errors='ignore')
 
-    borrows = await fetch_coin_details(exchange)
+    borrows = await Static.fetch_coin_details(exchange)
     futures = pd.merge(futures, borrows[['borrow', 'lend', 'borrow_open_interest']], how='left', left_on='underlying',
                        right_index=True)
     futures['quote_borrow'] = float(borrows.loc['USD', 'borrow'])
@@ -119,7 +119,7 @@ def enricher_wrapper(exchange_name: str,type: str,depth: int) ->pd.DataFrame():
         exclusion_list = configLoader.get_pfoptimizer_params()['EXCLUSION_LIST']['value']
         exchange = await open_exchange(exchange_name,'')
         markets = await exchange.fetch_markets()
-        futures = pd.DataFrame(await fetch_futures(exchange,includeIndex=False)).set_index('name')
+        futures = pd.DataFrame(await Static.fetch_futures(exchange)).set_index('name')
         futures = futures[
             (futures['expired'] == False) & (futures['enabled'] == True) & (futures['type'] != "move")
             & (futures.apply(lambda f: float(find_spot_ticker(markets, f, 'ask')), axis=1) > 0.0)
@@ -314,9 +314,9 @@ async def fetch_rate_slippage(input_futures,
                               slippage_scaler: float = 1.0,
                               params={'override_slippage':True,'fee_mode':'retail'}) -> None:
 
-    futures=input_futures.copy()
-    point_in_time=datetime.utcnow().replace(tzinfo=timezone.utc)
-    markets=await exchange.fetch_markets()
+    futures = input_futures.copy()
+    point_in_time = datetime.utcnow().replace(tzinfo=timezone.utc)
+    markets = await exchange.fetch_markets()
 
     if params['override_slippage']==True:
         futures['spot_ask'] = slippage_override
@@ -398,18 +398,16 @@ def cash_carry_optimizer(exchange, futures,
                          concentration_limit,
                          mktshare_limit,
                          equity,# for markovitz
-                         optional_params=[]):  # verbose,warm_start, cost_blind
+                         optional_params=[],
+                         logger=None):  # verbose,warm_start, cost_blind
     # freeze universe, from now on must ensure order is the same
     futures = futures.join(previous_weights_df, how='left', lsuffix='_')
     previous_weights = futures['optimalWeight'].fillna(0.0)
 
-    intCarry=futures['intCarry'].values
-    intBorrow = futures['intBorrow'].values
-    intUSDborrow=futures['intUSDborrow'].values[0]
     E_intCarry = futures['E_intCarry'].values
     E_intBorrow = futures['E_intBorrow'].values
-    E_intUSDborrow=futures['E_intUSDborrow'].values[0]
-    buy_slippage=futures['buy_slippage'].values
+    E_intUSDborrow = futures['E_intUSDborrow'].values[0]
+    buy_slippage = futures['buy_slippage'].values
     sell_slippage = futures['sell_slippage'].values
 
     ##### optimization functions
@@ -531,11 +529,11 @@ def cash_carry_optimizer(exchange, futures,
             # https://github.com/scipy/scipy/issues/3056 -> SLSQP is unfomfortable with numerical jacobian when solution is on bounds, but in fact does converge.
             violation = - min([constraint['fun'](res['x']) for constraint in constraints])
             if res['message'] == 'Iteration limit reached':
-                logging.warning(res['message'] + '...but SLSQP is unfomfortable with numerical jacobian when solution is on bounds, but in fact does converge.')
+                logger.warning(res['message'] + '...but SLSQP is unfomfortable with numerical jacobian when solution is on bounds, but in fact does converge.')
             elif res['message'] == "Inequality constraints incompatible" and violation < equity / 100:
-                logging.warning(res['message'] + '...but only by' + str(violation))
+                logger.warning(res['message'] + '...but only by' + str(violation))
             else:
-                logging.error(res['message'])
+                logger.critical(res['message'])
 
     if 'verbose' in optional_params:
         callbackF(res['x'], progress_display,res['message'])

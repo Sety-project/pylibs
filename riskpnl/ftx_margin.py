@@ -29,7 +29,7 @@ class MarginCalculator:
     async def margin_calculator_factory(exchange):
         '''factory from exchange'''
         # get static parameters
-        futures = pd.DataFrame(await fetch_futures(exchange))
+        futures = pd.DataFrame(await Static.fetch_futures(exchange))
         account_leverage = float(futures.iloc[0]['account_leverage'])
         collateralWeight = futures.set_index('underlying')['collateralWeight'].to_dict()
         imfFactor = futures.set_index('new_symbol')['imfFactor'].to_dict()

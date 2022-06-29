@@ -1,6 +1,7 @@
 import logging
 import os
 import time as t
+from utils.logger import build_logging
 
 import numpy as np
 
@@ -1105,7 +1106,7 @@ class myFtx(ccxtpro.ftx):
         # if only one and it's editable, stopout or peg or wait
         elif (self.latest_value(event_histories[0][-1]['clientOrderId'],'remaining') >= sizeIncrement) \
                 and event_histories[0][-1]['lifecycle_state'] in self.acknowledgedStates:
-            order = event_histories[0][-1]
+            order = self.filter_order_histories(symbol,myFtx.acknowledgedStates)[0][-1]
             order_distance = (1 if order['side'] == 'buy' else -1) * (opposite_side - order['price'])
             repeg_gap = (1 if order['side'] == 'buy' else -1) * (edit_price - order['price'])
 
@@ -1266,7 +1267,7 @@ async def get_exec_request(*argv,subaccount):
         target_portfolio = await diff_portoflio(exchange, future_weights)
 
     else:
-        exchange.logger.exception(f'unknown command {argv[0]}', exc_info=True)
+        exchange.myLogger.exception(f'unknown command {argv[0]}', exc_info=True)
         raise Exception(f'unknown command {argv[0]}', exc_info=True)
 
     await exchange.close()
@@ -1294,6 +1295,7 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
         await exchange.load_markets()
 
         # Cancel all legacy orders (if any) before starting new batch
+        exchange.myLogger.warning('cancel_all_orders')
         await exchange.cancel_all_orders()
 
         if argv[0]=='sysperp':
@@ -1326,7 +1328,7 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
             if target_portfolio.empty: raise myFtx.NothingToDo()
 
         else:
-            exchange.logger.exception(f'unknown command {argv[0]}',exc_info=True)
+            exchange.myLogger.exception(f'unknown command {argv[0]}',exc_info=True)
             raise Exception(f'unknown command {argv[0]}', exc_info=True)
 
         await exchange.build_state(target_portfolio, parameters | {'comment': argv[0]})   # i
@@ -1339,16 +1341,17 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
     else:
         raise ('executer threw no exception ??')
     finally:
+        exchange.myLogger.warning('cancel_all_orders')
         await exchange.cancel_all_orders()
         # await exchange.close_dust()  # Commenting out until bug fixed
         await exchange.close()
-        exchange.logger.info('exchange closed', exc_info=True)
+        exchange.myLogger.info('exchange closed', exc_info=True)
 
 def ftx_ws_spread_main(*argv):
     '''
         @params: run_type, exchange, subaccount, *coin, *optimalcoin -> return status filled, partial
     '''
-    logger = build_logging('tradeexecutor',{logging.INFO:'exec_info.log',logging.WARNING:'oms_warning.log',logging.CRITICAL:'program_flow'})
+    logger = build_logging('tradeexecutor',{logging.INFO:'exec_info.log',logging.WARNING:'oms_warning.log',logging.CRITICAL:'program_flow.log'})
     params = {'logger':logger}
 
     argv = list(argv)
@@ -1401,45 +1404,3 @@ def main(*args):
             - flatten ftx SysPerp
     '''
     ftx_ws_spread_main(*sys.argv[1:])
-
-def build_logging(app_name,log_mapping):
-    '''log_mapping={logging.DEBUG:'debug.log'...
-    3 handlers: >=debug, ==info and >=warning'''
-
-    class MyFilter(object):
-        '''this is to restrict info logger to info only'''
-        def __init__(self, level):
-            self.__level = level
-        def filter(self, logRecord):
-            return logRecord.levelno <= self.__level
-
-    # mkdir log repos if does not exist
-    log_path = os.path.join(os.sep, "tmp", app_name)
-    if not os.path.exists(log_path):
-        os.umask(0)
-        os.makedirs(log_path, mode=0o777)
-
-    logging.basicConfig()
-    logger = logging.getLogger(app_name)
-
-    # logs
-    for level,filename in log_mapping.items():
-        handler = logging.FileHandler(os.path.join(os.sep,log_path,filename), mode='w')
-        handler.setLevel(level)
-        handler.setFormatter(logging.Formatter('%(asctime)s %(name)s %(levelname)s %(message)s'))
-        #handler.addFilter(MyFilter(level))
-        logger.addHandler(handler)
-
-    # handler_alert = logging.handlers.SMTPHandler(mailhost='smtp.google.com',
-    #                                              fromaddr='david@pronoia.link',
-    #                                              toaddrs=['david@pronoia.link'],
-    #                                              subject='auto alert',
-    #                                              credentials=('david@pronoia.link', ''),
-    #                                              secure=None)
-    # handler_alert.setLevel(logging.CRITICAL)
-    # handler_alert.setFormatter(logging.Formatter(f"%(levelname)s: %(message)s"))
-    # self.myLogger.addHandler(handler_alert)
-
-    logger.setLevel(min(log_mapping.keys()))
-
-    return logger

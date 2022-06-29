@@ -318,7 +318,6 @@ async def fetch_trades_history(symbol,
                                dirname=''):
 
     max_trades_data = int(5000)  # in trades, limit is 5000 :(
-    print('trades_history: ' + symbol)
 
     ### grab data per batch of 5000, try weekly
     trades=[]
@@ -384,7 +383,7 @@ async def fetch_trades_history(symbol,
 async def ftx_history_main_wrapper(exchange_name, run_type, universe, nb_of_days):
 
     exchange = await open_exchange(exchange_name,'')
-    futures = pd.DataFrame(await fetch_futures(exchange, includeExpired=True)).set_index('name')
+    futures = pd.DataFrame(await Static.fetch_futures(exchange)).set_index('name')
     await exchange.load_markets()
 
     #universe should be either 'all', either a universe name, or a list of currencies
