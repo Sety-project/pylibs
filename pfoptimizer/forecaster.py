@@ -24,27 +24,36 @@ class ZscoreTransformer(StandardScaler):
 class LaplaceTransformer(FunctionTransformer):
     '''horizon_windows in hours'''
     def __init__(self,horizon_windows: list[int]):
-        super().__init__(lambda x: pd.DataFrame({horizon_window:x.ewm(times = x.index,halflife = datetime.timedelta(hours=horizon_window)).mean()
-                          for horizon_window in horizon_windows}).dropna())
         self._horizon_windows = horizon_windows
     def get_feature_names_out(self):
         return [f'ewma{horizon_window}' for horizon_window in self._horizon_windows]
+    def fit_transform(self,X,y=None):
+        return pd.DataFrame({horizon_window: X.ewm(times = X.index,halflife = datetime.timedelta(hours=horizon_window)).mean()
+                          for horizon_window in self._horizon_windows}).dropna()
 class ShiftTransformer(FunctionTransformer):
     def __init__(self,horizon_window):
-        super().__init__(func=
-                         lambda x: x.shift(periods=horizon_window),
-                         inverse_func=
-                         lambda x: x.shift(periods=-horizon_window))
         self._horizon_window = horizon_window
     def get_feature_names_out(self):
         return f'shift{self._horizon_window}'
+    def fit_transform(self, X, y=None):
+        return X.shift(periods=self._horizon_window)
 class FwdMeanTransformer(TransformedTargetRegressor):
     def __init__(self,horizon_windows):
-        super().__init__(lambda x: pd.DataFrame({horizon_window:x.shift(periods=-horizon_window-1).rolling(horizon_window).mean()
-                                    for horizon_window in horizon_windows}))
         self._horizon_windows = horizon_windows
     def get_feature_names_out(self):
         return [f'fwdmean{horizon_window}' for horizon_window in self._horizon_windows]
+    def fit_transform(self,X,y=None):
+        return pd.DataFrame({horizon_window: X.shift(periods=-horizon_window - 1).rolling(horizon_window).mean()
+                      for horizon_window in self._horizon_windows})
+class PCATransformer(PCA):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+    def get_feature_names_out(self):
+        return [f'pca{i}' for i in range(self.n_components)]
+    def fit_transform(self,X,y=None):
+        self.fit(X.values)
+        result = self.transform(X.values)
+        return pd.DataFrame(index=X.index,columns=[f'pca_{i}' for i in range(self.n_components_)],data=result)
 
 class ColumnNames:
     @staticmethod
@@ -93,14 +102,14 @@ def ftx_forecaster_main(*args):
                 incrementer = 'passthrough'
                 standardizer = 'passthrough'
             elif feature == 'price':
-                incrementer = FunctionTransformer(func = lambda data: data.diff() / data)
+                incrementer = FunctionTransformer(func = lambda data: (data.diff() / data).dropna())
                 standardizer = ZscoreTransformer()
             else:
                 incrementer = 'passthrough'
                 standardizer = ZscoreTransformer()
 
             laplace_expansion = LaplaceTransformer(horizon_windows)
-            dimensionality_reduction = PCA(n_components=pca_n,svd_solver='full') if pca_n else 'passthrough'
+            dimensionality_reduction = PCATransformer(n_components=pca_n,svd_solver='full') if pca_n else 'passthrough'
             data_list += [Pipeline([('incrementer', incrementer),
                                     ('standardizer', standardizer),
                                     ('laplace_expansion', laplace_expansion),
