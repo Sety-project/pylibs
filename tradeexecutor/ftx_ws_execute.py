@@ -290,7 +290,7 @@ class myFtx(ccxtpro.ftx):
                 current['order'] = order_event['id']
                 current['id'] = None
                 assert 'amount' in current,"'amount' in current"
-                self.lifecycle_fill(current)
+                #self.lifecycle_fill(current)
             else:
                 current['lifecycle_state'] = 'rejected'
                 self.lifecycle_cancel_or_reject(current)
@@ -706,7 +706,7 @@ class myFtx(ccxtpro.ftx):
                 self.exec_parameters[coin][symbol]['stop_depth'] = stdev * np.sqrt(self.parameters['stop_tolerance']) * scaler
 
                 # used to get proper rush live levels. in coin.
-                self.exec_parameters[coin][symbol]['update_time_delta'] = self.risk_state[coin][symbol]['delta'] / self.mid(symbol)
+                self.exec_parameters[coin][symbol]['update_time_delta'] = self.exec_parameters[coin][symbol]['target'] - self.risk_state[coin][symbol]['delta'] / self.mid(symbol)
 
                 # slice_size: cap IM impact to:
                 # - an equal share of margin headroom (this assumes margin is refreshed !)
