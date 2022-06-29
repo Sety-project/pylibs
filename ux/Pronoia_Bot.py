@@ -84,11 +84,16 @@ def echo(update, context):
             data = ftx_portoflio_main(*split_message)
         elif split_message[0] == 'sysperp':
             # Call pyrun with the good params
+            update.message.reply_text('no sysperp for you')
             #data = strategies_main(*split_message)
-            pass
         elif split_message[0] == 'execute':
             # Call pyrun with the good params
-            data = ftx_ws_spread_main(*split_message)[0]
+            update.message.reply_text('no execute for you')
+            #data = ftx_ws_spread_main(*split_message)[0]
+        elif user_msg == 'docker ps':
+            response = docker_ps()
+            update.message.reply_text(f'<pre>{response}</pre>', parse_mode=ParseMode.HTML)
+            return
         else:
             raise Exception('unknown command, type /help')
 
@@ -110,9 +115,6 @@ def echo(update, context):
 #                    update.message.reply_text(msg[x:x + 4096], parse_mode=ParseMode.HTML)
 #           else:
 #               update.message.reply_text(msg, parse_mode=ParseMode.HTML)
-        if user_msg == 'docker ps':
-            response = docker_ps()
-            update.message.reply_text(f'<pre>{response}</pre>', parse_mode=ParseMode.HTML)
 
     except Exception as e:
         update.message.reply_text(str(e))
