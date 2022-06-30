@@ -1003,12 +1003,15 @@ class myFtx(ccxtpro.ftx):
         delta_timestamp = self.risk_state[coin][symbol]['delta_timestamp']
         globalDelta = self.risk_state[coin]['netDelta'] + self.parameters['global_beta'] * (self.total_delta - self.risk_state[coin]['netDelta'])
         marginal_risk = np.abs(globalDelta/mid + original_size)-np.abs(globalDelta/mid)
+        delta_limit = self.limit.delta_limit * self.pv
 
-        # if increases risk out of limit, skip.
-        if np.abs(globalDelta/mid + original_size) > self.limit.delta_limit * self.pv:
-            self.myLogger.warning(f'{original_size} {symbol} would increase risk over {self.limit.delta_limit/100}% of {self.pv} --> skipping')
-        # if increases risk but not out of limit, go passive.
-        elif marginal_risk>0:
+        # if increases risk but not out of limit, trim and go passive.
+        if marginal_risk>0:
+            if np.abs(globalDelta / mid + original_size) > delta_limit:
+                trimmed_size = np.clip(original_size,a_min=-delta_limit,a_max=delta_limit) - globalDelta / mid
+                self.myLogger.warning(f'{original_size} {symbol} would increase risk over {self.limit.delta_limit * 100}% of {self.pv} --> trimming to {trimmed_size}')
+                original_size = trimmed_size
+
             stop_depth = None
             current_basket_price = sum(self.mid(_symbol) * self.exec_parameters[coin][_symbol]['update_time_delta']
                                        for _symbol in self.exec_parameters[coin].keys() if _symbol in self.markets)
@@ -1092,7 +1095,6 @@ class myFtx(ccxtpro.ftx):
             # TODO: headroom estimate is wrong ....
             if self.margin.actual_IM <= 0:
                 self.myLogger.info(f'estimated_IM {estimated_IM} / actual_IM {actual_IM} / marginal_IM {marginal_IM} --> Skipping {symbol}')
-                return
                 #TODO: check before skipping?
                 #await self.margin_calculator.update_actual(self)
                 #headroom_estimate = self.margin_calculator.actual_IM
@@ -1325,11 +1327,13 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
             target_portfolio=diff
             target_portfolio['optimalCoin'] = diff.apply(lambda f: smallest_risk[f['coin']]*np.sign(f['currentCoin']),axis=1)
             if target_portfolio.empty: raise myFtx.NothingToDo()
+            parameters['max_nb_coins'] = 99 #TODO: need one config per mode
 
         elif argv[0]=='unwind':
             future_weights = pd.DataFrame(columns=['name','optimalWeight'])
             target_portfolio = await diff_portoflio(exchange, future_weights)
             if target_portfolio.empty: raise myFtx.NothingToDo()
+            parameters['max_nb_coins'] = 99
 
         else:
             exchange.myLogger.exception(f'unknown command {argv[0]}',exc_info=True)
