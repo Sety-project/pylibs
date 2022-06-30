@@ -407,7 +407,7 @@ async def fetch_portfolio(exchange,time):
         IM[['time','coin','coinAmt','event_type','attribution','spot','mark', 'usdAmt']]
     ],axis=0,ignore_index=True)
 
-async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
+async def compute_plex(exchange,start,end,start_portfolio,end_portfolio,accrue_log = True):
     futures = pd.DataFrame(await Static.fetch_futures(exchange)).set_index('name')
     start_time = start.timestamp()
     end_time = end.timestamp()
@@ -665,13 +665,13 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
 
     return cash_flows.sort_values(by='time',ascending=True)
 
-async def risk_and_pnl_wrapper(exchange_name='ftx',subaccount='debug'):
+async def risk_and_pnl_wrapper(exchange_name,subaccount,**kwargs):
     exchange = await open_exchange(exchange_name,subaccount)
-    plex= await risk_and_pnl(exchange)
+    plex= await risk_and_pnl(exchange,**kwargs)
     await exchange.close()
     return plex
 
-async def risk_and_pnl(exchange):
+async def risk_and_pnl(exchange,**kwargs):
     end_time = datetime.utcnow().replace(tzinfo=timezone.utc)
     dirname = os.path.join(os.sep,'tmp','pnl')
 
@@ -692,8 +692,8 @@ async def risk_and_pnl(exchange):
         previous_risk.to_csv(risk_filename)
 
     # need to retrieve previous risk / marks
-    previous_risk = pd.read_csv(risk_filename,index_col=0)
-    previous_risk['time'] = previous_risk['time'].apply(lambda date: pd.to_datetime(date).replace(tzinfo=timezone.utc))
+    previous_risk = pd.read_csv(risk_filename,parse_dates=['time'],index_col=0)
+
     start_time = previous_risk['time'].max()
     start_portfolio = previous_risk[(previous_risk['time']<start_time+timedelta(milliseconds= 1000)) \
                 &(previous_risk['time']>start_time-timedelta(milliseconds= 1000))] #TODO: precision!
@@ -702,26 +702,28 @@ async def risk_and_pnl(exchange):
     # 16s is to avoid looking into the future to fetch prices
     end_portfolio = await fetch_portfolio(exchange, end_time - timedelta(seconds=14)) # it's live in fact, end_time just there for records
     # accrue and archive risk
-    end_portfolio.to_csv(os.path.join(dirname,end_time.strftime("%Y%m%d_%H%M%S") + '_risk.json'))
+    if 'accrue_log' in kwargs and kwargs['accrue_log']: end_portfolio.to_csv(os.path.join(dirname,end_time.strftime("%Y%m%d_%H%M%S") + '_risk.json'))
     all_risk = pd.concat([previous_risk,end_portfolio],axis=0)
-    all_risk.to_csv(risk_filename)
+    if 'accrue_log' in kwargs and kwargs['accrue_log']: all_risk.to_csv(risk_filename)
 
     # calculate pnl
-    pnl = await compute_plex(exchange,start=start_time,end=end_time,start_portfolio=start_portfolio,end_portfolio=end_portfolio)#margintest
+    pnl = await compute_plex(exchange,start=start_time,end=end_time,start_portfolio=start_portfolio,end_portfolio=end_portfolio, accrue_log=True)#margintest
     pnl.sort_values(by='time',ascending=True,inplace=True)
     # accrue and archive pnl
-    pnl.to_csv(os.path.join(dirname, end_time.strftime("%Y%m%d_%H%M%S") + '_pnl.json'))
+    if 'accrue_log' in kwargs and kwargs['accrue_log']: pnl.to_csv(os.path.join(dirname, end_time.strftime("%Y%m%d_%H%M%S") + '_pnl.json'))
 
     pnl_filename = os.path.join(os.sep, dirname, 'all_pnl.csv')
     if os.path.isfile(pnl_filename):
-        all_pnl = pd.concat([pd.read_csv(pnl_filename,index_col=0),pnl],axis=0)
+        all_pnl = pd.concat([pd.read_csv(pnl_filename,index_col=0,parse_dates=['time','start_time']),pnl],axis=0)
         #all_pnl['time'] = all_pnl['time'].apply(lambda t: pd.to_datetime(t).replace(tzinfo=timezone.utc))
         #all_pnl['start_time'] = all_pnl['start_time'].apply(lambda t: pd.to_datetime(t).replace(tzinfo=timezone.utc))
-        all_pnl.to_csv(pnl_filename)
+        if 'accrue_log' in kwargs and kwargs['accrue_log']: all_pnl.to_csv(pnl_filename)
     else:
-        pnl.to_csv(pnl_filename)
+        if 'accrue_log' in kwargs and kwargs['accrue_log']: pnl.to_csv(pnl_filename)
 
-def ftx_portoflio_main(*argv):
+    return pnl
+
+def ftx_portoflio_main(*argv,**kwargs):
     ''' TODO: improve input params'''
     #pd.set_option('display.float_format',lambda x: '{:,.3f}'.format(x))
     #f'{float(f"{i:.1g}"):g}'
@@ -756,7 +758,7 @@ def ftx_portoflio_main(*argv):
         if len(argv) < 3:
             argv.extend(['ftx', 'SysPerp'])
 
-        plex = asyncio.run(risk_and_pnl_wrapper(*argv[1:]))
+        plex = asyncio.run(risk_and_pnl_wrapper(*argv[1:],**kwargs))
         return plex
 
     elif argv[0] == 'log_reader':

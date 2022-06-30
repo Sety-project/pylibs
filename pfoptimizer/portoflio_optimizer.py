@@ -263,7 +263,7 @@ async def perp_vs_cash(
             pnl_list += [cash_flow[['name','end_time','bucket','amtUSD']]]
 
             # IR01
-            cash_flow['amtUSD'] = (-cash_flow['previousWeight'] * ((cash_flow['mark'] - cash_flow['spot'])-(prev_row['mark'] - prev_row['spot']))/prev_row['spot'])
+            cash_flow['amtUSD'] = (-cash_flow['previousWeight'] * ((row['mark'] - row['spot'])-(prev_row['mark'] - prev_row['spot']))/prev_row['spot'])
             cash_flow['bucket'] = 'IR01(USD)'
             cash_flow.loc[cash_flow['name'] == 'total', 'amtUSD'] = cash_flow['amtUSD'].sum()
             pnl_list += [cash_flow[['name','end_time','bucket','amtUSD']]]
@@ -477,12 +477,12 @@ def main(*args):
                 res.to_excel(writer, sheet_name=str(equity))
         print(pd.concat({res.loc['total', 'optimalWeight']: res[['optimalWeight', 'ExpectedCarry']] / res.loc['total', 'optimalWeight'] for res in res}, axis=1))
     elif run_type == 'backtest':
-        for equity in [[pf_params["EQUITY"]["value"]]]:
+        for equity in [[100000]]:
             for concentration_limit in [[pf_params["CONCENTRATION_LIMIT"]["value"]]]:
                 for mktshare_limit in [[pf_params["MKTSHARE_LIMIT"]["value"]]]:
                     for minimum_carry in [[pf_params["MINIMUM_CARRY"]["value"]]]:
-                        for sig_horizon in [[timedelta(hours=h) for h in [pf_params["SIGNAL_HORIZON"]["value"]]]]:
-                            for hol_period in [[timedelta(hours=h) for h in [pf_params["HOLDING_PERIOD"]["value"]]]]:
+                        for sig_horizon in [[signal_horizon]]:
+                            for hol_period in [[holding_period]]:
                                 for slippage_override in [[pf_params["SLIPPAGE_OVERRIDE"]["value"]]]:
                                     asyncio.run(strategy_wrapper(
                                         exchange_name=exchange_name,

@@ -1004,8 +1004,11 @@ class myFtx(ccxtpro.ftx):
         globalDelta = self.risk_state[coin]['netDelta'] + self.parameters['global_beta'] * (self.total_delta - self.risk_state[coin]['netDelta'])
         marginal_risk = np.abs(globalDelta/mid + original_size)-np.abs(globalDelta/mid)
 
-        # if increases risk, go passive.
-        if marginal_risk>0:
+        # if increases risk out of limit, skip.
+        if np.abs(globalDelta/mid + original_size) > self.limit.delta_limit * self.pv:
+            self.myLogger.warning(f'{original_size} {symbol} would increase risk over {self.limit.delta_limit/100}% of {self.pv} --> skipping')
+        # if increases risk but not out of limit, go passive.
+        elif marginal_risk>0:
             stop_depth = None
             current_basket_price = sum(self.mid(_symbol) * self.exec_parameters[coin][_symbol]['update_time_delta']
                                        for _symbol in self.exec_parameters[coin].keys() if _symbol in self.markets)
@@ -1083,18 +1086,19 @@ class myFtx(ccxtpro.ftx):
             # trim size to margin allocation (equal for all running symbols)
             marginal_IM = self.margin.order_marginal_cost(symbol, abs(size), mid, 'IM',
                                                                       self.markets[symbol]['type'])
-            headroom_estimate = self.margin.estimate(self, 'IM')
+            estimated_IM = self.margin.estimate(self, 'IM')
+            actual_IM = self.margin.actual_IM
 
             # TODO: headroom estimate is wrong ....
             if self.margin.actual_IM <= 0:
-                self.myLogger.info(f'headroom_estimate {headroom_estimate} vs marginal_IM {marginal_IM}. Skipping {symbol}')
+                self.myLogger.info(f'estimated_IM {estimated_IM} / actual_IM {actual_IM} / marginal_IM {marginal_IM} --> Skipping {symbol}')
                 return
                 #TODO: check before skipping?
                 #await self.margin_calculator.update_actual(self)
                 #headroom_estimate = self.margin_calculator.actual_IM
                 #if headroom_estimate <= 0: return
 
-            trim_factor = max(0,headroom_estimate) / max(1e-6, - marginal_IM) / len(self.running_symbols)
+            trim_factor = max(0,actual_IM) / max(1e-6, - marginal_IM) / len(self.running_symbols)
             trimmed_size = max(sizeIncrement, np.abs( size * min(1,trim_factor)))
             if trim_factor<1:
                 self.myLogger.info(f'trimmed {size} {symbol} by {trim_factor}')
