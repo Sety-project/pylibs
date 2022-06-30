@@ -7,7 +7,7 @@ from pfoptimizer.portoflio_optimizer import strategy_wrapper,enricher_wrapper
 from riskpnl.ftx_risk_pnl import ftx_portoflio_main
 from tradeexecutor.ftx_ws_execute import *
 from histfeed.ftx_history import ftx_history_main_wrapper
-import logging
+import subprocess
 from ux.docker_access import *
 from telegram import ParseMode
 import pandas as pd
@@ -28,12 +28,7 @@ bot.
 
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 
-# Enable logging
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                    level=logging.INFO)
-
-logger = logging.getLogger(__name__)
-
+logger = build_logging("ux")
 
 # Define a few command handlers. These usually take the two arguments update and
 # context. Error handlers also receive the raised TelegramError object in error.
@@ -57,14 +52,18 @@ def help(update, context):
 def echo(update, context):
     try:
         user_msg = update.effective_message.text.lower()
+        caller = update.effective_message.chat['username']
+        logger.info(f'{caller} called {update.effective_message.text} at {datetime.datetime.utcnow()}')
+
         split_message = update.effective_message.text.lower().split()
         whitelist = ['daviidarr','Stephan', 'Victor']
-        if not update.effective_message.chat['first_name'] in whitelist:
+        if caller not in whitelist:
             update.message.reply_text("Hey " + update.effective_message.chat['first_name'] + ": get in touch for whitelisting.")
             log=pd.DataFrame({'first_name':[update.effective_message.chat['first_name']],
                               'date':[str(update.effective_message['date'])],
                               'message':[update.effective_message['text']]})
             log.to_csv(os.path.join(os.sep, "tmp", "ux", 'chathistory.csv'))
+            return
 
         if split_message[0] == 'hist':
             split_message[0] = 'get'
@@ -81,6 +80,8 @@ def echo(update, context):
 #        elif update.effective_message.chat['first_name'] in whitelist:
         elif split_message[0] in ['risk','plex','fromoptimal']:
             # Call pyrun with the good params
+            if split_message[0] == 'plex':
+                data = ftx_portoflio_main(*split_message,accrue_log=False)
             data = ftx_portoflio_main(*split_message)
         elif split_message[0] == 'sysperp':
             # Call pyrun with the good params
@@ -89,10 +90,21 @@ def echo(update, context):
             # Call pyrun with the good params
             update.message.reply_text('no execute for you')
             #data = ftx_ws_spread_main(*split_message)[0]
-        elif user_msg == 'docker ps':
-            response = docker_ps()
-            update.message.reply_text(f'<pre>{response}</pre>', parse_mode=ParseMode.HTML)
-            return
+        elif split_message[0] == 'bash:':
+            subprocess.run("sudo bash -c 'source ~/.bashrc'")
+
+            command = ''.join(update.effective_message.text.split('bash: ')[1:])
+            if command.split(' ')[0] == 'pystop':
+                appname = command.split(' ')[1]
+                frame = bash_run('docker ps')['response']
+                pid = frame.split('/n').split(' ')[0]
+                bash_run(f'docker stop -t0 {pid}')
+            else:
+                response = bash_run(command)
+                if response['status'] !=0:
+                    update.message.reply_text(''.join())
+                update.message.reply_text(''.join([f'{key} ----->\n {value}\n' for key,value in response.items()]))
+                return
         else:
             raise Exception('unknown command, type /help')
 
@@ -116,11 +128,18 @@ def echo(update, context):
 #               update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
     except Exception as e:
+        logger.critical(str(e))
         update.message.reply_text(str(e))
+
+def bash_run(command):
+    completed_process = subprocess.run(command, capture_output=True)
+    response = completed_process.stdout
+    error_msg = completed_process.stderr
+    return {'response':response,'error_msg':error_msg,'status':completed_process.status}
 
 def error(update, context):
     """Log Errors caused by Updates."""
-    logger.warning('Update "%s" caused error "%s"', update, context.error)
+    logger.critical('Update "%s" caused error "%s"', update, context.error)
 
 def main(*args):
     """Start the bot."""
