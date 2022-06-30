@@ -553,13 +553,15 @@ class myFtx(ccxtpro.ftx):
         diff_threshold = sorted(
             [max([np.abs(weights.loc[data['symbol'], 'diffUSD'])
                   for data in trades_history_list if data['coin']==coin])
-             for coin in coin_list])[-min(self.parameters['max_nb_coins'],len(coin_list))]
+             for coin in coin_list])[-min(self.parameters['max_nb_coins'],len(coin_list)-1)]
         equity = float((await self.privateGetAccount())['result']['totalAccountValue'])
         diff_threshold = max(diff_threshold,self.parameters['significance_threshold'] * equity)
 
+        # TODO: this may have to go: volume may change
         data_dict = {coin: coin_data
-                     for coin, coin_data in full_dict.items() if
-                     all(data['volume'] * self.parameters['time_budget'] > np.abs(data['diff']) for data in coin_data.values())
+                     for coin, coin_data in full_dict.items()
+                     if (parameters['comment'] != 'sysperp'
+                         or all(data['volume'] * self.parameters['time_budget'] > np.abs(data['diff']) for data in coin_data.values()))
                      and any(np.abs(data['diff']) >= max(
                          diff_threshold/data['spot_price'],
                          float(self.markets[symbol]['info']['minProvideSize']))
@@ -1008,7 +1010,12 @@ class myFtx(ccxtpro.ftx):
         # if increases risk but not out of limit, trim and go passive.
         if marginal_risk>0:
             if np.abs(globalDelta / mid + original_size) > delta_limit:
-                trimmed_size = np.clip(original_size,a_min=-delta_limit,a_max=delta_limit) - globalDelta / mid
+                if (globalDelta / mid + original_size) > delta_limit:
+                    trimmed_size = delta_limit - globalDelta / mid
+                elif (globalDelta / mid + original_size) < -delta_limit:
+                    trimmed_size = -delta_limit - globalDelta / mid
+                else:
+                    pass
                 self.myLogger.warning(f'{original_size} {symbol} would increase risk over {self.limit.delta_limit * 100}% of {self.pv} --> trimming to {trimmed_size}')
                 original_size = trimmed_size
 
@@ -1328,12 +1335,14 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
             target_portfolio['optimalCoin'] = diff.apply(lambda f: smallest_risk[f['coin']]*np.sign(f['currentCoin']),axis=1)
             if target_portfolio.empty: raise myFtx.NothingToDo()
             parameters['max_nb_coins'] = 99 #TODO: need one config per mode
+            parameters['significance_threshold'] = 0.01
 
         elif argv[0]=='unwind':
             future_weights = pd.DataFrame(columns=['name','optimalWeight'])
             target_portfolio = await diff_portoflio(exchange, future_weights)
             if target_portfolio.empty: raise myFtx.NothingToDo()
             parameters['max_nb_coins'] = 99
+            parameters['significance_threshold'] = 0.01
 
         else:
             exchange.myLogger.exception(f'unknown command {argv[0]}',exc_info=True)
