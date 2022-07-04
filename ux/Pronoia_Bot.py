@@ -8,6 +8,7 @@ from riskpnl.ftx_risk_pnl import ftx_portoflio_main
 from tradeexecutor.ftx_ws_execute import *
 from histfeed.ftx_history import ftx_history_main_wrapper
 import subprocess
+import shlex
 from ux.docker_access import *
 from telegram import ParseMode
 import pandas as pd
@@ -91,18 +92,20 @@ def echo(update, context):
             update.message.reply_text('no execute for you')
             #data = ftx_ws_spread_main(*split_message)[0]
         elif split_message[0] == 'bash:':
-            subprocess.run("sudo bash -c 'source ~/.bashrc'")
+            #bash_run("source ~/.bashrc")
 
             command = ''.join(update.effective_message.text.split('bash: ')[1:])
             if command.split(' ')[0] == 'pystop':
                 appname = command.split(' ')[1]
-                frame = bash_run('docker ps')['response']
-                pid = frame.split('/n').split(' ')[0]
+                lines = bash_run('docker ps')['response'].split('/n')
+                try:
+                    line = next(line for line in lines if appname in line.split(' ')[-1])
+                except StopIteration as e:
+                    raise Exception(f"appname not found in {command}")
+                pid = line.split(' ')[0]
                 bash_run(f'docker stop -t0 {pid}')
             else:
                 response = bash_run(command)
-                if response['status'] !=0:
-                    update.message.reply_text(''.join())
                 update.message.reply_text(''.join([f'{key} ----->\n {value}\n' for key,value in response.items()]))
                 return
         else:
@@ -132,10 +135,10 @@ def echo(update, context):
         update.message.reply_text(str(e))
 
 def bash_run(command):
-    completed_process = subprocess.run(command, capture_output=True)
+    completed_process = subprocess.run(shlex.split(command), capture_output=True, timeout=5, encoding="utf-8")
     response = completed_process.stdout
     error_msg = completed_process.stderr
-    return {'response':response,'error_msg':error_msg,'status':completed_process.status}
+    return {'response':response,'error_msg':error_msg,'returncode':completed_process.returncode}
 
 def error(update, context):
     """Log Errors caused by Updates."""
