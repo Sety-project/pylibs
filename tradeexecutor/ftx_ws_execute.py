@@ -554,13 +554,15 @@ class myFtx(ccxtpro.ftx):
         diff_threshold = sorted(
             [max([np.abs(weights.loc[data['symbol'], 'diffUSD'])
                   for data in trades_history_list if data['coin']==coin])
-             for coin in coin_list])[-min(self.parameters['max_nb_coins'],len(coin_list))]
+             for coin in coin_list])[-min(self.parameters['max_nb_coins'],len(coin_list)-1)]
         equity = float((await self.privateGetAccount())['result']['totalAccountValue'])
         diff_threshold = max(diff_threshold,self.parameters['significance_threshold'] * equity)
 
+        # TODO: this may have to go: volume may change
         data_dict = {coin: coin_data
-                     for coin, coin_data in full_dict.items() if
-                     all(data['volume'] * self.parameters['time_budget'] > np.abs(data['diff']) for data in coin_data.values())
+                     for coin, coin_data in full_dict.items()
+                     if (parameters['comment'] != 'sysperp'
+                         or all(data['volume'] * self.parameters['time_budget'] > np.abs(data['diff']) for data in coin_data.values()))
                      and any(np.abs(data['diff']) >= max(
                          diff_threshold/data['spot_price'],
                          float(self.markets[symbol]['info']['minProvideSize']))
@@ -1009,9 +1011,20 @@ class myFtx(ccxtpro.ftx):
         delta_timestamp = self.risk_state[coin][symbol]['delta_timestamp']
         globalDelta = self.risk_state[coin]['netDelta'] + self.parameters['global_beta'] * (self.total_delta - self.risk_state[coin]['netDelta'])
         marginal_risk = np.abs(globalDelta/mid + original_size)-np.abs(globalDelta/mid)
+        delta_limit = self.limit.delta_limit * self.pv
 
-        # if increases risk, go passive.
+        # if increases risk but not out of limit, trim and go passive.
         if marginal_risk>0:
+            if np.abs(globalDelta / mid + original_size) > delta_limit:
+                if (globalDelta / mid + original_size) > delta_limit:
+                    trimmed_size = delta_limit - globalDelta / mid
+                elif (globalDelta / mid + original_size) < -delta_limit:
+                    trimmed_size = -delta_limit - globalDelta / mid
+                else:
+                    pass
+                self.myLogger.warning(f'{original_size} {symbol} would increase risk over {self.limit.delta_limit * 100}% of {self.pv} --> trimming to {trimmed_size}')
+                original_size = trimmed_size
+
             stop_depth = None
             current_basket_price = sum(self.mid(_symbol) * self.exec_parameters[coin][_symbol]['update_time_delta']
                                        for _symbol in self.exec_parameters[coin].keys() if _symbol in self.markets)
@@ -1101,18 +1114,18 @@ class myFtx(ccxtpro.ftx):
             # trim size to margin allocation (equal for all running symbols)
             marginal_IM = self.margin.order_marginal_cost(symbol, abs(size), mid, 'IM',
                                                                       self.markets[symbol]['type'])
-            headroom_estimate = self.margin.estimate(self, 'IM')
+            estimated_IM = self.margin.estimate(self, 'IM')
+            actual_IM = self.margin.actual_IM
 
             # TODO: headroom estimate is wrong ....
             if self.margin.actual_IM <= 0:
-                self.myLogger.info(f'headroom_estimate {headroom_estimate} vs marginal_IM {marginal_IM}. Skipping {symbol}')
-                return
+                self.myLogger.info(f'estimated_IM {estimated_IM} / actual_IM {actual_IM} / marginal_IM {marginal_IM} --> Skipping {symbol}')
                 #TODO: check before skipping?
                 #await self.margin_calculator.update_actual(self)
                 #headroom_estimate = self.margin_calculator.actual_IM
                 #if headroom_estimate <= 0: return
 
-            trim_factor = max(0,headroom_estimate) / max(1e-6, - marginal_IM) / len(self.running_symbols)
+            trim_factor = max(0,actual_IM) / max(1e-6, - marginal_IM) / len(self.running_symbols)
             trimmed_size = max(sizeIncrement, np.abs( size * min(1,trim_factor)))
             if trim_factor<1:
                 self.myLogger.info(f'trimmed {size} {symbol} by {trim_factor}')
@@ -1339,11 +1352,15 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
             target_portfolio=diff
             target_portfolio['optimalCoin'] = diff.apply(lambda f: smallest_risk[f['coin']]*np.sign(f['currentCoin']),axis=1)
             if target_portfolio.empty: raise myFtx.NothingToDo()
+            parameters['max_nb_coins'] = 99 #TODO: need one config per mode
+            parameters['significance_threshold'] = 0.01
 
         elif argv[0]=='unwind':
             future_weights = pd.DataFrame(columns=['name','optimalWeight'])
             target_portfolio = await diff_portoflio(exchange, future_weights)
             if target_portfolio.empty: raise myFtx.NothingToDo()
+            parameters['max_nb_coins'] = 99
+            parameters['significance_threshold'] = 0.01
 
         else:
             exchange.myLogger.exception(f'unknown command {argv[0]}',exc_info=True)
