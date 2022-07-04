@@ -140,7 +140,7 @@ async def perp_vs_cash(
         equity = start_portfolio.loc[start_portfolio['event_type'] == 'PV', 'usdAmt'].values[0]
 
     # Run a trajectory
-    log_path = os.path.join(os.sep, "tmp", "pfoptimizer")
+    log_path = os.path.join(os.sep, Path.home(), "1bp_2d")
     if not os.path.exists(log_path):
         os.umask(0)
         os.makedirs(log_path, mode=0o777)
@@ -162,6 +162,10 @@ async def perp_vs_cash(
         point_in_time = now_time.replace(minute=0, second=0, microsecond=0)-timedelta(hours=1)
         backtest_start = point_in_time
         backtest_end = point_in_time
+
+        trajectory = pd.DataFrame()
+        pnl = pd.DataFrame()
+        point_in_time = backtest_start
 
     ## ----------- enrich/carry filter, get history, populate concentration limit
     enriched = await enricher(exchange, filtered, holding_period, equity=equity,
@@ -494,7 +498,7 @@ def main(*args):
                                         signal_horizon=sig_horizon,
                                         holding_period=hol_period,
                                         slippage_override=slippage_override,
-                                        backtest_start= datetime(2021,2,17).replace(tzinfo=timezone.utc),#.replace(minute=0, second=0, microsecond=0)-timedelta(days=2),# live start was datetime(2022,6,21,19),
+                                        backtest_start = datetime(2021,7,4).replace(tzinfo=timezone.utc),#.replace(minute=0, second=0, microsecond=0)-timedelta(days=2),# live start was datetime(2022,6,21,19),
                                         backtest_end = datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0, second=0, microsecond=0)-timedelta(hours=1),
                                         logger=logger))
         logger.critical("pfoptimizer terminated successfully...")
