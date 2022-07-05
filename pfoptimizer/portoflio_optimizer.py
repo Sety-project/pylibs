@@ -81,27 +81,26 @@ async def refresh_universe(exchange, universe_filter,logger=None):
 
 # runs optimization * [time, params]
 async def perp_vs_cash(
-        exchange_name,
         exchange,
+        config,
         signal_horizon,
         holding_period,
         slippage_override,
-        equity,
         concentration_limit,
         mktshare_limit,
         minimum_carry,
         exclusion_list,
+        equity_override=None,
         backtest_start=None, # None means live-only
         backtest_end=None,
         logger=None,
         optional_params=[]):# verbose,warm_start
 
     # Load defaults params
-    pf_params = configLoader.get_pfoptimizer_params()
-    param_equity = pf_params['EQUITY']['value']
-    param_type_allowed = pf_params['TYPE_ALLOWED']['value']
-    param_universe = pf_params['UNIVERSE']['value']
-    dir_name = configLoader.get_mktdata_folder_for_exchange(exchange_name)
+    param_equity = config['EQUITY']['value']
+    param_type_allowed = config['TYPE_ALLOWED']['value']
+    param_universe = config['UNIVERSE']['value']
+    dir_name = configLoader.get_mktdata_folder_for_exchange(exchange.id)
 
     frame = inspect.currentframe()
     args, _, _, values = inspect.getargvalues(frame)
@@ -123,21 +122,21 @@ async def perp_vs_cash(
     slippage_orderbook_depth = 10000
 
     # previous book
-    if not equity is None:
+    if not equity_override is None:
         previous_weights_input = pd.DataFrame(index=[],columns=['optimalWeight'], data=0.0)
     elif param_equity.isnumeric():
         previous_weights_input = pd.DataFrame(index=[],columns=['optimalWeight'], data=0.0)
-        equity = float(param_equity)
+        equity_override = float(param_equity)
     elif '.xlsx' in param_equity:
         previous_weights_input = pd.read_excel(param_equity, sheet_name='optimized', index_col=0)['optimalWeight']
-        equity = previous_weights_input.loc['total']
+        equity_override = previous_weights_input.loc['total']
         previous_weights_input = previous_weights_input.drop(['USD', 'total'])
     else:
         start_portfolio = await fetch_portfolio(exchange, now_time)
         previous_weights_input = -start_portfolio.loc[
             start_portfolio['attribution'].isin(filtered.index), ['attribution', 'usdAmt']
         ].set_index('attribution').rename(columns={'usdAmt': 'optimalWeight'})
-        equity = start_portfolio.loc[start_portfolio['event_type'] == 'PV', 'usdAmt'].values[0]
+        equity_override = start_portfolio.loc[start_portfolio['event_type'] == 'PV', 'usdAmt'].values[0]
 
     # Run a trajectory
     log_path = os.path.join(os.sep, "tmp", "pfoptimizer")
@@ -164,7 +163,7 @@ async def perp_vs_cash(
         backtest_end = point_in_time
 
     ## ----------- enrich/carry filter, get history, populate concentration limit
-    enriched = await enricher(exchange, filtered, holding_period, equity=equity,
+    enriched = await enricher(exchange, filtered, holding_period, equity=equity_override,
                               slippage_override=slippage_override, slippage_orderbook_depth=slippage_orderbook_depth,
                               slippage_scaler=slippage_scaler,
                               params={'override_slippage': True, 'type_allowed': type_allowed, 'fee_mode': 'retail'})
@@ -181,7 +180,7 @@ async def perp_vs_cash(
             holding_period,  # to convert slippage into rate
             signal_horizon,filename= log_file if 'verbose' in optional_params else ''
         )  # historical window for expectations
-    updated = update(enriched, point_in_time, hy_history, equity,
+    updated = update(enriched, point_in_time, hy_history, equity_override,
                      intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow,
                      minimum_carry=0) # Do not remove futures using minimum_carry
     enriched = None  # safety
@@ -208,8 +207,8 @@ async def perp_vs_cash(
     optimized = pd.DataFrame()
     while point_in_time <= backtest_end:
         try:
-            updated = update(filtered, point_in_time, hy_history, equity,
-                             intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow,
+            updated = update(filtered, point_in_time, hy_history, equity_override,
+                             intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow,
                              minimum_carry=minimum_carry,
                              previous_weights_index=previous_weights.index)
 
@@ -219,7 +218,7 @@ async def perp_vs_cash(
                                              signal_horizon=signal_horizon,
                                              concentration_limit=concentration_limit,
                                              mktshare_limit=mktshare_limit,
-                                             equity=equity,
+                                             equity=equity_override,
                                              logger=logger,
                                              optional_params = optional_params + (['cost_blind']
                                              if (point_in_time == backtest_start) & (backtest_start != backtest_end)
@@ -289,7 +288,7 @@ async def perp_vs_cash(
             'holding_period': holding_period,
             'slippage_override': slippage_override,
             'concentration_limit': concentration_limit,
-            'equity': equity,
+            'equity': equity_override,
             'slippage_scaler': slippage_scaler,
             'slippage_orderbook_depth': slippage_orderbook_depth})
     parameters.to_csv(os.path.join(os.sep,log_path,'parameters.csv'))
@@ -305,6 +304,8 @@ async def perp_vs_cash(
         pfoptimizer_res_filename = os.path.join(os.sep,
                                                 pfoptimizer_path,
                                                 'ftx_optimal_cash_carry_' + datetime.utcnow().strftime("%Y%m%d_%H%M%S"))
+        optimized['exchange'] = exchange.id
+        optimized['subaccount'] = exchange.headers['FTX-SUBACCOUNT']
         optimized.to_csv(f'{pfoptimizer_res_filename}_weights.csv')
         updated.to_csv(f'{pfoptimizer_res_filename}_snapshot.csv')
         parameters.to_csv(f'{pfoptimizer_res_filename}_parameters.csv')
@@ -325,20 +326,23 @@ async def perp_vs_cash(
 
 async def strategy_wrapper(**kwargs):
 
-    pf_params = configLoader.get_pfoptimizer_params()
-
-    if pf_params['EQUITY']['value'].isnumeric() or '.xlsx' in pf_params['EQUITY']['value']:
+    if kwargs['equity'][0].isnumeric() or '.xlsx' in kwargs['equity'][0]:
         exchange = await open_exchange(kwargs['exchange_name'], '')
+        if kwargs['equity'][0].isnumeric():
+            equity_override = kwargs['equity'][0]
+        else:
+            raise Exception('not implemented')
     else:
         exchange = await open_exchange(kwargs['exchange_name'],
-                                       pf_params['EQUITY']['value'],
+                                       kwargs['equity'][0],
                                        config={'asyncio_loop':asyncio.get_running_loop()})
+        equity_override = None
     await exchange.load_markets()
 
     coroutines = [perp_vs_cash(
-        exchange_name=kwargs['exchange_name'],
         exchange=exchange,
-        equity=equity,
+        config=kwargs['config'],
+        equity_override=equity_override,
         concentration_limit=concentration_limit,
         mktshare_limit=mktshare_limit,
         minimum_carry=minimum_carry,
@@ -363,13 +367,15 @@ async def strategy_wrapper(**kwargs):
 
     return result
 
-def main(*args):
+def main(*args,**kwargs):
     '''
         Parameters could be passed in any order
         @params:
            # For now, defaults to exchange_name = ftx
            run_type = ["sysperp", "backtest", "depth"] (mandatory param)
            exchange = ["ftx"] (mandatory param)
+           subaccount = ["SysPerp"] (mandatory param for sysperp)
+           config = /home/david/config/pfoptimizer_params.json (optionnal)
         @Example runs:
             - main (this will read the config from the config file, this is how docker will call)
             - main 2h 2d (this is when running local, to debug faster)
@@ -379,79 +385,46 @@ def main(*args):
 
     logger = build_logging("pfoptimizer")
 
-    # RUN_MODE = ["prod", "debug"]
-    RUN_TYPES = ["sysperp", "backtest", "depth"]
-    EXCHANGE_NAMES_AVAILABLE = ["ftx"]
-
-    # Reads config to collect params
-    pf_params = configLoader.get_pfoptimizer_params()
-
-    args = list(*args)[1:]
-
-    # Getting exchange name, only ftx handled for now
-    try:
-        exchange_name = [x for x in args if x in EXCHANGE_NAMES_AVAILABLE][0]
-        if exchange_name != 'ftx':
-            logger.critical(f"The exchange_name param should be 'ftx' but {exchange_name} was passed. Only ftx is handled for the moment")
-            logger.critical("---> Terminating...")
-            sys.exit(1)
-    except IndexError:
-        logger.critical("Cannot find the exchange_name param. The exchange_name param should be passed explicitly : only 'ftx' is handled for the moment")
-        logger.critical("---> Terminating...")
-        sys.exit(1)
-
-    # Getting RUN_MODE
-    # try:
-    #     run_mode = [x for x in args if x in RUN_MODE][0]
-    # except IndexError:
-    #     logger.critical(f"Cannot find the exchange_name param. The exchange_name param should be passed explicitly among : {RUN_MODE}")
-    #     logger.critical("---> Terminating...")
-    #     sys.exit(1)
-
-    # Getting RUN_TYPES
-    try:
-        run_type = [x for x in args if x in RUN_TYPES][0]
-    except IndexError:
-        logger.critical(f"Cannot read the run_type param from config/{configLoader.get_pfoptimizer_params_filename()}")
-        logger.critical("---> Terminating...")
-        sys.exit(1)
-
-    # Getting the SIGNAL_HORIZON and the HOLDING_HORIZON
-    try:
-        horizons = [x for x in args if x[0].isnumeric()]
-        if len(horizons) == 1:
-            logger.critical(f"Should explicitly pass 2 horizons, or None to use default config")
-            logger.critical("---> Terminating...")
-            sys.exit(1)
-        elif len(horizons) == 2:
-            logger.critical(f"Guessing horizons from params")
-            logger.critical(f"Assuming holding_horizon is smaller than signal_horizon ")
-            horizons = sorted([parse_time_param(x) for x in horizons])
-            holding_period = horizons[0]
-            signal_horizon = horizons[1]
+    if 'config' not in kwargs:
+        config = configLoader.get_pfoptimizer_params()
+    else:
+        if os.path.isfile(kwargs['config']):
+            config = pd.read_csv(kwargs['config'])
         else:
-            # Using config horizons
-            logger.critical(f"No horizons were found or could not implicit horizons --> defaulting to config/{configLoader.get_pfoptimizer_params_filename()}...")
-            holding_period = parse_time_param(pf_params["HOLDING_PERIOD"]["value"])
-            signal_horizon = parse_time_param(pf_params["SIGNAL_HORIZON"]["value"])
-    except IndexError:
-            logger.critical(f"Cannot read the SIGNAL_HORIZON or the HOLDING_PERIOD params from config/{configLoader.get_pfoptimizer_params_filename()}")
-            logger.critical("---> Terminating...")
-            sys.exit(1)
+            raise Exception('config {} not found'.format(kwargs['config']))
 
-    logger.critical(f'Running main {run_type} holding_period={holding_period} signal_horizon={signal_horizon}')
+    if 'run_type' not in kwargs:
+        raise Exception('run_type is compulsory')
+    run_type = kwargs['run_type']
+    if run_type not in ['backtest','depth','sysperp']:
+        raise Exception('run_type {} not found'.format(kwargs['run_type']))
+
+    if run_type == 'sysperp':
+        if 'subaccount' not in kwargs:
+            raise Exception('subaccount is compulsory for run_type = sysperp')
+        else:
+            subaccount = kwargs['subaccount']
+
+    if 'exchange' not in kwargs:
+        raise Exception('exchange is compulsory')
+    exchange_name = kwargs['exchange']
+    if exchange_name not in ['ftx']:
+        raise Exception('exchange_name {} not found'.format(kwargs['exchange_name']))
+
+    logger.critical(f'Running main {run_type} exchange {exchange_name} config {config}')
 
     if run_type == 'sysperp':
         res = asyncio.run(strategy_wrapper(
             exchange_name=exchange_name,
-            equity=[None],
-            concentration_limit=[pf_params["CONCENTRATION_LIMIT"]["value"]],
-            mktshare_limit=[pf_params["MKTSHARE_LIMIT"]["value"]],
-            minimum_carry=[pf_params["MINIMUM_CARRY"]["value"]],
-            exclusion_list=pf_params['EXCLUSION_LIST']["value"],
-            signal_horizon=[signal_horizon],
-            holding_period=[holding_period],
-            slippage_override=[pf_params["SLIPPAGE_OVERRIDE"]["value"]],
+            config=config,
+            equity=[subaccount],
+            concentration_limit=[config["CONCENTRATION_LIMIT"]["value"]],
+            mktshare_limit=[config["MKTSHARE_LIMIT"]["value"]],
+            minimum_carry=[config["MINIMUM_CARRY"]["value"]],
+            exclusion_list=config['EXCLUSION_LIST']["value"],
+            signal_horizon=[parse_time_param(config['SIGNAL_HORIZON']['value'])],
+            holding_period=[parse_time_param(config['HOLDING_PERIOD']['value'])],
+            slippage_override=[config["SLIPPAGE_OVERRIDE"]["value"]],
             backtest_start=None,
             backtest_end=None,
             logger=logger))[0]
@@ -462,13 +435,13 @@ def main(*args):
         res = asyncio.run(strategy_wrapper(
             exchange_name=exchange_name,
             equity=equities,
-            concentration_limit=[pf_params["CONCENTRATION_LIMIT"]["value"]],
-            mktshare_limit=[pf_params["MKTSHARE_LIMIT"]["value"]],
-            minimum_carry=[pf_params["MINIMUM_CARRY"]["value"]],
-            exclusion_list=pf_params['EXCLUSION_LIST']["value"],
-            signal_horizon=[signal_horizon],
-            holding_period=[holding_period],
-            slippage_override=[pf_params["SLIPPAGE_OVERRIDE"]["value"]],
+            concentration_limit=[config["CONCENTRATION_LIMIT"]["value"]],
+            mktshare_limit=[config["MKTSHARE_LIMIT"]["value"]],
+            minimum_carry=[config["MINIMUM_CARRY"]["value"]],
+            exclusion_list=config['EXCLUSION_LIST']["value"],
+            signal_horizon=[parse_time_param(config['SIGNAL_HORIZON']['value'])],
+            holding_period=[parse_time_param(config['HOLDING_PERIOD']['value'])],
+            slippage_override=[config["SLIPPAGE_OVERRIDE"]["value"]],
             backtest_start=None,
             backtest_end=None,
             logger=logger))
@@ -477,20 +450,20 @@ def main(*args):
                 res.to_excel(writer, sheet_name=str(equity))
         print(pd.concat({res.loc['total', 'optimalWeight']: res[['optimalWeight', 'ExpectedCarry']] / res.loc['total', 'optimalWeight'] for res in res}, axis=1))
     elif run_type == 'backtest':
-        for equity in [[pf_params["EQUITY"]["value"]]]:
-            for concentration_limit in [[pf_params["CONCENTRATION_LIMIT"]["value"]]]:
-                for mktshare_limit in [[pf_params["MKTSHARE_LIMIT"]["value"]]]:
-                    for minimum_carry in [[pf_params["MINIMUM_CARRY"]["value"]]]:
-                        for sig_horizon in [[timedelta(hours=h) for h in [pf_params["SIGNAL_HORIZON"]["value"]]]]:
-                            for hol_period in [[timedelta(hours=h) for h in [pf_params["HOLDING_PERIOD"]["value"]]]]:
-                                for slippage_override in [[pf_params["SLIPPAGE_OVERRIDE"]["value"]]]:
+        for equity in [[config["EQUITY"]["value"]]]:
+            for concentration_limit in [[config["CONCENTRATION_LIMIT"]["value"]]]:
+                for mktshare_limit in [[config["MKTSHARE_LIMIT"]["value"]]]:
+                    for minimum_carry in [[config["MINIMUM_CARRY"]["value"]]]:
+                        for sig_horizon in [[parse_time_param(h) for h in [config["SIGNAL_HORIZON"]["value"]]]]:
+                            for hol_period in [[parse_time_param(h) for h in [config["HOLDING_PERIOD"]["value"]]]]:
+                                for slippage_override in [[config["SLIPPAGE_OVERRIDE"]["value"]]]:
                                     asyncio.run(strategy_wrapper(
                                         exchange_name=exchange_name,
                                         equity=equity,
                                         concentration_limit=concentration_limit,
                                         mktshare_limit=mktshare_limit,
                                         minimum_carry=minimum_carry,
-                                        exclusion_list=pf_params["EXCLUSION_LIST"]["value"],
+                                        exclusion_list=config["EXCLUSION_LIST"]["value"],
                                         signal_horizon=sig_horizon,
                                         holding_period=hol_period,
                                         slippage_override=slippage_override,
