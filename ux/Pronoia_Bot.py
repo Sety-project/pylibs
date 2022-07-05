@@ -112,6 +112,10 @@ def echo(update, context):
             response = bash_run(command)
             update.message.reply_text(''.join([f'{key} ----->\n {value}\n' for key, value in response.items()]))
             data = pd.DataFrame(response)
+        elif split_message[0] == 'bash:':
+            response = bash_run(''.join(split_message[1:]))
+            update.message.reply_text(''.join([f'{key} ----->\n {value}\n' for key, value in response.items()]))
+            data = pd.DataFrame(response)
         else:
             raise Exception('unknown command, type /help')
 
@@ -139,7 +143,7 @@ def echo(update, context):
         update.message.reply_text(str(e))
 
 def bash_run(command):
-    completed_process = subprocess.run(shlex.split(command), capture_output=True, timeout=5, encoding="utf-8")
+    completed_process = subprocess.run(['/bin/bash', '-i', '-c'] + shlex.split(command), capture_output=True, timeout=5, encoding="utf-8")
     response = completed_process.stdout
     error_msg = completed_process.stderr
     return {'response':response,'error_msg':error_msg,'returncode':completed_process.returncode}
