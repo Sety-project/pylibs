@@ -47,17 +47,19 @@ def help(update, context):
     update.message.reply_text('* hist [coin] [exchange] [days]-> history of BTC and related futures/borrow every 15m for past 7d')
     update.message.reply_text('* basis [future] [size] [exchange] -> futures basis on ftx in size 10000')
     update.message.reply_text('* sysperp [holding period] [signal horizon]: optimal perps')
-    update.message.reply_text('* execute: executes latest sysperp run')
+    update.message.reply_text('* exec: [sysperp,unwind,flatten] [ftx] [SysPerp]]')
+    update.message.reply_text('* docker ps')
+    update.message.reply_text('* docker stop: [appname]')
     update.message.reply_text('* fromOptimal: live portoflio vs target')
 
 def echo(update, context):
     try:
-        user_msg = update.effective_message.text.lower()
         caller = update.effective_message.chat['username']
         logger.info(f'{caller} called {update.effective_message.text} at {datetime.datetime.utcnow()}')
 
-        split_message = update.effective_message.text.lower().split()
-        whitelist = ['daviidarr','Stephan', 'Victor']
+        split_message = update.effective_message.text.split()
+        split_message[0] = split_message[0].lower()
+        whitelist = ['daviidarr']
         if caller not in whitelist:
             update.message.reply_text("Hey " + update.effective_message.chat['first_name'] + ": get in touch for whitelisting.")
             log=pd.DataFrame({'first_name':[update.effective_message.chat['first_name']],
@@ -87,26 +89,29 @@ def echo(update, context):
         elif split_message[0] == 'sysperp':
             # Call pyrun with the good params
             data = strategy_wrapper(*split_message)
-        elif split_message[0] == 'execute':
-            # Call pyrun with the good params
-            update.message.reply_text('no execute for you')
-            #data = ftx_ws_spread_main(*split_message)[0]
-        elif split_message[0] == 'bash:':
-            #bash_run("source ~/.bashrc")
-
-            command = ''.join(update.effective_message.text.split('bash: ')[1:])
-            if command.split(' ')[0] == 'pystop':
-                appname = command.split(' ')[1]
-                lines = bash_run('docker ps')['response'].split('\n')
-                try:
-                    line = next(line for line in lines if appname in line.split(' ')[-1])
-                except StopIteration as e:
-                    raise Exception(f"appname not found in {command}")
-                pid = line.split(' ')[0]
-                data = pd.DataFrame(bash_run(f'docker stop -t0 {pid}'))
+        elif split_message[0] == 'docker':
+            if split_message[1] == 'ps':
+                response = docker_ps()
+                update.message.reply_text(f'<pre>{response}</pre>', parse_mode=ParseMode.HTML)
+                data = pd.DataFrame(response)
+            elif split_message[1] == 'stop':
+                if len(split_message) < 3:
+                    raise Exception('need appname for docker stop')
+                response = docker_stop(split_message[2])
+                update.message.reply_text(f'<pre>{response}</pre>', parse_mode=ParseMode.HTML)
+                data = pd.DataFrame(response)
             else:
-                raise Exception('pystop only for now')
-                #data = pd.DataFrame(bash_run(command))
+                raise Exception('docker ps or docker stop ?')
+        elif split_message[0] == 'exec':
+            if len(split_message) < 4:
+                raise Exception('need all arguments, eg: exec flatten ftx SysPerp')
+            run_type = split_message[1]
+            exchange_name = split_message[2]
+            sub_account = split_message[3]
+            command = f"docker run -d -e USERNAME=\"ec2-user\" --network host \"878533356457.dkr.ecr.eu-west-2.amazonaws.com/tradeexecutor:latest\" --restart=on-failure --name=tradeexecutor_worker -e RUN_TYPE=\"{run_type}\" -e EXCHANGE_NAME=\"{exchange_name}\" -e SUB_ACCOUNT=\"{sub_account}\" -v ~/.cache/setyvault:/home/ec2-user/.cache/setyvault -v ~/config/prod:/home/ec2-user/config -v /tmp:/tmp"
+            response = bash_run(command)
+            update.message.reply_text(''.join([f'{key} ----->\n {value}\n' for key, value in response.items()]))
+            data = pd.DataFrame(response)
         else:
             raise Exception('unknown command, type /help')
 

@@ -34,7 +34,7 @@ def docker_stop(image):
             container.stop(timeout=0)
             return_msg += f'image {image} --> stopped container {container_name}' + os.linesep
     else:
-        return_msg = f'image {image} --> all containers already stopped'
+        return_msg = f'could not find running image {image}'
     return return_msg
 
 def docker_status(image):
