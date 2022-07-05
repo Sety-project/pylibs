@@ -337,8 +337,8 @@ async def fetch_portfolio(exchange,time):
     # go ahead
     futures = pd.DataFrame(await Static.fetch_futures(exchange))
     futures = futures.set_index('name')
+    positions = positions[positions['netSize'] != 0.0].fillna(0.0)
     if not positions.empty:
-        positions = positions[positions['netSize'] != 0.0].fillna(0.0)
         unrealizedPnL= positions['unrealizedPnl'].sum()
         positions['coin'] = 'USD'
         positions['coinAmt'] = positions['netSize']
