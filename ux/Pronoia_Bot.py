@@ -97,17 +97,16 @@ def echo(update, context):
             command = ''.join(update.effective_message.text.split('bash: ')[1:])
             if command.split(' ')[0] == 'pystop':
                 appname = command.split(' ')[1]
-                lines = bash_run('docker ps')['response'].split('/n')
+                lines = bash_run('docker ps')['response'].split('\n')
                 try:
                     line = next(line for line in lines if appname in line.split(' ')[-1])
                 except StopIteration as e:
                     raise Exception(f"appname not found in {command}")
                 pid = line.split(' ')[0]
-                bash_run(f'docker stop -t0 {pid}')
+                data = pd.DataFrame(bash_run(f'docker stop -t0 {pid}'))
             else:
-                response = bash_run(command)
-                update.message.reply_text(''.join([f'{key} ----->\n {value}\n' for key,value in response.items()]))
-                return
+                raise Exception('pystop only for now')
+                #data = pd.DataFrame(bash_run(command))
         else:
             raise Exception('unknown command, type /help')
 
