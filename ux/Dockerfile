@@ -20,6 +20,8 @@ ENV PFOPTIMIZER_PATH=$PYLIBS_PATH/pfoptimizer
 ENV RISKPNL_PATH=$PYLIBS_PATH/riskpnl
 ENV HISTFEED_PATH=$PYLIBS_PATH/histfeed
 ENV UTILS_PATH=$PYLIBS_PATH/utils
+ENV TRADEEXECUTOR_PATH=$PYLIBS_PATH/tradeexecutor
+ENV CCXTPRO_PATH=$PYLIBS_PATH/ccxtpro
 
 # LOG PATHS
 ENV LOGS_PATH=/tmp/ux
@@ -40,6 +42,7 @@ RUN chown -R $USER $HISTFEED_PATH
 RUN chown -R $USER $PFOPTIMIZER_PATH
 RUN chown -R $USER $RISKPNL_PATH
 RUN chown -R $USER $UTILS_PATH
+
 RUN chown -R $USER $LOGS_PATH
 
 WORKDIR $UX_PATH
@@ -47,12 +50,25 @@ WORKDIR $UX_PATH
 # Copy pip requirements before copying full project
 USER $USER
 COPY --chown=$USER:$USER /ux/requirements.txt $UX_PATH
+COPY --chown=$USER:$USER /pfoptimizer/requirements.txt $PFOPTIMIZER_PATH
+COPY --chown=$USER:$USER /histfeed/requirements.txt $HISTFEED_PATH
+COPY --chown=$USER:$USER /utils/requirements.txt $UTILS_PATH
+COPY --chown=$USER:$USER /tradeexecutor/requirements.txt $UTILS_PATH
 
 # Install Pip dependencies --> Need to install as root
 RUN pip3 install -Ur $UX_PATH/requirements.txt
+RUN pip3 install -Ur $UTILS_PATH/requirements.txt
+RUN pip3 install -Ur $HISTFEED_PATH/requirements.txt
+RUN pip3 install -Ur $RISKPNL_PATH/requirements.txt
+RUN pip3 install -Ur $TRADEEXECUTOR_PATH/requirements.txt
 
 # Now copy full project
 COPY --chown=$USER:$USER /ux $UX_PATH
+COPY --chown=$USER:$USER /pfoptimizer $PFOPTIMIZER_PATH
+COPY --chown=$USER:$USER /histfeed $HISTFEED_PATH
+COPY --chown=$USER:$USER /riskpnl $RISKPNL_PATH
+COPY --chown=$USER:$USER /utils $UTILS_PATH
+COPY --chown=$USER:$USER /tradeexecutor $TRADEEXECUTOR_PATH
 
 RUN chmod +x $UX_PATH/run.sh
 
