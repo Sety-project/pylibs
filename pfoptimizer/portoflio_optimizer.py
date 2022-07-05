@@ -140,7 +140,7 @@ async def perp_vs_cash(
         equity = start_portfolio.loc[start_portfolio['event_type'] == 'PV', 'usdAmt'].values[0]
 
     # Run a trajectory
-    log_path = os.path.join(os.sep, Path.home(), "1bp_2d")
+    log_path = os.path.join(os.sep, Path.home(), 'backtest', "1bp_2d")
     if not os.path.exists(log_path):
         os.umask(0)
         os.makedirs(log_path, mode=0o777)
@@ -203,11 +203,14 @@ async def perp_vs_cash(
         initial_weight['optimalWeight'] = 0
     previous_weights = initial_weight
     prev_time = point_in_time
-    prev_row = pd.Series(index=['previousWeight',
-                                    'index',
-                                    'spot',
-                                    'mark',
-                                    'RealizedCarry'],data=1)
+    prev_row = pd.DataFrame(index=[],
+                            columns=['name',
+                                     'optimalWeight',
+                                     'index',
+                                     'spot',
+                                     'mark',
+                                     'RealizedCarry'],
+                            data=1)
 
     optimized = pd.DataFrame()
     while point_in_time <= backtest_end:
@@ -245,29 +248,26 @@ async def perp_vs_cash(
             trajectory.to_csv(os.path.join(os.sep,log_path,'trajectory.csv'))
 
             pnl_list = []
-            cash_flow = copy.deepcopy(row)
+            cash_flow = prev_row.merge(row,on='name',suffixes=(0,1))
             cash_flow['end_time'] = time
 
             # weights
-            cash_flow['amtUSD'] = cash_flow['previousWeight']
+            cash_flow['amtUSD'] = cash_flow['optimalWeight0']
             cash_flow['bucket'] = 'weights'
-            #TODO dupe ...
-            cash_flow.loc[cash_flow['name']=='total','amtUSD'] = cash_flow['amtUSD'].sum()
             pnl_list += [cash_flow[['name','end_time','bucket','amtUSD']]]
 
             # spot_vs_index
-            cash_flow['amtUSD'] = 10000*(1 - cash_flow['index']/cash_flow['spot'])
+            cash_flow['amtUSD'] = 10000*(1 - cash_flow['index0']/cash_flow['spot0'])
             cash_flow['bucket'] = 'spot_vs_index(bps)'
             pnl_list += [cash_flow[['name','end_time','bucket','amtUSD']].drop(cash_flow[cash_flow['name'].isin(['USD','total'])].index)]
 
             #carry
-            cash_flow['amtUSD'] = cash_flow['RealizedCarry']*(time-prev_time).total_seconds()/365.25/24/3600
+            cash_flow['amtUSD'] = cash_flow['RealizedCarry1']*(time-prev_time).total_seconds()/365.25/24/3600
             cash_flow['bucket'] = 'carry(USD not annualized)'
-            cash_flow.loc[cash_flow['name'] == 'total', 'amtUSD'] = cash_flow['amtUSD'].sum()
             pnl_list += [cash_flow[['name','end_time','bucket','amtUSD']]]
 
             # IR01
-            cash_flow['amtUSD'] = (-cash_flow['previousWeight'] * ((row['mark'] - row['spot'])-(prev_row['mark'] - prev_row['spot']))/prev_row['spot'])
+            cash_flow['amtUSD'] = (-cash_flow['optimalWeight0'] * ((cash_flow['mark1'] - cash_flow['spot1'])-(cash_flow['mark0'] - cash_flow['spot0']))/cash_flow['spot0'])
             cash_flow['bucket'] = 'IR01(USD)'
             cash_flow.loc[cash_flow['name'] == 'total', 'amtUSD'] = cash_flow['amtUSD'].sum()
             pnl_list += [cash_flow[['name','end_time','bucket','amtUSD']]]
