@@ -18,6 +18,7 @@ ENV PYLIBS_PATH=$HOME/pylibs
 ENV UTILS_PATH=$PYLIBS_PATH/utils
 ENV HISTFEED_PATH=$PYLIBS_PATH/histfeed
 ENV RISKPNL_PATH=$PYLIBS_PATH/riskpnl
+ENV TRADEEXECUTOR_PATH=$PYLIBS_PATH/pfoptimizer
 ENV TRADEEXECUTOR_PATH=$PYLIBS_PATH/tradeexecutor
 ENV CCXTPRO_PATH=$PYLIBS_PATH/ccxtpro
 ENV UX_PATH=$PYLIBS_PATH/ux
@@ -31,6 +32,7 @@ RUN mkdir -p $PYLIBS_PATH
 RUN mkdir -p $UTILS_PATH
 RUN mkdir -p $HISTFEED_PATH
 RUN mkdir -p $RISKPNL_PATH
+RUN mkdir -p $PFOPTIMIZER_PATH
 RUN mkdir -p $TRADEEXECUTOR_PATH
 RUN mkdir -p $CCXTPRO_PATH
 RUN mkdir -p $UX_PATH
@@ -41,6 +43,7 @@ RUN chown -R $USER $PYLIBS_PATH
 RUN chown -R $USER $UTILS_PATH
 RUN chown -R $USER $HISTFEED_PATH
 RUN chown -R $USER $RISKPNL_PATH
+RUN chown -R $USER $PFOPTIMIZER_PATH
 RUN chown -R $USER $TRADEEXECUTOR_PATH
 RUN chown -R $USER $CCXTPRO_PATH
 RUN chown -R $USER $UX_PATH
@@ -54,6 +57,7 @@ USER $USER
 COPY --chown=$USER:$USER /utils/requirements.txt $UTILS_PATH
 COPY --chown=$USER:$USER /histfeed/requirements.txt $HISTFEED_PATH
 COPY --chown=$USER:$USER /riskpnl/requirements.txt $RISKPNL_PATH
+COPY --chown=$USER:$USER /pfoptimizer/requirements.txt $PFOPTIMIZER_PATH
 COPY --chown=$USER:$USER /tradeexecutor/requirements.txt $TRADEEXECUTOR_PATH
 COPY --chown=$USER:$USER /ux/requirements.txt $UX_PATH
 
@@ -61,6 +65,7 @@ COPY --chown=$USER:$USER /ux/requirements.txt $UX_PATH
 RUN pip3 install -Ur $UTILS_PATH/requirements.txt
 RUN pip3 install -Ur $HISTFEED_PATH/requirements.txt
 RUN pip3 install -Ur $RISKPNL_PATH/requirements.txt
+RUN pip3 install -Ur $PFOPTIMIZER_PATH/requirements.txt
 RUN pip3 install -Ur $TRADEEXECUTOR_PATH/requirements.txt
 RUN pip3 install -Ur $UX_PATH/requirements.txt
 
@@ -68,6 +73,7 @@ RUN pip3 install -Ur $UX_PATH/requirements.txt
 COPY --chown=$USER:$USER /utils $UTILS_PATH
 COPY --chown=$USER:$USER /histfeed $HISTFEED_PATH
 COPY --chown=$USER:$USER /riskpnl $RISKPNL_PATH
+COPY --chown=$USER:$USER /pfoptimizer $PFOPTIMIZER_PATH
 COPY --chown=$USER:$USER /tradeexecutor $TRADEEXECUTOR_PATH
 COPY --chown=$USER:$USER /ccxtpro $CCXTPRO_PATH
 COPY --chown=$USER:$USER /ux $UX_PATH
