@@ -1,3 +1,3 @@
 #!/bin/bash
 
-python3 main.py $RUN_TYPE $EXCHANGE_NAME $SUB_ACCOUNT
+python3 main.py $ORDER exchange=$EXCHANGE subaccount=$SUBACCOUNT

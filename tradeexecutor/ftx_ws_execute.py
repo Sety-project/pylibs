@@ -1277,24 +1277,26 @@ class myFtx(ccxtpro.ftx):
         for quoteId in quoteId_list
         if quoteId['success']])
 
-async def open_exec_echange(subaccount):
+async def open_exec_exchange(exchange_name,subaccount,config):
     '''TODO unused for now'''
-    parameters = configLoader.get_executor_params()
-    exchange = myFtx(parameters, config={  ## David personnal
-        'enableRateLimit': True,
-        'apiKey': 'ZUWyqADqpXYFBjzzCQeUTSsxBZaMHeufPFgWYgQU',
-        'secret': api_params['ftx']['key'],
-        'newUpdates': True})
-    exchange.verbose = False
-    exchange.headers = {'FTX-SUBACCOUNT': subaccount}
-    exchange.authenticate()
-    await exchange.load_markets()
+    if exchange_name not in ['ftx']:
+        raise Exception(f'exchange {exchange_name} not implemented')
+    else:
+        exchange = myFtx(config, config={  ## David personnal
+            'enableRateLimit': True,
+            'apiKey': 'ZUWyqADqpXYFBjzzCQeUTSsxBZaMHeufPFgWYgQU',
+            'secret': api_params['ftx']['key'],
+            'newUpdates': True})
+        exchange.verbose = False
+        exchange.headers = {'FTX-SUBACCOUNT': subaccount}
+        exchange.authenticate()
+        await exchange.load_markets()
 
     return exchange
 
 async def get_exec_request(*argv,subaccount):
     '''TODO unused for now'''
-    exchange = await open_exec_echange(subaccount)
+    exchange = await open_exec_exchange(subaccount)
 
     if argv[0] == 'sysperp':
         future_weights = configLoader.get_current_weights()
@@ -1331,64 +1333,47 @@ async def get_exec_request(*argv,subaccount):
 
     return target_portfolio
 
-async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
-
-    execution_status = None
-
+async def ftx_ws_spread_main_wrapper(order,config,logger,**kwargs):
     try:
-        # TODO: read complex orders
-        parameters = configLoader.get_executor_params()
+        # open exchange
+        if order not in ['unwind','flatten']:
+            future_weights = configLoader.get_current_weights(order)
+            exchange_name = future_weights['exchange'].unique()[0]
+            subaccount = future_weights['subaccount'].unique()[0]
+        else:
+            exchange_name = kwargs['exchange']
+            subaccount = kwargs['subaccount']
 
-        exchange = myFtx(parameters, config={  ## David personnal
-            'enableRateLimit': True,
-            'apiKey': 'ZUWyqADqpXYFBjzzCQeUTSsxBZaMHeufPFgWYgQU',
-            'secret': api_params['ftx']['key'],
-            'newUpdates': True})
-        exchange.myLogger = kwargs['logger']
-        exchange.verbose = False
-        exchange.headers = {'FTX-SUBACCOUNT': argv[2]}
-        exchange.authenticate()
+        exchange = await open_exec_exchange(exchange_name,subaccount,config)
+        exchange.myLogger = logger
 
-        await exchange.load_markets()
-
-        if argv[0]=='sysperp':
-            future_weights = configLoader.get_current_weights()
+        # build order
+        if order not in ['unwind','flatten']:
             target_portfolio = await diff_portoflio(exchange, future_weights)  # still a Dataframe
             if target_portfolio.empty: raise myFtx.NothingToDo()
 
-        elif argv[0]=='spread':
-            coin=argv[3]
-            cash_name = coin+'/USD'
-            future_name = coin + '-PERP'
-            cash_price = float(exchange.market(cash_name)['info']['price'])
-            future_price = float(exchange.market(future_name)['info']['price'])
-            target_portfolio = pd.DataFrame(columns=['coin','name','optimalCoin','currentCoin','spot_price'],data=[
-                [coin,cash_name,float(argv[4])/cash_price,0,cash_price],
-                [coin,future_name,-float(argv[4])/future_price,0,future_price]])
-            if target_portfolio.empty: raise myFtx.NothingToDo()
-
-        elif argv[0]=='flatten': # only works for basket with 2 symbols
+        elif order=='flatten': # only works for basket with 2 symbols
             future_weights = pd.DataFrame(columns=['name','optimalWeight'])
             diff = await diff_portoflio(exchange, future_weights)
             smallest_risk = diff.groupby(by='coin')['currentCoin'].agg(lambda series: series.apply(np.abs).min() if series.shape[0]>1 else 0)
             target_portfolio=diff
             target_portfolio['optimalCoin'] = diff.apply(lambda f: smallest_risk[f['coin']]*np.sign(f['currentCoin']),axis=1)
             if target_portfolio.empty: raise myFtx.NothingToDo()
-            parameters['max_nb_coins'] = 99 #TODO: need one config per mode
-            parameters['significance_threshold'] = 0.01
 
-        elif argv[0]=='unwind':
+        elif order=='unwind':
             future_weights = pd.DataFrame(columns=['name','optimalWeight'])
             target_portfolio = await diff_portoflio(exchange, future_weights)
             if target_portfolio.empty: raise myFtx.NothingToDo()
-            parameters['max_nb_coins'] = 99
-            parameters['significance_threshold'] = 0.01
 
         else:
-            exchange.myLogger.exception(f'unknown command {argv[0]}',exc_info=True)
-            raise Exception(f'unknown command {argv[0]}', exc_info=True)
+            exchange.myLogger.exception(f'unknown command {order}',exc_info=True)
+            raise Exception(f'unknown command {order}', exc_info=True)
 
-        await exchange.build_state(target_portfolio, parameters | {'comment': argv[0]})   # i
+        await exchange.build_state(target_portfolio, config | {'comment': order})   # i
+
+        exchange.myLogger.warning('cancelling running_symbols orders')
+        await asyncio.gather(*[exchange.cancel_all_orders(symbol) for symbol in exchange.running_symbols])
+
         coros = [exchange.monitor_fills(),exchange.monitor_risk()] + \
                 sum([[exchange.monitor_orders(symbol),
                       exchange.monitor_order_book(symbol),
@@ -1401,37 +1386,23 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
     else:
         raise ('executer threw no exception ??')
     finally:
-        exchange.myLogger.warning('cancel_all_orders')
+        exchange.myLogger.warning('cancelling running_symbols orders')
         await asyncio.gather(*[exchange.cancel_all_orders(symbol) for symbol in exchange.running_symbols])
         # await exchange.close_dust()  # Commenting out until bug fixed
         await exchange.close()
         exchange.myLogger.info('exchange closed', exc_info=True)
 
-def ftx_ws_spread_main(*argv):
-    '''
-        @params: run_type, exchange, subaccount, *coin, *optimalcoin -> return status filled, partial
-    '''
+def ftx_ws_spread_main(*args,**kwargs):
+
+    order = args[1]
+    config = configLoader.get_executor_params(order,kwargs['config_dir'] if 'config_dir' in kwargs else None)
     logger = build_logging('tradeexecutor',{logging.INFO:'exec_info.log',logging.WARNING:'oms_warning.log',logging.CRITICAL:'program_flow.log'})
-    params = {'logger':logger}
 
-    argv = list(argv)
-
-    if len(argv) == 0:
-        argv.extend(['sysperp'])        # Means run the sysperp strategy
-
-    if len(argv) < 3:
-        argv.extend(['ftx', 'SysPerp']) # SysPerp and debug are subaccounts
-
-    if argv[0] not in ['sysperp', 'flatten', 'unwind', 'spread']:
-        error_message = f'commands: sysperp [ftx][debug], flatten [ftx][debug],unwind [ftx][debug], spread [ftx][debug][coin][cash in usd]'
-        logger.critical(error_message)
-        raise Exception(error_message)
-
-    logger.critical(f'------------------- running {argv}')
+    logger.critical(f'------------------- running {order} with {config}')
 
     while True:
         try:
-            asyncio.run(ftx_ws_spread_main_wrapper(*argv,**params)) # --> I am filled or I timed out and I have flattened position
+            asyncio.run(ftx_ws_spread_main_wrapper(order,config,logger,**kwargs)) # --> I am filled or I timed out and I have flattened position
         except myFtx.DoneDeal as e:
             # Wait for 5 minutes and start over
             if not isinstance(e,myFtx.NothingToDo):
@@ -1446,19 +1417,18 @@ def ftx_ws_spread_main(*argv):
                 t.sleep(60 * 15)
             while datetime.utcnow().replace(tzinfo=timezone.utc).minute < 50:
                 try:
-                    asyncio.run(ftx_ws_spread_main_wrapper(*(['flatten']+argv[1:]),**params))
+                    asyncio.run(ftx_ws_spread_main_wrapper('flatten',config,logger,**kwargs))
                 except myFtx.DoneDeal as e:
                     logger.critical(f'{str(e)} TIMEOUT --> FLATTEN UNTIL FINISHED')
                     break
 
-def main(*args):
+def main(*args,**kwargs):
     '''
-        Examples runs :
-            - main debug
-            - sysperp ftx debug
-            - sysperp ftx SysPerp
-
-            - sysperp ftx SysPerp
-            - flatten ftx SysPerp
-    '''
-    ftx_ws_spread_main(*sys.argv[1:])
+        args:
+           order = 'unwind', 'flatten', or filename -> /home/david/config/pfoptimizer/filename
+        kwargs:
+           config_dir =  inserts a subdirectory for config ~/config/config_dir/tradeexecutor_params.json (optional)
+           exchange = 'ftx' (mandatory for 'unwind', 'flatten')
+           subaccount = 'SysPerp' (mandatory for 'unwind', 'flatten')
+   '''
+    ftx_ws_spread_main(*args,**kwargs)

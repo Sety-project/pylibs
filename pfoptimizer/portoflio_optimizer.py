@@ -369,47 +369,31 @@ async def strategy_wrapper(**kwargs):
 
 def main(*args,**kwargs):
     '''
-        Parameters could be passed in any order
-        @params:
-           # For now, defaults to exchange_name = ftx
-           run_type = ["sysperp", "backtest", "depth"] (mandatory param)
-           exchange = ["ftx"] (mandatory param)
-           subaccount = ["SysPerp"] (mandatory param for sysperp)
-           config = /home/david/config/pfoptimizer_params.json (optionnal)
-        @Example runs:
-            - main (this will read the config from the config file, this is how docker will call)
-            - main 2h 2d (this is when running local, to debug faster)
-            - main ftx sysperp/backtest/depth [signal_horizon] [holding_period]
-            - main ftx sysperp [signal_horizon] [holding_period], backtest, depth [signal_horizon] [holding_period]
+        args:
+            run_type = ["sysperp", "backtest", "depth"] (mandatory param)
+            exchange = ["ftx"] (mandatory param)
+        kwargs:
+            subaccount = ["SysPerp"] (mandatory param for sysperp)
+            config = /home/david/config/pfoptimizer_params.json (optionnal)
    '''
 
     logger = build_logging("pfoptimizer")
 
-    if 'config' not in kwargs:
-        config = configLoader.get_pfoptimizer_params()
-    else:
-        if os.path.isfile(kwargs['config']):
-            config = pd.read_csv(kwargs['config'])
-        else:
-            raise Exception('config {} not found'.format(kwargs['config']))
-
-    if 'run_type' not in kwargs:
-        raise Exception('run_type is compulsory')
-    run_type = kwargs['run_type']
+    run_type = args[1]
     if run_type not in ['backtest','depth','sysperp']:
         raise Exception('run_type {} not found'.format(kwargs['run_type']))
 
-    if run_type == 'sysperp':
-        if 'subaccount' not in kwargs:
-            raise Exception('subaccount is compulsory for run_type = sysperp')
-        else:
-            subaccount = kwargs['subaccount']
-
-    if 'exchange' not in kwargs:
-        raise Exception('exchange is compulsory')
-    exchange_name = kwargs['exchange']
+    exchange_name = args[2]
     if exchange_name not in ['ftx']:
         raise Exception('exchange_name {} not found'.format(kwargs['exchange_name']))
+
+    if run_type == 'sysperp':
+        subaccount = kwargs['subaccount']
+
+    if 'config' not in kwargs:
+        config = configLoader.get_pfoptimizer_params()
+    else:
+        config = pd.read_csv(kwargs['config'])
 
     logger.critical(f'Running main {run_type} exchange {exchange_name} config {config}')
 

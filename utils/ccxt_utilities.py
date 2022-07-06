@@ -75,7 +75,7 @@ async def open_exchange(exchange_name,subaccount,config={}):
             'enableRateLimit': True,
             'apiKey': '6a72779d-0a4a-4554-a283-f28a17612747',
             'secret': api_params.loc[exchange_name,'value'],
-            'secret': api_params.loc[exchange_name,'comment'],
+            'secret2': api_params.loc[exchange_name,'comment'],
         }|config)
         if subaccount != 'convexity':
             logging.warning('subaccount override: convexity')
