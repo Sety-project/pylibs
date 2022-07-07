@@ -730,9 +730,9 @@ class myFtx(ccxtpro.ftx):
                     mid = state['markets']['price'][self.market_id(symbol)]
                     delta = balance * mid
                     if coin not in self.risk_state:
-                        self.risk_state[coin] = dict()
+                        self.risk_state[coin] = {'netDelta': 0}
                     if symbol not in self.risk_state[coin]:
-                        self.risk_state[coin][symbol] = dict()
+                        self.risk_state[coin][symbol] = {'delta': 0,'delta_id':None}
                     self.risk_state[coin][symbol]['delta'] = delta
                     self.risk_state[coin][symbol]['delta_timestamp'] = risk_timestamp
                     self.pv += delta
@@ -776,7 +776,8 @@ class myFtx(ccxtpro.ftx):
                     self.process_fill(fill | {'orderTrigger':'replayed'})
                 elif channel == 'orders':
                     order = self.parse_order(data)
-                    self.process_order(order | {'orderTrigger':'replayed'})
+                    if order['symbol'] in self.running_symbols:
+                        self.process_order(order | {'orderTrigger':'replayed'})
                 # we record the orderbook but don't launch quoter (don't want to react after the fact)
                 elif channel == 'orderbook':
                     pass
@@ -849,6 +850,10 @@ class myFtx(ccxtpro.ftx):
         coin = self.markets[symbol]['base']
 
         # update risk_state
+        if coin not in self.risk_state:
+            self.risk_state[coin] = {'netDelta':0}
+        if symbol not in self.risk_state[coin]:
+            self.risk_state[coin][symbol] = {'delta':0,'delta_id':None}
         data = self.risk_state[coin][symbol]
         fill_size = fill['amount'] * (1 if fill['side'] == 'buy' else -1) * fill['price']
         data['delta'] += fill_size
@@ -867,23 +872,23 @@ class myFtx(ccxtpro.ftx):
         if symbol in self.running_symbols:
             self.lifecycle_fill(fill)
 
-        # logger.info
-        self.myLogger.logger.warning('{} filled after {}: {} {} at {}'.format(fill['clientOrderId'],
-                                                                  fill['timestamp'] - int(fill['clientOrderId'].split('_')[-1]),
-                                                                  fill['side'], fill['amount'],
-                                                                  fill['price']))
+            # logger.info
+            self.myLogger.logger.warning('{} filled after {}: {} {} at {}'.format(fill['clientOrderId'],
+                                                                      fill['timestamp'] - int(fill['clientOrderId'].split('_')[-1]),
+                                                                      fill['side'], fill['amount'],
+                                                                      fill['price']))
 
-        current = self.risk_state[coin][symbol]['delta']
-        target = self.exec_parameters[coin][symbol]['target'] * fill['price']
-        diff = self.exec_parameters[coin][symbol]['diff'] * fill['price']
-        initial = self.exec_parameters[coin][symbol]['target'] * fill['price'] - diff
-        self.myLogger.logger.warning('{} risk at {} ms: {}% done [current {}, initial {}, target {}]'.format(
-            symbol,
-            self.risk_state[coin][symbol]['delta_timestamp'],
-            (current - initial) / diff * 100,
-            current,
-            initial,
-            target))
+            current = self.risk_state[coin][symbol]['delta']
+            target = self.exec_parameters[coin][symbol]['target'] * fill['price']
+            diff = self.exec_parameters[coin][symbol]['diff'] * fill['price']
+            initial = self.exec_parameters[coin][symbol]['target'] * fill['price'] - diff
+            self.myLogger.logger.warning('{} risk at {} ms: {}% done [current {}, initial {}, target {}]'.format(
+                symbol,
+                self.risk_state[coin][symbol]['delta_timestamp'],
+                (current - initial) / diff * 100,
+                current,
+                initial,
+                target))
 
     # ---------------------------------- orders
 
@@ -1025,7 +1030,7 @@ class myFtx(ccxtpro.ftx):
                 return
         # if decrease risk, go aggressive
         else:
-            size = np.clip(original_size,a_min=-np.abs(globalDelta/mid),a_max=np.abs(globalDelta/mid))
+            size = original_size
             edit_price_depth = params['aggressive_edit_price_depth']
             stop_depth = params['stop_depth']
         self.peg_or_stopout(symbol,size,orderbook,edit_trigger_depth=params['edit_trigger_depth'],edit_price_depth=edit_price_depth,stop_depth=stop_depth)
@@ -1288,16 +1293,14 @@ async def ftx_ws_spread_main_wrapper(order,config,logger,**kwargs):
             if target_portfolio.empty: raise myFtx.NothingToDo()
 
         elif order=='flatten': # only works for basket with 2 symbols
-            future_weights = pd.DataFrame(columns=['name','optimalWeight'])
-            diff = await diff_portoflio(exchange, future_weights)
+            diff = await diff_portoflio(exchange)
             smallest_risk = diff.groupby(by='coin')['currentCoin'].agg(lambda series: series.apply(np.abs).min() if series.shape[0]>1 else 0)
             target_portfolio=diff
             target_portfolio['optimalCoin'] = diff.apply(lambda f: smallest_risk[f['coin']]*np.sign(f['currentCoin']),axis=1)
             if target_portfolio.empty: raise myFtx.NothingToDo()
 
         elif order=='unwind':
-            future_weights = pd.DataFrame(columns=['name','optimalWeight'])
-            target_portfolio = await diff_portoflio(exchange, future_weights)
+            target_portfolio = await diff_portoflio(exchange)
             if target_portfolio.empty: raise myFtx.NothingToDo()
 
         else:
@@ -1346,16 +1349,18 @@ def ftx_ws_spread_main(*args,**kwargs):
             t.sleep(60 * 5)
         except myFtx.TimeBudgetExpired as e:
             logger.logger.critical(f'{str(e)} --> FLATTEN UNTIL FINISHED')
-            # Force flattens until it returns FILLED, give up 10 mins before funding time
-            if datetime.utcnow().replace(tzinfo=timezone.utc).minute >= 50:
-                logger.logger.critical(f'{str(e)}  --> ouch, too close to hour to flatten')
-                t.sleep(60 * 15)
             while datetime.utcnow().replace(tzinfo=timezone.utc).minute < 50:
                 try:
+                    # Force flattens until it returns FILLED, give up 5 mins before funding time
+                    if datetime.utcnow().replace(tzinfo=timezone.utc).minute >= 55:
+                        logger.logger.critical(f'{str(e)}  --> ouch, too close to hour to flatten')
+                        t.sleep(60 * 20)
                     asyncio.run(ftx_ws_spread_main_wrapper('flatten',config,logger,**kwargs))
                 except myFtx.DoneDeal as e:
                     logger.logger.critical(f'{str(e)} TIMEOUT --> FLATTEN UNTIL FINISHED')
                     break
+        except Exception as e:
+            logger.logger.critical(str(e))
 
 def main(*args,**kwargs):
     '''

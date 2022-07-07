@@ -15,6 +15,7 @@ async def live_risk_wrapper(exchange='ftx',subaccount='SysPerp',nb_runs='1'):
     for i in range(int(nb_runs)):
         risk = await live_risk(exchange_obj,futures)
         logging.getLogger('pnl').info(risk)
+        t.sleep(30)
 
     await exchange_obj.close()
     return risk
@@ -94,16 +95,8 @@ async def live_risk(exchange,futures):
     return result[['coin','futureDelta', 'spotDelta', 'netDelta', 'future_carry', 'borrow', 'netCarry', 'IR01', 'pv']].set_index('coin')
 
 # diff is in coin
-async def diff_portoflio(exchange,future_weights) -> pd.DataFrame():
-    ''' Compares current risk vs optimal risk. Only names in future_weights are touched. '''
-    future_weights = future_weights[future_weights['name'].isin(['USD','total'])==False]
-    future_weights['optimalUSD'] = -future_weights['optimalWeight']
-
-    cash_weights = future_weights.copy()
-    cash_weights['name']=cash_weights['name'].apply(lambda x: exchange.market(x)['base']+'/USD')
-    cash_weights['optimalUSD'] *= -1
-    target = future_weights.append(cash_weights)
-
+async def diff_portoflio(exchange,future_weights=pd.DataFrame()) -> pd.DataFrame():
+    ''' Compares current risk vs optimal risk. Only names in future_weights are touched. All if future_weight empty.'''
     async def fetch_balances_positions(exchange: ccxt.Exchange) -> pd.DataFrame:
         positions = pd.DataFrame([r['info'] for r in await exchange.fetch_positions(params={})]).rename(
             columns={'future': 'name', 'netSize': 'total'})  # 'showAvgPrice':True})
@@ -117,12 +110,24 @@ async def diff_portoflio(exchange,future_weights) -> pd.DataFrame():
         current = current[current['total'] != 0]
 
         return current
-
     # get portfolio in coin.
     current = await fetch_balances_positions(exchange)
 
+    if not future_weights.empty:
+        future_weights = future_weights[future_weights['name'].isin(['USD', 'total']) == False]
+        future_weights['optimalUSD'] = -future_weights['optimalWeight']
+
+        cash_weights = future_weights.copy()
+        cash_weights['name'] = cash_weights['name'].apply(lambda x: exchange.market(x)['base'] + '/USD')
+        cash_weights['optimalUSD'] *= -1
+        target = future_weights.append(cash_weights)
+        result = target.set_index('name')[['optimalUSD']].join(current.set_index('name')[['total']], how='left')
+    else:
+        result = current.set_index('name')[['total']]
+        result['optimalUSD'] = 0
+
     # join, diff, coin. Only names in future_weights are touched.
-    result = target.set_index('name')[['optimalUSD']].join(current.set_index('name')[['total']],how='left')
+
     result = result.fillna(0.0).reset_index().rename(columns={'total':'currentCoin'})
 
     result['name'] = result['name'].apply(lambda x: x.replace('_LOCKED', ''))
@@ -528,7 +533,9 @@ async def risk_and_pnl(exchange,period):
     # return pnl period is specified
     if period != 'write_all':
         period = parse_time_param(period)
-        return pnl[pnl['time']>end_time-period]
+        result = pnl[pnl['time']>end_time-period]
+        logging.getLogger('pnl').info(result)
+        return result
     else:
         # accrue and archive risk otherwise
         end_portfolio.to_csv(os.path.join(dirname,end_time.strftime("%Y%m%d_%H%M%S") + '_risk.json'))
