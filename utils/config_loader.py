@@ -93,11 +93,10 @@ class configLoader():
     def set_current_weights(weights_filename=_current_weights_filename):
         ''' Used by tradeexecutor (only) to read current weights to have '''
         try:
-            filename = os.path.join(configLoader._pfoptimizer_folder_path, weights_filename)
-            configLoader._current_weights = pd.read_csv(filename)
+            configLoader._current_weights = pd.read_csv(weights_filename)
         except FileNotFoundError:
             raise FileNotFoundError(
-                f"File {filename} not found")
+                f"File {weights_filename} not found")
 
     ### GETTERS ###
     @staticmethod

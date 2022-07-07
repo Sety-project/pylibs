@@ -285,7 +285,7 @@ async def perp_vs_cash(
             'slippage_orderbook_depth': slippage_orderbook_depth})
     parameters.to_csv(os.path.join(os.sep,log_path,'parameters.csv'))
 
-    # for live, just send last optimized
+    # for live, send last optimized, and also shard them by coin.
     if backtest_start == backtest_end:
         pfoptimizer_path = os.path.join(configLoader.get_config_folder_path(), "pfoptimizer")
 
@@ -299,13 +299,20 @@ async def perp_vs_cash(
         optimized['exchange'] = exchange.id
         optimized['subaccount'] = exchange.headers['FTX-SUBACCOUNT']
         optimized.to_csv(f'{pfoptimizer_res_filename}_weights.csv')
+
         updated.to_csv(f'{pfoptimizer_res_filename}_snapshot.csv')
         parameters.to_csv(f'{pfoptimizer_res_filename}_parameters.csv')
 
         # send bus message
         pfoptimizer_res_last_filename = os.path.join(pfoptimizer_path, "current_weights.csv")
         optimized.to_csv(pfoptimizer_res_last_filename)
+        optimized = optimized.drop(index=['USD', 'total']).sort_values(by='optimalWeight', key=lambda f: np.abs(f),
+                                                                       ascending=False)
+        for i in range(optimized.shape[0]):
+            pfoptimizer_res_last_filename = os.path.join(pfoptimizer_path, f"weight_shard_{i}.csv")
+            optimized.iloc[[i]].to_csv(pfoptimizer_res_last_filename)
 
+        # stdout display
         display = optimized[['optimalWeight', 'ExpectedCarry', 'transactionCost']]
         totals = display.loc[['USD', 'total']]
         display = display.drop(index=['USD', 'total']).sort_values(by='optimalWeight',key=lambda f: np.abs(f),ascending=False).append(totals)
