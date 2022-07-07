@@ -4,7 +4,7 @@ import sys,os,shutil,platform
 import json
 import pandas as pd
 import numpy as np
-
+from datetime import timedelta
 import pyarrow, pyarrow.parquet,s3fs
 
 # this is for jupyter
@@ -128,3 +128,18 @@ class NpEncoder(json.JSONEncoder):
         if isinstance(obj, collections.deque):
             return None
         return super(NpEncoder, self).default(obj)
+
+def parse_time_param(param):
+    if 'mn' in param:
+        horizon = int(param.split('mn')[0])
+        horizon = timedelta(minutes=horizon)
+    elif 'h' in param:
+        horizon = int(param.split('h')[0])
+        horizon = timedelta(hours=horizon)
+    elif 'd' in param:
+        horizon = int(param.split('d')[0])
+        horizon = timedelta(days=horizon)
+    elif 'w' in param:
+        horizon = int(param.split('w')[0])
+        horizon = timedelta(weeks=horizon)
+    return horizon

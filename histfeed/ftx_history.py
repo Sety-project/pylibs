@@ -350,35 +350,37 @@ async def fetch_trades_history(symbol,
                 'volume':vwap[symbol.split('/USD')[0] + '_trades_'+'volume'],
                 'liquidation_intensity':vwap[symbol.split('/USD')[0] + '_trades_'+'liquidation_intensity']}
 
-    data = pd.DataFrame(data=trades)
-    data[['size','price']] = data[['size','price']].astype(float)
-    data['volume'] = data['size'] * data['price']
-    data['square'] = data['size'] * data['price']*data['price']
-    data['count'] = 1
-    data['liquidation_volume'] = data['size'] * data['price'] * data['liquidation'].apply(lambda flag: 1 if flag else 0)
-
-    data['time']=data['time'].apply(lambda t: dateutil.parser.isoparse(t).replace(tzinfo=timezone.utc))
-    data.set_index('time',inplace=True)
-
-    vwap = data[['size','volume','square','count','liquidation_volume']].resample(frequency).sum()
-    vwap['vwap'] = vwap['volume']/vwap['size']
-    vwap['vwvol'] = (vwap['square'] / vwap['size']-vwap['vwap']*vwap['vwap']).apply(np.sqrt)
-    vwap['liquidation_intensity'] = vwap['liquidation_volume'] / vwap['volume']
-
+    vwap = vwap_from_list(frequency, trades)
     vwap.columns = [symbol.split('/USD')[0] + '_trades_' + column for column in vwap.columns]
-    #data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
+    # data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     vwap = vwap[~vwap.index.duplicated()].sort_index().ffill()
 
     if dirname != '':
         parquet_filename = os.path.join(dirname, symbol.split('/USD')[0] + "_trades.parquet")
         vwap.to_parquet(parquet_filename)
 
-    return {'symbol':exchange.market(symbol)['symbol'],
-            'coin':exchange.market(symbol)['base'],
-            'vwap':vwap[symbol.split('/USD')[0] + '_trades_vwap'],
+    return {'vwap':vwap[symbol.split('/USD')[0] + '_trades_vwap'],
             'vwvol':vwap[symbol.split('/USD')[0] + '_trades_vwvol'],
             'volume':vwap[symbol.split('/USD')[0] + '_trades_volume'],
             'liquidation_intensity':vwap[symbol.split('/USD')[0] + '_trades_liquidation_intensity']}
+
+
+def vwap_from_list(frequency, trades):
+    '''needs ['size', 'price', 'liquidation', 'time' as isostring]'''
+    data = pd.DataFrame(data=trades)
+    data[['size', 'price']] = data[['size', 'price']].astype(float)
+    data['volume'] = data['size'] * data['price']
+    data['square'] = data['size'] * data['price'] * data['price']
+    data['count'] = 1
+    data['liquidation_volume'] = data['size'] * data['price'] * data['liquidation'].apply(lambda flag: 1 if flag else 0)
+    data['time'] = data['time'].apply(lambda t: dateutil.parser.isoparse(t).replace(tzinfo=timezone.utc))
+    data.set_index('time', inplace=True)
+    vwap = data[['size', 'volume', 'square', 'count', 'liquidation_volume']].resample(frequency).sum()
+    vwap['vwap'] = vwap['volume'] / vwap['size']
+    vwap['vwvol'] = (vwap['square'] / vwap['size'] - vwap['vwap'] * vwap['vwap']).apply(np.sqrt)
+    vwap['liquidation_intensity'] = vwap['liquidation_volume'] / vwap['volume']
+    return vwap
+
 
 async def ftx_history_main_wrapper(exchange_name, run_type, universe, nb_of_days):
 

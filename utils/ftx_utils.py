@@ -305,3 +305,36 @@ class Static():
         all.loc[coin_details['spotMargin'] == False, 'lend'] = 0
 
         return all
+
+async def syncronized_state(exchange):
+    # fetch mark,spot and balances as closely as possible
+    # shoot rest requests
+    n_requests = int(safe_gather_limit / 3)
+    p = [getattr(exchange, coro)(params={'dummy': i})
+         for i in range(n_requests)
+         for coro in ['fetch_markets', 'fetch_balance', 'fetch_positions']]
+    results = await safe_gather(p)
+    # avg to reduce impact of latency
+    markets_list = []
+    for result in results[0::3]:
+        res = pd.DataFrame(result).set_index('id')
+        res['price'] = res['info'].apply(lambda f: float(f['price']) if f['price'] else -9999999)
+        markets_list.append(res[['price']])
+    markets = sum(markets_list) / len(markets_list)
+
+    balances_list = [pd.DataFrame(r['info']['result']).set_index('coin')[['total']].astype(float) for r in
+                     results[1::3]]
+    balances = sum(balances_list) / len(balances_list)
+    var = sum([bal * bal for bal in balances_list]) / len(balances_list) - balances * balances
+    balances = balances[balances['total'] != 0.0].fillna(0.0)
+
+    positions_list = [
+        pd.DataFrame([r['info'] for r in result]).set_index('future')[['netSize','unrealizedPnl']].astype(float) for
+        result in results[2::3]]
+    positions = sum(positions_list) / len(positions_list)
+    var = sum([pos * pos for pos in positions_list]) / len(positions_list) - positions * positions
+    positions = positions[positions['netSize'] != 0.0].fillna(0.0)
+
+    return {'markets': markets.to_dict(),
+            'balances': balances.to_dict(),
+            'positions': positions.to_dict()}

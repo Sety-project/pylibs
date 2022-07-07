@@ -398,8 +398,7 @@ def cash_carry_optimizer(exchange, futures,
                          concentration_limit,
                          mktshare_limit,
                          equity,# for markovitz
-                         optional_params=[],
-                         logger=None):  # verbose,warm_start, cost_blind
+                         optional_params=[]):  # verbose,warm_start, cost_blind
     # freeze universe, from now on must ensure order is the same
     futures = futures.join(previous_weights_df, how='left', lsuffix='_')
     previous_weights = futures['optimalWeight'].fillna(0.0)
@@ -529,11 +528,11 @@ def cash_carry_optimizer(exchange, futures,
             # https://github.com/scipy/scipy/issues/3056 -> SLSQP is unfomfortable with numerical jacobian when solution is on bounds, but in fact does converge.
             violation = - min([constraint['fun'](res['x']) for constraint in constraints])
             if res['message'] == 'Iteration limit reached':
-                logger.warning(res['message'] + '...but SLSQP is unfomfortable with numerical jacobian when solution is on bounds, but in fact does converge.')
+                logging.getLogger('pfoptimizer').warning(res['message'] + '...but SLSQP is unfomfortable with numerical jacobian when solution is on bounds, but in fact does converge.')
             elif res['message'] == "Inequality constraints incompatible" and violation < equity / 100:
-                logger.warning(res['message'] + '...but only by' + str(violation))
+                logging.getLogger('pfoptimizer').warning(res['message'] + '...but only by' + str(violation))
             else:
-                logger.critical(res['message'])
+                logging.getLogger('pfoptimizer').critical(res['message'])
 
     if 'verbose' in optional_params:
         callbackF(res['x'], progress_display,res['message'])

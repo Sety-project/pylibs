@@ -711,7 +711,7 @@ class myFtx(ccxtpro.ftx):
                 [self.exec_parameters[coin][symbol]['diff'] for symbol in coin_data.keys()],
                 self.parameters['entry_tolerance'])
             # rush_level = what level on basket is so good good that you go market on both legs
-            self.exec_parameters[coin]['rush_level'] = basket_vwap_quantile(
+            self.exec_parameters[coin]['rush_in_level'] = basket_vwap_quantile(
                 [data['vwap'] for data in coin_data.values()],
                 [self.exec_parameters[coin][symbol]['diff'] for symbol in coin_data.keys()],
                 self.parameters['rush_tolerance'])
@@ -832,10 +832,10 @@ class myFtx(ccxtpro.ftx):
                 channel = message['channel']
                 if channel == 'fills':
                     fill = self.parse_trade(data)
-                    self.process_fill(fill | {'orderTrigger':'replayed'})
+                    self.process_fill(fill | {'comment':'replayed'})
                 elif channel == 'orders':
                     order = self.parse_order(data)
-                    self.process_order(order | {'orderTrigger':'replayed'})
+                    self.process_order(order | {'comment':'replayed'})
                 # we record the orderbook but don't launch quoter (don't want to react after the fact)
                 elif channel == 'orderbook':
                     pass
@@ -1036,7 +1036,7 @@ class myFtx(ccxtpro.ftx):
             current_basket_price = sum(self.mid(_symbol)*self.exec_parameters[coin][_symbol]['diff']
                                        for _symbol in self.exec_parameters[coin].keys() if _symbol in self.markets)
             # mkt order if target reached.
-            if current_basket_price + 2 * np.abs(params['diff']) * params['takerVsMakerFee'] * mid < self.exec_parameters[coin]['rush_level']:
+            if current_basket_price + 2 * np.abs(params['diff']) * params['takerVsMakerFee'] * mid < self.exec_parameters[coin]['rush_in_level']:
                 # (np.abs(netDelta+size)-np.abs(netDelta))/np.abs(size)*params['edit_price_depth'] # equate: profit if done ~ marginal risk * stdev
                 size = np.sign(original_size) * min([np.abs(original_size), params['slice_size']])
                 edit_price_depth = 0
@@ -1288,7 +1288,7 @@ async def get_exec_request(*argv,subaccount):
         target_portfolio = await diff_portoflio(exchange, future_weights)
 
     else:
-        exchange.logger.exception(f'unknown command {argv[0]}', exc_info=True)
+        exchange.myLogger.exception(f'unknown command {argv[0]}', exc_info=True)
         raise Exception(f'unknown command {argv[0]}', exc_info=True)
 
     await exchange.close()
@@ -1347,7 +1347,7 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
             if target_portfolio.empty: raise myFtx.NothingToDo()
 
         else:
-            exchange.logger.exception(f'unknown command {argv[0]}',exc_info=True)
+            exchange.myLogger.exception(f'unknown command {argv[0]}',exc_info=True)
             raise Exception(f'unknown command {argv[0]}', exc_info=True)
 
         await exchange.build_state(target_portfolio, parameters | {'comment': argv[0]})   # i
@@ -1365,13 +1365,13 @@ async def ftx_ws_spread_main_wrapper(*argv,**kwargs):
         execution_status = e
 
     except Exception as e:
-        exchange.logger.warning(e, exc_info=True)
+        exchange.myLogger.warning(e, exc_info=True)
         raise e
     finally:
         await exchange.cancel_all_orders()
         # await exchange.close_dust()  # Commenting out until bug fixed
         await exchange.close()
-        exchange.logger.info('exchange closed', exc_info=True)
+        exchange.myLogger.info('exchange closed', exc_info=True)
         return execution_status
 
 def ftx_ws_spread_main(*argv):

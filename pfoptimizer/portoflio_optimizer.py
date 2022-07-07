@@ -2,21 +2,15 @@ import copy
 import inspect
 import datetime
 
-import pandas as pd
-
 from pfoptimizer.ftx_snap_basis import *
 from riskpnl.ftx_risk_pnl import *
 from utils.ftx_utils import Static, find_spot_ticker
 from utils.config_loader import *
 from histfeed.ftx_history import get_history
 from utils.ccxt_utilities import open_exchange
-from utils.logger import build_logging
+from utils.MyLogger import build_logging
 
-run_i = 0
-
-LOGGER_NAME = __name__
-
-async def refresh_universe(exchange, universe_filter,logger=None):
+async def refresh_universe(exchange, universe_filter):
     ''' Reads from universe.json '''
     ''' futures need to be enriched first before this can run '''
 
@@ -75,43 +69,41 @@ async def refresh_universe(exchange, universe_filter,logger=None):
         # Persist new refreshed universe
         configLoader.persist_universe(new_universe)
 
-        logger.info("Successfully refreshed universe")
+        logging.getLogger('pfoptimizer').info("Successfully refreshed universe")
         universe = configLoader.get_bases(universe_filter)
         return universe
 
 # runs optimization * [time, params]
 async def perp_vs_cash(
-        exchange_name,
         exchange,
+        config,
         signal_horizon,
         holding_period,
         slippage_override,
-        equity,
         concentration_limit,
         mktshare_limit,
         minimum_carry,
         exclusion_list,
+        equity_override=None,
         backtest_start=None, # None means live-only
         backtest_end=None,
-        logger=None,
         optional_params=[]):# verbose,warm_start
 
     # Load defaults params
-    pf_params = configLoader.get_pfoptimizer_params()
-    param_equity = pf_params['EQUITY']['value']
-    param_type_allowed = pf_params['TYPE_ALLOWED']['value']
-    param_universe = pf_params['UNIVERSE']['value']
-    dir_name = configLoader.get_mktdata_folder_for_exchange(exchange_name)
+    param_equity = config['EQUITY']['value']
+    param_type_allowed = config['TYPE_ALLOWED']['value']
+    param_universe = config['UNIVERSE']['value']
+    dir_name = configLoader.get_mktdata_folder_for_exchange(exchange.id)
 
     frame = inspect.currentframe()
     args, _, _, values = inspect.getargvalues(frame)
-    logger.info(f'running {[(i, values[i]) for i in args]} ')
+    logging.getLogger('pfoptimizer').info(f'running {[(i, values[i]) for i in args]} ')
 
     futures = pd.DataFrame(await Static.fetch_futures(exchange)).set_index('name')
     now_time = datetime.utcnow().replace(tzinfo=timezone.utc)
 
     # Qualitative filtering
-    universe = await refresh_universe(exchange, param_universe,logger)
+    universe = await refresh_universe(exchange, param_universe)
     universe = [instrument_name for instrument_name in universe if instrument_name.split("-")[0] not in exclusion_list]
     # universe = universe[~universe['underlying'].isin(exclusion_list)]
     type_allowed = param_type_allowed
@@ -123,24 +115,24 @@ async def perp_vs_cash(
     slippage_orderbook_depth = 10000
 
     # previous book
-    if not equity is None:
+    if not equity_override is None:
         previous_weights_input = pd.DataFrame(index=[],columns=['optimalWeight'], data=0.0)
     elif param_equity.isnumeric():
         previous_weights_input = pd.DataFrame(index=[],columns=['optimalWeight'], data=0.0)
-        equity = float(param_equity)
+        equity_override = float(param_equity)
     elif '.xlsx' in param_equity:
         previous_weights_input = pd.read_excel(param_equity, sheet_name='optimized', index_col=0)['optimalWeight']
-        equity = previous_weights_input.loc['total']
+        equity_override = previous_weights_input.loc['total']
         previous_weights_input = previous_weights_input.drop(['USD', 'total'])
     else:
         start_portfolio = await fetch_portfolio(exchange, now_time)
         previous_weights_input = -start_portfolio.loc[
             start_portfolio['attribution'].isin(filtered.index), ['attribution', 'usdAmt']
         ].set_index('attribution').rename(columns={'usdAmt': 'optimalWeight'})
-        equity = start_portfolio.loc[start_portfolio['event_type'] == 'PV', 'usdAmt'].values[0]
+        equity_override = start_portfolio.loc[start_portfolio['event_type'] == 'PV', 'usdAmt'].values[0]
 
     # Run a trajectory
-    log_path = os.path.join(os.sep, Path.home(), 'backtest', "1bp_2d")
+    log_path = os.path.join(os.sep, "tmp", "pfoptimizer")
     if not os.path.exists(log_path):
         os.umask(0)
         os.makedirs(log_path, mode=0o777)
@@ -163,12 +155,8 @@ async def perp_vs_cash(
         backtest_start = point_in_time
         backtest_end = point_in_time
 
-        trajectory = pd.DataFrame()
-        pnl = pd.DataFrame()
-        point_in_time = backtest_start
-
     ## ----------- enrich/carry filter, get history, populate concentration limit
-    enriched = await enricher(exchange, filtered, holding_period, equity=equity,
+    enriched = await enricher(exchange, filtered, holding_period, equity=equity_override,
                               slippage_override=slippage_override, slippage_orderbook_depth=slippage_orderbook_depth,
                               slippage_scaler=slippage_scaler,
                               params={'override_slippage': True, 'type_allowed': type_allowed, 'fee_mode': 'retail'})
@@ -185,7 +173,7 @@ async def perp_vs_cash(
             holding_period,  # to convert slippage into rate
             signal_horizon,filename= log_file if 'verbose' in optional_params else ''
         )  # historical window for expectations
-    updated = update(enriched, point_in_time, hy_history, equity,
+    updated = update(enriched, point_in_time, hy_history, equity_override,
                      intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow,
                      minimum_carry=0) # Do not remove futures using minimum_carry
     enriched = None  # safety
@@ -203,20 +191,17 @@ async def perp_vs_cash(
         initial_weight['optimalWeight'] = 0
     previous_weights = initial_weight
     prev_time = point_in_time
-    prev_row = pd.DataFrame(index=[],
-                            columns=['name',
-                                     'optimalWeight',
-                                     'index',
-                                     'spot',
-                                     'mark',
-                                     'RealizedCarry'],
-                            data=1)
+    prev_row = pd.Series(index=['previousWeight',
+                                    'index',
+                                    'spot',
+                                    'mark',
+                                    'RealizedCarry'],data=1)
 
     optimized = pd.DataFrame()
     while point_in_time <= backtest_end:
         try:
-            updated = update(filtered, point_in_time, hy_history, equity,
-                             intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow,E_intBorrow,
+            updated = update(filtered, point_in_time, hy_history, equity_override,
+                             intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow,
                              minimum_carry=minimum_carry,
                              previous_weights_index=previous_weights.index)
 
@@ -226,8 +211,7 @@ async def perp_vs_cash(
                                              signal_horizon=signal_horizon,
                                              concentration_limit=concentration_limit,
                                              mktshare_limit=mktshare_limit,
-                                             equity=equity,
-                                             logger=logger,
+                                             equity=equity_override,
                                              optional_params = optional_params + (['cost_blind']
                                              if (point_in_time == backtest_start) & (backtest_start != backtest_end)
                                              else [])) # Ignore costs on first time of a backtest
@@ -248,26 +232,29 @@ async def perp_vs_cash(
             trajectory.to_csv(os.path.join(os.sep,log_path,'trajectory.csv'))
 
             pnl_list = []
-            cash_flow = prev_row.merge(row,on='name',suffixes=(0,1))
+            cash_flow = copy.deepcopy(row)
             cash_flow['end_time'] = time
 
             # weights
-            cash_flow['amtUSD'] = cash_flow['optimalWeight0']
+            cash_flow['amtUSD'] = cash_flow['previousWeight']
             cash_flow['bucket'] = 'weights'
+            #TODO dupe ...
+            cash_flow.loc[cash_flow['name']=='total','amtUSD'] = cash_flow['amtUSD'].sum()
             pnl_list += [cash_flow[['name','end_time','bucket','amtUSD']]]
 
             # spot_vs_index
-            cash_flow['amtUSD'] = 10000*(1 - cash_flow['index0']/cash_flow['spot0'])
+            cash_flow['amtUSD'] = 10000*(1 - cash_flow['index']/cash_flow['spot'])
             cash_flow['bucket'] = 'spot_vs_index(bps)'
             pnl_list += [cash_flow[['name','end_time','bucket','amtUSD']].drop(cash_flow[cash_flow['name'].isin(['USD','total'])].index)]
 
             #carry
-            cash_flow['amtUSD'] = cash_flow['RealizedCarry1']*(time-prev_time).total_seconds()/365.25/24/3600
+            cash_flow['amtUSD'] = cash_flow['RealizedCarry']*(time-prev_time).total_seconds()/365.25/24/3600
             cash_flow['bucket'] = 'carry(USD not annualized)'
+            cash_flow.loc[cash_flow['name'] == 'total', 'amtUSD'] = cash_flow['amtUSD'].sum()
             pnl_list += [cash_flow[['name','end_time','bucket','amtUSD']]]
 
             # IR01
-            cash_flow['amtUSD'] = (-cash_flow['optimalWeight0'] * ((cash_flow['mark1'] - cash_flow['spot1'])-(cash_flow['mark0'] - cash_flow['spot0']))/cash_flow['spot0'])
+            cash_flow['amtUSD'] = (-cash_flow['previousWeight'] * ((cash_flow['mark'] - cash_flow['spot'])-(prev_row['mark'] - prev_row['spot']))/prev_row['spot'])
             cash_flow['bucket'] = 'IR01(USD)'
             cash_flow.loc[cash_flow['name'] == 'total', 'amtUSD'] = cash_flow['amtUSD'].sum()
             pnl_list += [cash_flow[['name','end_time','bucket','amtUSD']]]
@@ -279,9 +266,9 @@ async def perp_vs_cash(
             prev_row = copy.deepcopy(row)
 
         except Exception as e:
-            logger.critical(str(e))
+            logging.getLogger('pfoptimizer').critical(str(e))
         finally:
-            logger.info(f'{str(point_in_time)} done')
+            logging.getLogger('pfoptimizer').info(f'{str(point_in_time)} done')
             point_in_time += timedelta(hours=1)
 
     parameters = pd.Series({
@@ -293,7 +280,7 @@ async def perp_vs_cash(
             'holding_period': holding_period,
             'slippage_override': slippage_override,
             'concentration_limit': concentration_limit,
-            'equity': equity,
+            'equity': equity_override,
             'slippage_scaler': slippage_scaler,
             'slippage_orderbook_depth': slippage_orderbook_depth})
     parameters.to_csv(os.path.join(os.sep,log_path,'parameters.csv'))
@@ -309,6 +296,8 @@ async def perp_vs_cash(
         pfoptimizer_res_filename = os.path.join(os.sep,
                                                 pfoptimizer_path,
                                                 'ftx_optimal_cash_carry_' + datetime.utcnow().strftime("%Y%m%d_%H%M%S"))
+        optimized['exchange'] = exchange.id
+        optimized['subaccount'] = exchange.headers['FTX-SUBACCOUNT']
         optimized.to_csv(f'{pfoptimizer_res_filename}_weights.csv')
         updated.to_csv(f'{pfoptimizer_res_filename}_snapshot.csv')
         parameters.to_csv(f'{pfoptimizer_res_filename}_parameters.csv')
@@ -321,7 +310,7 @@ async def perp_vs_cash(
         totals = display.loc[['USD', 'total']]
         display = display.drop(index=['USD', 'total']).sort_values(by='optimalWeight',key=lambda f: np.abs(f),ascending=False).append(totals)
         #display= display[display['absWeight'].cumsum()>display.loc['total','absWeight']*.1]
-        print(display)
+        logging.getLogger('pfoptimizer').info(display)
 
         return optimized
 
@@ -329,20 +318,23 @@ async def perp_vs_cash(
 
 async def strategy_wrapper(**kwargs):
 
-    pf_params = configLoader.get_pfoptimizer_params()
-
-    if pf_params['EQUITY']['value'].isnumeric() or '.xlsx' in pf_params['EQUITY']['value']:
+    if kwargs['equity'][0].isnumeric() or '.xlsx' in kwargs['equity'][0]:
         exchange = await open_exchange(kwargs['exchange_name'], '')
+        if kwargs['equity'][0].isnumeric():
+            equity_override = kwargs['equity'][0]
+        else:
+            raise Exception('not implemented')
     else:
         exchange = await open_exchange(kwargs['exchange_name'],
-                                       pf_params['EQUITY']['value'],
+                                       kwargs['equity'][0],
                                        config={'asyncio_loop':asyncio.get_running_loop()})
+        equity_override = None
     await exchange.load_markets()
 
     coroutines = [perp_vs_cash(
-        exchange_name=kwargs['exchange_name'],
         exchange=exchange,
-        equity=equity,
+        config=kwargs['config'],
+        equity_override=equity_override,
         concentration_limit=concentration_limit,
         mktshare_limit=mktshare_limit,
         minimum_carry=minimum_carry,
@@ -352,7 +344,6 @@ async def strategy_wrapper(**kwargs):
         slippage_override=slippage_override,
         backtest_start=kwargs['backtest_start'],
         backtest_end=kwargs['backtest_end'],
-        logger=kwargs['logger'],
         optional_params=['verbose'] if (__debug__ and kwargs['backtest_start']==kwargs['backtest_end']) else [])
         for equity in kwargs['equity']
         for concentration_limit in kwargs['concentration_limit']
@@ -367,98 +358,50 @@ async def strategy_wrapper(**kwargs):
 
     return result
 
-def main(*args):
+def main(*args,**kwargs):
     '''
-        Parameters could be passed in any order
-        @params:
-           # For now, defaults to exchange_name = ftx
-           run_type = ["sysperp", "backtest", "depth"] (mandatory param)
-           exchange = ["ftx"] (mandatory param)
-        @Example runs:
-            - main (this will read the config from the config file, this is how docker will call)
-            - main 2h 2d (this is when running local, to debug faster)
-            - main ftx sysperp/backtest/depth [signal_horizon] [holding_period]
-            - main ftx sysperp [signal_horizon] [holding_period], backtest, depth [signal_horizon] [holding_period]
+        args:
+            run_type = ["sysperp", "backtest", "depth"] (mandatory param)
+            exchange = ["ftx"] (mandatory param)
+        kwargs:
+            subaccount = ["SysPerp"] (mandatory param for sysperp)
+            config = /home/david/config/pfoptimizer_params.json (optionnal)
    '''
 
     logger = build_logging("pfoptimizer")
 
-    # RUN_MODE = ["prod", "debug"]
-    RUN_TYPES = ["sysperp", "backtest", "depth"]
-    EXCHANGE_NAMES_AVAILABLE = ["ftx"]
+    run_type = args[1]
+    if run_type not in ['backtest','depth','sysperp']:
+        logger.critical('run_type {} not found'.format(kwargs['run_type']))
 
-    # Reads config to collect params
-    pf_params = configLoader.get_pfoptimizer_params()
+    exchange_name = args[2]
+    if exchange_name not in ['ftx']:
+        logger.critical('exchange_name {} not found'.format(kwargs['exchange_name']))
 
-    args = list(*args)[1:]
+    if run_type == 'sysperp':
+        subaccount = kwargs['subaccount']
 
-    # Getting exchange name, only ftx handled for now
-    try:
-        exchange_name = [x for x in args if x in EXCHANGE_NAMES_AVAILABLE][0]
-        if exchange_name != 'ftx':
-            logger.critical(f"The exchange_name param should be 'ftx' but {exchange_name} was passed. Only ftx is handled for the moment")
-            logger.critical("---> Terminating...")
-            sys.exit(1)
-    except IndexError:
-        logger.critical("Cannot find the exchange_name param. The exchange_name param should be passed explicitly : only 'ftx' is handled for the moment")
-        logger.critical("---> Terminating...")
-        sys.exit(1)
+    if 'config' not in kwargs:
+        config = configLoader.get_pfoptimizer_params()
+    else:
+        config = pd.read_csv(kwargs['config'])
 
-    # Getting RUN_MODE
-    # try:
-    #     run_mode = [x for x in args if x in RUN_MODE][0]
-    # except IndexError:
-    #     logger.critical(f"Cannot find the exchange_name param. The exchange_name param should be passed explicitly among : {RUN_MODE}")
-    #     logger.critical("---> Terminating...")
-    #     sys.exit(1)
-
-    # Getting RUN_TYPES
-    try:
-        run_type = [x for x in args if x in RUN_TYPES][0]
-    except IndexError:
-        logger.critical(f"Cannot read the run_type param from config/{configLoader.get_pfoptimizer_params_filename()}")
-        logger.critical("---> Terminating...")
-        sys.exit(1)
-
-    # Getting the SIGNAL_HORIZON and the HOLDING_HORIZON
-    try:
-        horizons = [x for x in args if x[0].isnumeric()]
-        if len(horizons) == 1:
-            logger.critical(f"Should explicitly pass 2 horizons, or None to use default config")
-            logger.critical("---> Terminating...")
-            sys.exit(1)
-        elif len(horizons) == 2:
-            logger.critical(f"Guessing horizons from params")
-            logger.critical(f"Assuming holding_horizon is smaller than signal_horizon ")
-            horizons = sorted([parse_time_param(x) for x in horizons])
-            holding_period = horizons[0]
-            signal_horizon = horizons[1]
-        else:
-            # Using config horizons
-            logger.critical(f"No horizons were found or could not implicit horizons --> defaulting to config/{configLoader.get_pfoptimizer_params_filename()}...")
-            holding_period = parse_time_param(pf_params["HOLDING_PERIOD"]["value"])
-            signal_horizon = parse_time_param(pf_params["SIGNAL_HORIZON"]["value"])
-    except IndexError:
-            logger.critical(f"Cannot read the SIGNAL_HORIZON or the HOLDING_PERIOD params from config/{configLoader.get_pfoptimizer_params_filename()}")
-            logger.critical("---> Terminating...")
-            sys.exit(1)
-
-    logger.critical(f'Running main {run_type} holding_period={holding_period} signal_horizon={signal_horizon}')
+    logger.critical(f'Running main {run_type} exchange {exchange_name} config {config}')
 
     if run_type == 'sysperp':
         res = asyncio.run(strategy_wrapper(
             exchange_name=exchange_name,
-            equity=[None],
-            concentration_limit=[pf_params["CONCENTRATION_LIMIT"]["value"]],
-            mktshare_limit=[pf_params["MKTSHARE_LIMIT"]["value"]],
-            minimum_carry=[pf_params["MINIMUM_CARRY"]["value"]],
-            exclusion_list=pf_params['EXCLUSION_LIST']["value"],
-            signal_horizon=[signal_horizon],
-            holding_period=[holding_period],
-            slippage_override=[pf_params["SLIPPAGE_OVERRIDE"]["value"]],
+            config=config,
+            equity=[subaccount],
+            concentration_limit=[config["CONCENTRATION_LIMIT"]["value"]],
+            mktshare_limit=[config["MKTSHARE_LIMIT"]["value"]],
+            minimum_carry=[config["MINIMUM_CARRY"]["value"]],
+            exclusion_list=config['EXCLUSION_LIST']["value"],
+            signal_horizon=[parse_time_param(config['SIGNAL_HORIZON']['value'])],
+            holding_period=[parse_time_param(config['HOLDING_PERIOD']['value'])],
+            slippage_override=[config["SLIPPAGE_OVERRIDE"]["value"]],
             backtest_start=None,
-            backtest_end=None,
-            logger=logger))[0]
+            backtest_end=None))[0]
     elif run_type == 'depth':
         global UNIVERSE
         UNIVERSE = 'max'  # set universe to 'max'
@@ -466,41 +409,39 @@ def main(*args):
         res = asyncio.run(strategy_wrapper(
             exchange_name=exchange_name,
             equity=equities,
-            concentration_limit=[pf_params["CONCENTRATION_LIMIT"]["value"]],
-            mktshare_limit=[pf_params["MKTSHARE_LIMIT"]["value"]],
-            minimum_carry=[pf_params["MINIMUM_CARRY"]["value"]],
-            exclusion_list=pf_params['EXCLUSION_LIST']["value"],
-            signal_horizon=[signal_horizon],
-            holding_period=[holding_period],
-            slippage_override=[pf_params["SLIPPAGE_OVERRIDE"]["value"]],
+            concentration_limit=[config["CONCENTRATION_LIMIT"]["value"]],
+            mktshare_limit=[config["MKTSHARE_LIMIT"]["value"]],
+            minimum_carry=[config["MINIMUM_CARRY"]["value"]],
+            exclusion_list=config['EXCLUSION_LIST']["value"],
+            signal_horizon=[parse_time_param(config['SIGNAL_HORIZON']['value'])],
+            holding_period=[parse_time_param(config['HOLDING_PERIOD']['value'])],
+            slippage_override=[config["SLIPPAGE_OVERRIDE"]["value"]],
             backtest_start=None,
-            backtest_end=None,
-            logger=logger))
+            backtest_end=None))
         with pd.ExcelWriter('Runtime/logs/portfolio_optimizer/depth.xlsx', engine='xlsxwriter') as writer:
             for res, equity in zip(res, equities):
                 res.to_excel(writer, sheet_name=str(equity))
-        print(pd.concat({res.loc['total', 'optimalWeight']: res[['optimalWeight', 'ExpectedCarry']] / res.loc['total', 'optimalWeight'] for res in res}, axis=1))
+        logger.info(pd.concat({res.loc['total', 'optimalWeight']: res[['optimalWeight', 'ExpectedCarry']] / res.loc['total', 'optimalWeight'] for res in res}, axis=1))
     elif run_type == 'backtest':
-        for equity in [[100000]]:
-            for concentration_limit in [[pf_params["CONCENTRATION_LIMIT"]["value"]]]:
-                for mktshare_limit in [[pf_params["MKTSHARE_LIMIT"]["value"]]]:
-                    for minimum_carry in [[pf_params["MINIMUM_CARRY"]["value"]]]:
-                        for sig_horizon in [[signal_horizon]]:
-                            for hol_period in [[holding_period]]:
-                                for slippage_override in [[pf_params["SLIPPAGE_OVERRIDE"]["value"]]]:
+        for equity in [[config["EQUITY"]["value"]]]:
+            for concentration_limit in [[config["CONCENTRATION_LIMIT"]["value"]]]:
+                for mktshare_limit in [[config["MKTSHARE_LIMIT"]["value"]]]:
+                    for minimum_carry in [[config["MINIMUM_CARRY"]["value"]]]:
+                        for sig_horizon in [[parse_time_param(h) for h in [config["SIGNAL_HORIZON"]["value"]]]]:
+                            for hol_period in [[parse_time_param(h) for h in [config["HOLDING_PERIOD"]["value"]]]]:
+                                for slippage_override in [[config["SLIPPAGE_OVERRIDE"]["value"]]]:
                                     asyncio.run(strategy_wrapper(
                                         exchange_name=exchange_name,
                                         equity=equity,
                                         concentration_limit=concentration_limit,
                                         mktshare_limit=mktshare_limit,
                                         minimum_carry=minimum_carry,
-                                        exclusion_list=pf_params["EXCLUSION_LIST"]["value"],
+                                        exclusion_list=config["EXCLUSION_LIST"]["value"],
                                         signal_horizon=sig_horizon,
                                         holding_period=hol_period,
                                         slippage_override=slippage_override,
-                                        backtest_start = datetime(2021,7,4).replace(tzinfo=timezone.utc),#.replace(minute=0, second=0, microsecond=0)-timedelta(days=2),# live start was datetime(2022,6,21,19),
-                                        backtest_end = datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0, second=0, microsecond=0)-timedelta(hours=1),
-                                        logger=logger))
+                                        backtest_start= datetime(2021,2,17).replace(tzinfo=timezone.utc),#.replace(minute=0, second=0, microsecond=0)-timedelta(days=2),# live start was datetime(2022,6,21,19),
+                                        backtest_end = datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0, second=0, microsecond=0)-timedelta(hours=1)))
         logger.critical("pfoptimizer terminated successfully...")
         return pd.DataFrame()
     else:
@@ -508,18 +449,3 @@ def main(*args):
 
     logger.critical("pfoptimizer terminated successfully...")
     return res
-
-def parse_time_param(param):
-    if 'mn' in param:
-        horizon = int(param.split('mn')[0])
-        horizon = timedelta(minutes=horizon)
-    elif 'h' in param:
-        horizon = int(param.split('h')[0])
-        horizon = timedelta(hours=horizon)
-    elif 'd' in param:
-        horizon = int(param.split('d')[0])
-        horizon = timedelta(days=horizon)
-    elif 'w' in param:
-        horizon = int(param.split('w')[0])
-        horizon = timedelta(weeks=horizon)
-    return horizon

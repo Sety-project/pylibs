@@ -28,16 +28,16 @@ class configLoader():
     @staticmethod
     def set_universe():
         try:
-            f = open(os.path.join(configLoader._config_folder_path, configLoader._universe_filename), "r")
-            configLoader._universe = json.loads(f.read())
+            with open(os.path.join(configLoader._config_folder_path, configLoader._universe_filename), "r") as f:
+                configLoader._universe = json.loads(f.read())
         except FileNotFoundError:
             raise FileNotFoundError(f"File {os.path.join(configLoader._config_folder_path, configLoader._universe_filename)} not found")
 
     @staticmethod
     def set_pfoptimizer_params():
         try:
-            f = open(os.path.join(configLoader._config_folder_path, configLoader._pfoptimizer_params_filename), "r")
-            configLoader._pfoptimizer_params = json.loads(f.read())
+            with open(os.path.join(configLoader._config_folder_path, configLoader._pfoptimizer_params_filename), "r") as f:
+                configLoader._pfoptimizer_params = json.loads(f.read())
         except FileNotFoundError:
             raise FileNotFoundError(f"File {os.path.join(configLoader._config_folder_path, configLoader._pfoptimizer_params_filename)} not found")
 
@@ -52,29 +52,40 @@ class configLoader():
     @staticmethod
     def set_universe_params():
         try:
-            f = open(os.path.join(configLoader._config_folder_path, configLoader._universe_params_filename), "r")
-            configLoader._universe_params = json.loads(f.read())
+            with open(os.path.join(configLoader._config_folder_path, configLoader._universe_params_filename), "r") as f:
+                configLoader._universe_params = json.loads(f.read())
         except FileNotFoundError:
             raise FileNotFoundError(f"File {os.path.join(configLoader._config_folder_path, configLoader._universe_params_filename)} not found")
 
     @staticmethod
-    def set_executor_params():
+    def set_executor_params(order,dirname=None):
         ''' Used by tradeexecutor to get execution params'''
         try:
-            f = open(os.path.join(configLoader._config_folder_path, configLoader._executor_params_filename), "r")
-            configLoader._executor_params = json.loads(f.read())
+            if order in ['unwind','flatten']:
+                params_filename = 'emergency_params.json'
+            else:
+                params_filename = configLoader._executor_params_filename
+
+            if dirname:
+                filename = os.path.join(configLoader._config_folder_path, dirname, params_filename)
+            else:
+                filename = os.path.join(configLoader._config_folder_path, params_filename)
+
+            with open(filename, "r") as f:
+                configLoader._executor_params = json.loads(f.read())
         except FileNotFoundError:
             raise FileNotFoundError(
-                f"File {os.path.join(configLoader._config_folder_path, configLoader._executor_params_filename)} not found")
+                f"File {filename} not found")
 
     @staticmethod
-    def set_current_weights():
+    def set_current_weights(weights_filename=_current_weights_filename):
         ''' Used by tradeexecutor (only) to read current weights to have '''
         try:
-            configLoader._current_weights = pd.read_csv(os.path.join(configLoader._pfoptimizer_folder_path, configLoader._current_weights_filename))
+            filename = os.path.join(configLoader._pfoptimizer_folder_path, weights_filename)
+            configLoader._current_weights = pd.read_csv(filename)
         except FileNotFoundError:
             raise FileNotFoundError(
-                f"File {os.path.join(configLoader._pfoptimizer_folder_path, configLoader._current_weights_filename)} not found")
+                f"File {filename} not found")
 
     ### GETTERS ###
     @staticmethod
@@ -145,17 +156,16 @@ class configLoader():
         return configLoader._universe_params
 
     @staticmethod
-    def get_executor_params():   # dict
-        if configLoader._executor_params is None:  # Read only once, lazy
-            configLoader.set_executor_params()
+    def get_executor_params(order,dirname=None):   # dict
+        configLoader.set_executor_params(order,dirname)
         return configLoader._executor_params
 
     @staticmethod
-    def get_current_weights():   # Excel file
+    def get_current_weights(weights_filename):   # Excel file
         ''' Used by trade_executor to access current_weights '''
         # Read each time the method is called.
         # Mandatory to catch the weights refreshed every hour
-        configLoader.set_current_weights()
+        configLoader.set_current_weights(weights_filename)
         return configLoader._current_weights
 
     # PERSIST params
