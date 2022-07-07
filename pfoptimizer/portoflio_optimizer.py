@@ -303,6 +303,13 @@ async def perp_vs_cash(
         updated.to_csv(f'{pfoptimizer_res_filename}_snapshot.csv')
         parameters.to_csv(f'{pfoptimizer_res_filename}_parameters.csv')
 
+        # stdout display
+        display = optimized[['optimalWeight', 'ExpectedCarry', 'transactionCost']]
+        totals = display.loc[['USD', 'total']]
+        display = display.drop(index=['USD', 'total']).sort_values(by='optimalWeight',key=lambda f: np.abs(f),ascending=False).append(totals)
+        #display= display[display['absWeight'].cumsum()>display.loc['total','absWeight']*.1]
+        logging.getLogger('pfoptimizer').info(display)
+
         # send bus message
         pfoptimizer_res_last_filename = os.path.join(pfoptimizer_path, "current_weights.csv")
         optimized.to_csv(pfoptimizer_res_last_filename)
@@ -311,13 +318,6 @@ async def perp_vs_cash(
         for i in range(optimized.shape[0]):
             pfoptimizer_res_last_filename = os.path.join(pfoptimizer_path, f"weight_shard_{i}.csv")
             optimized.iloc[[i]].to_csv(pfoptimizer_res_last_filename)
-
-        # stdout display
-        display = optimized[['optimalWeight', 'ExpectedCarry', 'transactionCost']]
-        totals = display.loc[['USD', 'total']]
-        display = display.drop(index=['USD', 'total']).sort_values(by='optimalWeight',key=lambda f: np.abs(f),ascending=False).append(totals)
-        #display= display[display['absWeight'].cumsum()>display.loc['total','absWeight']*.1]
-        logging.getLogger('pfoptimizer').info(display)
 
         return optimized
 
