@@ -2,19 +2,13 @@ import copy
 import inspect
 import datetime
 
-import pandas as pd
-
 from pfoptimizer.ftx_snap_basis import *
 from riskpnl.ftx_risk_pnl import *
 from utils.ftx_utils import Static, find_spot_ticker
 from utils.config_loader import *
 from histfeed.ftx_history import get_history
 from utils.ccxt_utilities import open_exchange
-from utils.logger import build_logging
-
-run_i = 0
-
-LOGGER_NAME = __name__
+from utils.MyLogger import build_logging
 
 async def refresh_universe(exchange, universe_filter,logger=None):
     ''' Reads from universe.json '''
@@ -93,7 +87,6 @@ async def perp_vs_cash(
         equity_override=None,
         backtest_start=None, # None means live-only
         backtest_end=None,
-        logger=None,
         optional_params=[]):# verbose,warm_start
 
     # Load defaults params
@@ -104,7 +97,7 @@ async def perp_vs_cash(
 
     frame = inspect.currentframe()
     args, _, _, values = inspect.getargvalues(frame)
-    logger.info(f'running {[(i, values[i]) for i in args]} ')
+    logging.getLogger('pfoptimizer').info(f'running {[(i, values[i]) for i in args]} ')
 
     futures = pd.DataFrame(await Static.fetch_futures(exchange)).set_index('name')
     now_time = datetime.utcnow().replace(tzinfo=timezone.utc)
@@ -274,9 +267,9 @@ async def perp_vs_cash(
             prev_row = copy.deepcopy(row)
 
         except Exception as e:
-            logger.critical(str(e))
+            logging.getLogger('pfoptimizer').critical(str(e))
         finally:
-            logger.info(f'{str(point_in_time)} done')
+            logging.getLogger('pfoptimizer').info(f'{str(point_in_time)} done')
             point_in_time += timedelta(hours=1)
 
     parameters = pd.Series({
@@ -318,7 +311,7 @@ async def perp_vs_cash(
         totals = display.loc[['USD', 'total']]
         display = display.drop(index=['USD', 'total']).sort_values(by='optimalWeight',key=lambda f: np.abs(f),ascending=False).append(totals)
         #display= display[display['absWeight'].cumsum()>display.loc['total','absWeight']*.1]
-        print(display)
+        logging.getLogger('pfoptimizer').info(display)
 
         return optimized
 
@@ -352,7 +345,6 @@ async def strategy_wrapper(**kwargs):
         slippage_override=slippage_override,
         backtest_start=kwargs['backtest_start'],
         backtest_end=kwargs['backtest_end'],
-        logger=kwargs['logger'],
         optional_params=['verbose'] if (__debug__ and kwargs['backtest_start']==kwargs['backtest_end']) else [])
         for equity in kwargs['equity']
         for concentration_limit in kwargs['concentration_limit']
@@ -381,11 +373,11 @@ def main(*args,**kwargs):
 
     run_type = args[1]
     if run_type not in ['backtest','depth','sysperp']:
-        raise Exception('run_type {} not found'.format(kwargs['run_type']))
+        logger.critical('run_type {} not found'.format(kwargs['run_type']))
 
     exchange_name = args[2]
     if exchange_name not in ['ftx']:
-        raise Exception('exchange_name {} not found'.format(kwargs['exchange_name']))
+        logger.critical('exchange_name {} not found'.format(kwargs['exchange_name']))
 
     if run_type == 'sysperp':
         subaccount = kwargs['subaccount']
@@ -410,8 +402,7 @@ def main(*args,**kwargs):
             holding_period=[parse_time_param(config['HOLDING_PERIOD']['value'])],
             slippage_override=[config["SLIPPAGE_OVERRIDE"]["value"]],
             backtest_start=None,
-            backtest_end=None,
-            logger=logger))[0]
+            backtest_end=None))[0]
     elif run_type == 'depth':
         global UNIVERSE
         UNIVERSE = 'max'  # set universe to 'max'
@@ -427,12 +418,11 @@ def main(*args,**kwargs):
             holding_period=[parse_time_param(config['HOLDING_PERIOD']['value'])],
             slippage_override=[config["SLIPPAGE_OVERRIDE"]["value"]],
             backtest_start=None,
-            backtest_end=None,
-            logger=logger))
+            backtest_end=None))
         with pd.ExcelWriter('Runtime/logs/portfolio_optimizer/depth.xlsx', engine='xlsxwriter') as writer:
             for res, equity in zip(res, equities):
                 res.to_excel(writer, sheet_name=str(equity))
-        print(pd.concat({res.loc['total', 'optimalWeight']: res[['optimalWeight', 'ExpectedCarry']] / res.loc['total', 'optimalWeight'] for res in res}, axis=1))
+        logger.info(pd.concat({res.loc['total', 'optimalWeight']: res[['optimalWeight', 'ExpectedCarry']] / res.loc['total', 'optimalWeight'] for res in res}, axis=1))
     elif run_type == 'backtest':
         for equity in [[config["EQUITY"]["value"]]]:
             for concentration_limit in [[config["CONCENTRATION_LIMIT"]["value"]]]:
@@ -452,8 +442,7 @@ def main(*args,**kwargs):
                                         holding_period=hol_period,
                                         slippage_override=slippage_override,
                                         backtest_start= datetime(2021,2,17).replace(tzinfo=timezone.utc),#.replace(minute=0, second=0, microsecond=0)-timedelta(days=2),# live start was datetime(2022,6,21,19),
-                                        backtest_end = datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0, second=0, microsecond=0)-timedelta(hours=1),
-                                        logger=logger))
+                                        backtest_end = datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0, second=0, microsecond=0)-timedelta(hours=1)))
         logger.critical("pfoptimizer terminated successfully...")
         return pd.DataFrame()
     else:
@@ -461,18 +450,3 @@ def main(*args,**kwargs):
 
     logger.critical("pfoptimizer terminated successfully...")
     return res
-
-def parse_time_param(param):
-    if 'mn' in param:
-        horizon = int(param.split('mn')[0])
-        horizon = timedelta(minutes=horizon)
-    elif 'h' in param:
-        horizon = int(param.split('h')[0])
-        horizon = timedelta(hours=horizon)
-    elif 'd' in param:
-        horizon = int(param.split('d')[0])
-        horizon = timedelta(days=horizon)
-    elif 'w' in param:
-        horizon = int(param.split('w')[0])
-        horizon = timedelta(weeks=horizon)
-    return horizon
