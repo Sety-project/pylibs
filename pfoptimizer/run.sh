@@ -1,3 +1,3 @@
 #!/bin/bash
 
-python3 main.py $ORDER $EXCHANGE config=$CONFIG subaccount=$SUBACCOUNT
+python3 main.py $ORDER $EXCHANGE subaccount=$SUBACCOUNT

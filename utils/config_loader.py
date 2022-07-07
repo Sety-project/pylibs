@@ -34,12 +34,24 @@ class configLoader():
             raise FileNotFoundError(f"File {os.path.join(configLoader._config_folder_path, configLoader._universe_filename)} not found")
 
     @staticmethod
-    def set_pfoptimizer_params():
+    def set_pfoptimizer_params(order,dirname=None):
+        ''' Used by tradeexecutor to get execution params'''
         try:
-            with open(os.path.join(configLoader._config_folder_path, configLoader._pfoptimizer_params_filename), "r") as f:
+            if order in ['sysperp']:
+                params_filename = configLoader._pfoptimizer_params_filename
+            else:
+                raise Exception('only sysperp has config')
+
+            if dirname:
+                filename = os.path.join(configLoader._config_folder_path, dirname, params_filename)
+            else:
+                filename = os.path.join(configLoader._config_folder_path, params_filename)
+
+            with open(filename, "r") as f:
                 configLoader._pfoptimizer_params = json.loads(f.read())
         except FileNotFoundError:
-            raise FileNotFoundError(f"File {os.path.join(configLoader._config_folder_path, configLoader._pfoptimizer_params_filename)} not found")
+            raise FileNotFoundError(
+                f"File {filename} not found")
 
     @staticmethod
     def set_static_params():
@@ -119,9 +131,8 @@ class configLoader():
         return configLoader._universe
 
     @staticmethod
-    def get_pfoptimizer_params():
-        if configLoader._pfoptimizer_params is None:   # Read only once, lazy
-            configLoader.set_pfoptimizer_params()
+    def get_pfoptimizer_params(order,dirname=None):
+        configLoader.set_pfoptimizer_params(order,dirname)
         return configLoader._pfoptimizer_params
 
     @staticmethod
