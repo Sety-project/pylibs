@@ -39,28 +39,27 @@ class MarginCalculator:
 
         return initialized
 
-    async def refresh(self,exchange, risks = None):
-        await self.set_instruments(exchange,risks)
+    async def refresh(self,exchange, balances = None, positions = None):
+        await self.set_instruments(exchange,balances,positions)
         self.set_open_orders(exchange)
         await self.update_actual(exchange)
 
-    async def set_instruments(self ,exchange, risks = None):
+    async def set_instruments(self ,exchange, balances=None, positions=None):
         '''reset balances_and_positions and get from rest request'''
         self.balances_and_positions = dict()
 
-        if risks is None:
-            risks = await safe_gather([exchange.fetch_positions(),exchange.fetch_balance()])
-        positions = risks[0]
-        balances = risks[1]
+        if balances is None or positions is None:
+            state = await syncronized_state(exchange)
+            balances = state['balances']['total']
+            positions = state['positions']['netSize']
 
-        for position in positions:
-            if float(position['info']['netSize']) != 0:
-                symbol = position['symbol']
-                self.balances_and_positions[symbol] = {'size': float(position['info']['netSize']),
+        for name,position in positions.items():
+            symbol = exchange.market(name)['symbol']
+            self.balances_and_positions[symbol] = {'size': position,
                                                        'spot_or_swap': 'swap'}
         for coin, balance in balances.items():
-            if coin in exchange.currencies and balance['total'] != 0:
-                self.balances_and_positions[f'{coin}/USD'] = {'size' :balance['total'],
+            if coin in exchange.currencies and balance != 0:
+                self.balances_and_positions[f'{coin}/USD'] = {'size' :balance,
                                                               'spot_or_swap' :'spot'}
 
     def set_open_orders(self, exchange):
@@ -285,9 +284,9 @@ class BasisMarginCalculator(MarginCalculator):
         # aggregate
         IM = pd.DataFrame([collateral]).T - pd.DataFrame([im_short]).T
         IM = pd.concat([IM, -pd.DataFrame([im_fut]).T])  # IM.append(-pd.DataFrame([im_fut]).T)
-        totalIM = self._equity - sum(x) - 0.1 * max([0, sum(x) - self._equity]) + sum(
+        totalIM = usd_balance - 0.1 * max([0, -usd_balance]) + sum(
             IM[0]) - self._equity * self._open_order_headroom
-        totalMM = self._equity - sum(x) - 0.03 * max([0, sum(x) - self._equity]) + min([sum_MM, sum_MM_up, sum_MM_down])
+        totalMM = usd_balance - 0.03 * max([0, -usd_balance]) + min([sum_MM, sum_MM_up, sum_MM_down])
 
         return {'totalIM': totalIM,
                 'totalMM': totalMM,
