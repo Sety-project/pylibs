@@ -10,7 +10,7 @@ from histfeed.ftx_history import get_history
 from utils.ccxt_utilities import open_exchange
 from utils.MyLogger import build_logging
 
-async def refresh_universe(exchange, universe_filter,logger=None):
+async def refresh_universe(exchange, universe_filter):
     ''' Reads from universe.json '''
     ''' futures need to be enriched first before this can run '''
 
@@ -69,7 +69,7 @@ async def refresh_universe(exchange, universe_filter,logger=None):
         # Persist new refreshed universe
         configLoader.persist_universe(new_universe)
 
-        logger.info("Successfully refreshed universe")
+        logging.getLogger('pfoptimizer').info("Successfully refreshed universe")
         universe = configLoader.get_bases(universe_filter)
         return universe
 
@@ -103,7 +103,7 @@ async def perp_vs_cash(
     now_time = datetime.utcnow().replace(tzinfo=timezone.utc)
 
     # Qualitative filtering
-    universe = await refresh_universe(exchange, param_universe,logger)
+    universe = await refresh_universe(exchange, param_universe)
     universe = [instrument_name for instrument_name in universe if instrument_name.split("-")[0] not in exclusion_list]
     # universe = universe[~universe['underlying'].isin(exclusion_list)]
     type_allowed = param_type_allowed
@@ -212,7 +212,6 @@ async def perp_vs_cash(
                                              concentration_limit=concentration_limit,
                                              mktshare_limit=mktshare_limit,
                                              equity=equity_override,
-                                             logger=logger,
                                              optional_params = optional_params + (['cost_blind']
                                              if (point_in_time == backtest_start) & (backtest_start != backtest_end)
                                              else [])) # Ignore costs on first time of a backtest
