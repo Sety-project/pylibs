@@ -381,7 +381,7 @@ def main(*args,**kwargs):
     if run_type == 'sysperp':
         subaccount = kwargs['subaccount']
 
-    config = configLoader.get_pfoptimizer_params(kwargs['config'] if 'config' in kwargs else None)
+    config = configLoader.get_pfoptimizer_params(dirname=kwargs['config'] if 'config' in kwargs else None)
 
     logger.critical(f'Running main {run_type} exchange {exchange_name} config {config}')
 
