@@ -131,7 +131,7 @@ class configLoader():
         return configLoader._universe
 
     @staticmethod
-    def get_pfoptimizer_params(order,dirname=None):
+    def get_pfoptimizer_params(order='sysperp',dirname=None):
         configLoader.set_pfoptimizer_params(order,dirname)
         return configLoader._pfoptimizer_params
 
