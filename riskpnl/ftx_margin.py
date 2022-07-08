@@ -23,6 +23,8 @@ class MarginCalculator:
         self.balances_and_positions = dict() # {symbol: {'size': size, 'spot_or_swap': spot or future}}...includes USD/USD
         self.open_orders = dict() # {symbol: {'long':2,'short':1}}
 
+        self.IM_buffer = None # need to wait to have pv...
+
     # --------------- slow explicit factory / reconcilators -------------
 
     @staticmethod
@@ -39,10 +41,11 @@ class MarginCalculator:
 
         return initialized
 
-    async def refresh(self,exchange, balances = None, positions = None):
+    async def refresh(self,exchange, im_buffer = None, balances = None, positions = None):
         await self.set_instruments(exchange,balances,positions)
-        self.set_open_orders(exchange)
+        await self.set_open_orders(exchange)
         await self.update_actual(exchange)
+        self.IM_buffer = im_buffer
 
     async def set_instruments(self ,exchange, balances=None, positions=None):
         '''reset balances_and_positions and get from rest request'''
@@ -62,17 +65,13 @@ class MarginCalculator:
                 self.balances_and_positions[f'{coin}/USD'] = {'size' :balance,
                                                               'spot_or_swap' :'spot'}
 
-    def set_open_orders(self, exchange):
+    async def set_open_orders(self, exchange):
         '''reset open orders and add all orders by side'''
         self.open_orders = dict()
 
-        for open_order_history in exchange.filter_order_histories(state_set=exchange.openStates):
-            clientOrderId = open_order_history[-1]['clientOrderId']
-            symbol = exchange.latest_value(clientOrderId, 'symbol')
-            side = (1 if exchange.latest_value(clientOrderId, 'side') == 'buy' else -1)
-            amount = exchange.latest_value(clientOrderId, 'remaining') * side
-            instrument_type = exchange.markets[symbol]['type']
-            self.add_open_order(symbol, side, amount, instrument_type)
+        external_orders = await exchange.fetch_open_orders()
+        for order in external_orders:
+            self.add_open_order(order, exchange.markets)
 
     async def update_actual(self, exchange):
         account_information = (await exchange.privateGetAccount())['result']
@@ -96,10 +95,14 @@ class MarginCalculator:
         self.balances_and_positions[symbol] = {'size' :size + increment,
                                                'spot_or_swap' :instrument_type}
 
-    def add_open_order(self, symbol, side, amount, instrument_type):
+    def add_open_order(self, order, instrument_map):
+        symbol = order['symbol']
+        side = order['side']
+        amount = float(order['amount'])
+        instrument_type = instrument_map[symbol]['type']
         if symbol not in self.open_orders:
             self.open_orders[symbol] = {'spot_or_swap' :instrument_type, 'longs': 0, 'shorts': 0}
-        self.open_orders[symbol]['longs' if side > 0 else 'shorts'] += amount
+        self.open_orders[symbol]['longs' if side == 'buy' else 'shorts'] += amount
 
     # --------------- calculators -------------
 
