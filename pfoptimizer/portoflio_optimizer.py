@@ -90,7 +90,6 @@ async def perp_vs_cash(
         optional_params=[]):# verbose,warm_start
 
     # Load defaults params
-    param_equity = config['EQUITY']['value']
     param_type_allowed = config['TYPE_ALLOWED']['value']
     param_universe = config['UNIVERSE']['value']
     dir_name = configLoader.get_mktdata_folder_for_exchange(exchange.id)
@@ -115,21 +114,15 @@ async def perp_vs_cash(
     slippage_orderbook_depth = 10000
 
     # previous book
-    if not equity_override is None:
+    if equity_override is not None:
         previous_weights_input = pd.DataFrame(index=[],columns=['optimalWeight'], data=0.0)
-    elif param_equity.isnumeric():
-        previous_weights_input = pd.DataFrame(index=[],columns=['optimalWeight'], data=0.0)
-        equity_override = float(param_equity)
-    elif '.xlsx' in param_equity:
-        previous_weights_input = pd.read_excel(param_equity, sheet_name='optimized', index_col=0)['optimalWeight']
-        equity_override = previous_weights_input.loc['total']
-        previous_weights_input = previous_weights_input.drop(['USD', 'total'])
+        equity = equity_override
     else:
         start_portfolio = await fetch_portfolio(exchange, now_time)
         previous_weights_input = -start_portfolio.loc[
             start_portfolio['attribution'].isin(filtered.index), ['attribution', 'usdAmt']
         ].set_index('attribution').rename(columns={'usdAmt': 'optimalWeight'})
-        equity_override = start_portfolio.loc[start_portfolio['event_type'] == 'PV', 'usdAmt'].values[0]
+        equity = start_portfolio.loc[start_portfolio['event_type'] == 'PV', 'usdAmt'].values[0]
 
     # Run a trajectory
     log_path = os.path.join(os.sep, "tmp", "pfoptimizer")
@@ -151,12 +144,14 @@ async def perp_vs_cash(
             pnl = pd.DataFrame()
             point_in_time = backtest_start
     else:
+        trajectory = pd.DataFrame()
+        pnl = pd.DataFrame()
         point_in_time = now_time.replace(minute=0, second=0, microsecond=0)-timedelta(hours=1)
         backtest_start = point_in_time
         backtest_end = point_in_time
 
     ## ----------- enrich/carry filter, get history, populate concentration limit
-    enriched = await enricher(exchange, filtered, holding_period, equity=equity_override,
+    enriched = await enricher(exchange, filtered, holding_period, equity=equity,
                               slippage_override=slippage_override, slippage_orderbook_depth=slippage_orderbook_depth,
                               slippage_scaler=slippage_scaler,
                               params={'override_slippage': True, 'type_allowed': type_allowed, 'fee_mode': 'retail'})
@@ -173,7 +168,7 @@ async def perp_vs_cash(
             holding_period,  # to convert slippage into rate
             signal_horizon,filename= log_file if 'verbose' in optional_params else ''
         )  # historical window for expectations
-    updated = update(enriched, point_in_time, hy_history, equity_override,
+    updated = update(enriched, point_in_time, hy_history, equity,
                      intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow,
                      minimum_carry=0) # Do not remove futures using minimum_carry
     enriched = None  # safety
@@ -200,7 +195,7 @@ async def perp_vs_cash(
     optimized = pd.DataFrame()
     while point_in_time <= backtest_end:
         try:
-            updated = update(filtered, point_in_time, hy_history, equity_override,
+            updated = update(filtered, point_in_time, hy_history, equity,
                              intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow,
                              minimum_carry=minimum_carry,
                              previous_weights_index=previous_weights.index)
@@ -211,7 +206,7 @@ async def perp_vs_cash(
                                              signal_horizon=signal_horizon,
                                              concentration_limit=concentration_limit,
                                              mktshare_limit=mktshare_limit,
-                                             equity=equity_override,
+                                             equity=equity,
                                              optional_params = optional_params + (['cost_blind']
                                              if (point_in_time == backtest_start) & (backtest_start != backtest_end)
                                              else [])) # Ignore costs on first time of a backtest
@@ -225,45 +220,46 @@ async def perp_vs_cash(
             optimized['time'] = point_in_time
             previous_weights = optimized['optimalWeight'].drop(index=['USD', 'total'])
 
-            # increment
-            time = point_in_time
-            row = optimized.reset_index()
-            trajectory = pd.concat([trajectory,row])
-            trajectory.to_csv(os.path.join(os.sep,log_path,'trajectory.csv'))
+            if backtest_start and backtest_end:
+                # increment
+                time = point_in_time
+                row = optimized.reset_index()
+                trajectory = pd.concat([trajectory,row])
+                trajectory.to_csv(os.path.join(os.sep,log_path,'trajectory.csv'))
 
-            pnl_list = []
-            cash_flow = copy.deepcopy(row)
-            cash_flow['end_time'] = time
+                pnl_list = []
+                cash_flow = copy.deepcopy(row)
+                cash_flow['end_time'] = time
 
-            # weights
-            cash_flow['amtUSD'] = cash_flow['previousWeight']
-            cash_flow['bucket'] = 'weights'
-            #TODO dupe ...
-            cash_flow.loc[cash_flow['name']=='total','amtUSD'] = cash_flow['amtUSD'].sum()
-            pnl_list += [cash_flow[['name','end_time','bucket','amtUSD']]]
+                # weights
+                cash_flow['amtUSD'] = cash_flow['previousWeight']
+                cash_flow['bucket'] = 'weights'
+                #TODO dupe ...
+                cash_flow.loc[cash_flow['name']=='total','amtUSD'] = cash_flow['amtUSD'].sum()
+                pnl_list += [cash_flow[['name','end_time','bucket','amtUSD']]]
 
-            # spot_vs_index
-            cash_flow['amtUSD'] = 10000*(1 - cash_flow['index']/cash_flow['spot'])
-            cash_flow['bucket'] = 'spot_vs_index(bps)'
-            pnl_list += [cash_flow[['name','end_time','bucket','amtUSD']].drop(cash_flow[cash_flow['name'].isin(['USD','total'])].index)]
+                # spot_vs_index
+                cash_flow['amtUSD'] = 10000*(1 - cash_flow['index']/cash_flow['spot'])
+                cash_flow['bucket'] = 'spot_vs_index(bps)'
+                pnl_list += [cash_flow[['name','end_time','bucket','amtUSD']].drop(cash_flow[cash_flow['name'].isin(['USD','total'])].index)]
 
-            #carry
-            cash_flow['amtUSD'] = cash_flow['RealizedCarry']*(time-prev_time).total_seconds()/365.25/24/3600
-            cash_flow['bucket'] = 'carry(USD not annualized)'
-            cash_flow.loc[cash_flow['name'] == 'total', 'amtUSD'] = cash_flow['amtUSD'].sum()
-            pnl_list += [cash_flow[['name','end_time','bucket','amtUSD']]]
+                #carry
+                cash_flow['amtUSD'] = cash_flow['RealizedCarry']*(time-prev_time).total_seconds()/365.25/24/3600
+                cash_flow['bucket'] = 'carry(USD not annualized)'
+                cash_flow.loc[cash_flow['name'] == 'total', 'amtUSD'] = cash_flow['amtUSD'].sum()
+                pnl_list += [cash_flow[['name','end_time','bucket','amtUSD']]]
 
-            # IR01
-            cash_flow['amtUSD'] = (-cash_flow['previousWeight'] * ((cash_flow['mark'] - cash_flow['spot'])-(prev_row['mark'] - prev_row['spot']))/prev_row['spot'])
-            cash_flow['bucket'] = 'IR01(USD)'
-            cash_flow.loc[cash_flow['name'] == 'total', 'amtUSD'] = cash_flow['amtUSD'].sum()
-            pnl_list += [cash_flow[['name','end_time','bucket','amtUSD']]]
+                # IR01
+                cash_flow['amtUSD'] = (-cash_flow['previousWeight'] * ((cash_flow['mark'] - cash_flow['spot'])-(prev_row['mark'] - prev_row['spot']))/prev_row['spot'])
+                cash_flow['bucket'] = 'IR01(USD)'
+                cash_flow.loc[cash_flow['name'] == 'total', 'amtUSD'] = cash_flow['amtUSD'].sum()
+                pnl_list += [cash_flow[['name','end_time','bucket','amtUSD']]]
 
-            pnl = pd.concat([pnl]+pnl_list,axis=0)
-            pnl.to_csv(os.path.join(os.sep,log_path,'pnl.csv'))
+                pnl = pd.concat([pnl]+pnl_list,axis=0)
+                pnl.to_csv(os.path.join(os.sep,log_path,'pnl.csv'))
 
-            prev_time = time
-            prev_row = copy.deepcopy(row)
+                prev_time = time
+                prev_row = copy.deepcopy(row)
 
         except Exception as e:
             logging.getLogger('pfoptimizer').critical(str(e))
@@ -280,7 +276,7 @@ async def perp_vs_cash(
             'holding_period': holding_period,
             'slippage_override': slippage_override,
             'concentration_limit': concentration_limit,
-            'equity': equity_override,
+            'equity': equity,
             'slippage_scaler': slippage_scaler,
             'slippage_orderbook_depth': slippage_orderbook_depth})
     parameters.to_csv(os.path.join(os.sep,log_path,'parameters.csv'))
@@ -325,17 +321,17 @@ async def perp_vs_cash(
 
 async def strategy_wrapper(**kwargs):
 
-    if kwargs['equity'][0].isnumeric() or '.xlsx' in kwargs['equity'][0]:
+    if kwargs['equity_override'][0].isnumeric():
         exchange = await open_exchange(kwargs['exchange_name'], '')
-        if kwargs['equity'][0].isnumeric():
-            equity_override = kwargs['equity'][0]
-        else:
-            raise Exception('not implemented')
+        equity_override = kwargs['equity_override'][0]
     else:
-        exchange = await open_exchange(kwargs['exchange_name'],
-                                       kwargs['equity'][0],
+        if kwargs['equity_override'][0] == "None":
+            exchange = await open_exchange(kwargs['exchange_name'],
+                                       kwargs['subaccount'],
                                        config={'asyncio_loop':asyncio.get_running_loop()})
-        equity_override = None
+            equity_override = None
+        else:
+            raise Exception('override must be either None or numeric')
     await exchange.load_markets()
 
     coroutines = [perp_vs_cash(
@@ -352,7 +348,6 @@ async def strategy_wrapper(**kwargs):
         backtest_start=kwargs['backtest_start'],
         backtest_end=kwargs['backtest_end'],
         optional_params=['verbose'] if (__debug__ and kwargs['backtest_start']==kwargs['backtest_end']) else [])
-        for equity in kwargs['equity']
         for concentration_limit in kwargs['concentration_limit']
         for mktshare_limit in kwargs['mktshare_limit']
         for minimum_carry in kwargs['minimum_carry']
@@ -375,7 +370,7 @@ def main(*args,**kwargs):
             config = /home/david/config/pfoptimizer_params.json (optionnal)
    '''
 
-    logger = build_logging("pfoptimizer")
+    logger = build_logging("pfoptimizer", {logging.INFO: 'info.log'})
 
     run_type = args[1]
     if run_type not in ['backtest','depth','sysperp']:
@@ -395,8 +390,9 @@ def main(*args,**kwargs):
     if run_type == 'sysperp':
         res = asyncio.run(strategy_wrapper(
             exchange_name=exchange_name,
+            subaccount=subaccount,
             config=config,
-            equity=[subaccount],
+            equity_override=[config["EQUITY_OVERRIDE"]["value"]],
             concentration_limit=[config["CONCENTRATION_LIMIT"]["value"]],
             mktshare_limit=[config["MKTSHARE_LIMIT"]["value"]],
             minimum_carry=[config["MINIMUM_CARRY"]["value"]],
@@ -409,10 +405,10 @@ def main(*args,**kwargs):
     elif run_type == 'depth':
         global UNIVERSE
         UNIVERSE = 'max'  # set universe to 'max'
-        equities = [100000, 1000000, 5000000]
+        equities = [10000, 100000, 1000000]
         res = asyncio.run(strategy_wrapper(
             exchange_name=exchange_name,
-            equity=equities,
+            equity_override=equities,
             concentration_limit=[config["CONCENTRATION_LIMIT"]["value"]],
             mktshare_limit=[config["MKTSHARE_LIMIT"]["value"]],
             minimum_carry=[config["MINIMUM_CARRY"]["value"]],
@@ -427,7 +423,7 @@ def main(*args,**kwargs):
                 res.to_excel(writer, sheet_name=str(equity))
         logger.info(pd.concat({res.loc['total', 'optimalWeight']: res[['optimalWeight', 'ExpectedCarry']] / res.loc['total', 'optimalWeight'] for res in res}, axis=1))
     elif run_type == 'backtest':
-        for equity in [[config["EQUITY"]["value"]]]:
+        for equity in [[100000]]:
             for concentration_limit in [[config["CONCENTRATION_LIMIT"]["value"]]]:
                 for mktshare_limit in [[config["MKTSHARE_LIMIT"]["value"]]]:
                     for minimum_carry in [[config["MINIMUM_CARRY"]["value"]]]:
@@ -436,7 +432,7 @@ def main(*args,**kwargs):
                                 for slippage_override in [[config["SLIPPAGE_OVERRIDE"]["value"]]]:
                                     asyncio.run(strategy_wrapper(
                                         exchange_name=exchange_name,
-                                        equity=equity,
+                                        equity_override=equity,
                                         concentration_limit=concentration_limit,
                                         mktshare_limit=mktshare_limit,
                                         minimum_carry=minimum_carry,
