@@ -29,7 +29,7 @@ bot.
 
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 
-logger = build_logging("ux")
+logger = build_logging("ux",{logging.INFO: 'info.log'})
 
 # Define a few command handlers. These usually take the two arguments update and
 # context. Error handlers also receive the raised TelegramError object in error.

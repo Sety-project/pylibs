@@ -1330,10 +1330,18 @@ async def ftx_ws_spread_main_wrapper(order,config,logger,**kwargs):
         await exchange.close()
         exchange.myLogger.logger.info('exchange closed', exc_info=True)
 
-def ftx_ws_spread_main(*args,**kwargs):
+def main(*args,**kwargs):
+    '''
+        args:
+           order = 'unwind', 'flatten', or filename -> /home/david/config/pfoptimizer/filename
+        kwargs:
+           config_dir =  inserts a subdirectory for config ~/config/config_dir/tradeexecutor_params.json (optional)
+           exchange = 'ftx' (mandatory for 'unwind', 'flatten')
+           subaccount = 'SysPerp' (mandatory for 'unwind', 'flatten')
+   '''
 
     order = args[1]
-    config = configLoader.get_executor_params(order,kwargs['config_dir'] if 'config_dir' in kwargs else None)
+    config = configLoader.get_executor_params(order=order,dirname=kwargs['config_dir'] if 'config_dir' in kwargs else None)
     logger = ExecutionLogger(order,config,{logging.INFO: 'exec_info.log', logging.WARNING: 'oms_warning.log', logging.CRITICAL: 'program_flow.log'})
 
     logger.logger.critical(f'------------------- running {order} with {config}')
@@ -1361,14 +1369,3 @@ def ftx_ws_spread_main(*args,**kwargs):
                     break
         except Exception as e:
             logger.logger.critical(str(e))
-
-def main(*args,**kwargs):
-    '''
-        args:
-           order = 'unwind', 'flatten', or filename -> /home/david/config/pfoptimizer/filename
-        kwargs:
-           config_dir =  inserts a subdirectory for config ~/config/config_dir/tradeexecutor_params.json (optional)
-           exchange = 'ftx' (mandatory for 'unwind', 'flatten')
-           subaccount = 'SysPerp' (mandatory for 'unwind', 'flatten')
-   '''
-    ftx_ws_spread_main(*args,**kwargs)

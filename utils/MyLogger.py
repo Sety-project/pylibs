@@ -26,7 +26,7 @@ def build_logging(app_name,log_mapping={logging.INFO:'info.log',logging.WARNING:
 
     # logs
     for level,filename in log_mapping.items():
-        handler = logging.FileHandler(os.path.join(os.sep,log_path,filename), mode='w')
+        handler = logging.FileHandler(os.path.join(os.sep,log_path,f'{datetime.utcnow().strftime("%Y%m%d_%H%M%S")}_{filename}'), mode='w')
         handler.setLevel(level)
         handler.setFormatter(logging.Formatter('%(asctime)s %(name)s %(levelname)s %(message)s'))
         #handler.addFilter(MyFilter(level))

@@ -557,7 +557,7 @@ def main(*argv,**kwargs):
     ''' TODO: improve input params'''
     #pd.set_option('display.float_format',lambda x: '{:,.3f}'.format(x))
     #f'{float(f"{i:.1g}"):g}'
-    logger = build_logging("pnl")
+    logger = build_logging("pnl",{logging.INFO: 'info.log'})
 
     try:
         if argv[1] == 'fromoptimal':
