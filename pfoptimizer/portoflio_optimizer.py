@@ -1,6 +1,7 @@
 import copy
 import inspect
 import datetime
+import os
 
 from pfoptimizer.ftx_snap_basis import *
 from riskpnl.ftx_risk_pnl import *
@@ -8,7 +9,8 @@ from utils.ftx_utils import Static, find_spot_ticker
 from utils.config_loader import *
 from histfeed.ftx_history import get_history
 from utils.ccxt_utilities import open_exchange
-from utils.MyLogger import build_logging
+from utils.io_utils import build_logging
+
 
 async def refresh_universe(exchange, universe_filter):
     ''' Reads from universe.json '''
@@ -362,31 +364,50 @@ async def strategy_wrapper(**kwargs):
 
 def main(*args,**kwargs):
     '''
+        examples:
+            pfoptimizer sysperp ftx subaccount=debug config=prod
+            pfoptimizer basis ftx type=future depth=100000
         args:
-            run_type = ["sysperp", "backtest", "depth"] (mandatory param)
+            run_type = ["sysperp", "backtest", "depth", "basis"] (mandatory param)
             exchange = ["ftx"] (mandatory param)
         kwargs:
-            subaccount = ["SysPerp"] (mandatory param for sysperp)
+            subaccount = any (mandatory param for sysperp)
             config = /home/david/config/pfoptimizer_params.json (optionnal)
+            type = ["all","perpetual","future"] (optional for run_type="basis", default="all" )
+            depth = float (optional for run_type="basis", default=0)
    '''
-
+    args = args[1:]
     logger = build_logging("pfoptimizer", {logging.INFO: 'info.log'})
 
-    run_type = args[1]
-    if run_type not in ['backtest','depth','sysperp']:
-        logger.critical('run_type {} not found'.format(kwargs['run_type']))
+    args_validation = [['run_type',lambda x: x in ["sysperp", "backtest", "depth", "basis"],'not in {}'.format(["sysperp", "backtest", "depth", "basis"])],
+                  ['exchange',lambda x: x in ["ftx"],'not in {}'.format(["ftx"])]]
+    for i,arg in enumerate(args_validation):
+        if not args_validation[i][1](args[i]):
+            error_msg = f'{args_validation[i][0]} {args_validation[i][2]}'
+            logger.critical(error_msg)
+            raise Exception(error_msg)
+    kwargs_validation = {'subaccount':[lambda x: True,'not in {}'.format([""])],
+                  'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(),x)),'not found'],
+                  'type':[lambda x: x in ["all","perpetual","future"],'not in {}'.format(["all","perpetual","future"])],
+                  'depth':[lambda x: isinstance(float(x),float) ,'not a float']}
+    for key,arg in kwargs.items():
+        if not kwargs_validation[key][0](arg):
+            error_msg = f'{key} {kwargs_validation[key][1]}'
+            logger.critical(error_msg)
+            raise Exception(error_msg)
 
-    exchange_name = args[2]
-    if exchange_name not in ['ftx']:
-        logger.critical('exchange_name {} not found'.format(kwargs['exchange_name']))
-
+    run_type = args[0]
+    exchange_name = args[1]
     if run_type == 'sysperp':
         subaccount = kwargs['subaccount']
 
     config = configLoader.get_pfoptimizer_params(dirname=kwargs['config'] if 'config' in kwargs else None)
 
-    logger.critical(f'Running main {run_type} exchange {exchange_name} config {config}')
+    logger.critical(f'Running {args} {kwargs}')
 
+    if run_type == 'basis':
+        if 'depth' in kwargs: kwargs['depth'] = float(kwargs['depth'])
+        res = enricher_wrapper(*args[1:],**kwargs)
     if run_type == 'sysperp':
         res = asyncio.run(strategy_wrapper(
             exchange_name=exchange_name,

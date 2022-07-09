@@ -114,9 +114,13 @@ async def enricher(exchange,
 
     return futures.drop(columns=['carryLong','carryShort'])
 
-def enricher_wrapper(exchange_name: str,type: str,depth: int) ->pd.DataFrame():
+def enricher_wrapper(exchange_name,type='all',depth=0) ->pd.DataFrame():
     async def enricher_subwrapper(exchange_name,type,depth):
         exclusion_list = configLoader.get_pfoptimizer_params()['EXCLUSION_LIST']['value']
+        holding_period = parse_time_param(configLoader.get_pfoptimizer_params()['HOLDING_PERIOD']['value'])
+        signal_horizon = parse_time_param(configLoader.get_pfoptimizer_params()['SIGNAL_HORIZON']['value'])
+        dirname = configLoader.get_mktdata_folder_for_exchange('ftx')
+
         exchange = await open_exchange(exchange_name,'')
         markets = await exchange.fetch_markets()
         futures = pd.DataFrame(await Static.fetch_futures(exchange)).set_index('name')
@@ -131,11 +135,12 @@ def enricher_wrapper(exchange_name: str,type: str,depth: int) ->pd.DataFrame():
                                   slippage_override=-999, slippage_orderbook_depth=depth,
                                   slippage_scaler=1.0,
                                   params={'override_slippage': False, 'type_allowed': type, 'fee_mode': 'retail'})
-        await build_history(futures, exchange)
-        hy_history = await get_history(enriched,start_or_nb_hours=48)
+        #await build_history(futures, exchange)
+        nowtime = datetime.utcnow().replace(tzinfo=timezone.utc)
+        hy_history = await get_history(dirname,enriched,start_or_nb_hours=nowtime-holding_period-signal_horizon,end=nowtime)
         (intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow) = forecast(
             exchange, enriched, hy_history,
-            HOLDING_PERIOD, SIGNAL_HORIZON,  # to convert slippage into rate
+            holding_period, signal_horizon,  # to convert slippage into rate
             filename='')#'Runtime/logs/portfolio_optimizer/history.xlsx')  # historical window for expectations. don;t do it bc of xlxs
         point_in_time = max(hy_history.index).replace(tzinfo=timezone.utc)
         updated = update(enriched, point_in_time, hy_history, depth,
@@ -336,9 +341,9 @@ async def fetch_rate_slippage(input_futures,
         #maker fees 0 with 26 FTT staked
         ### relative semi-spreads incl fees, and speed
         if slippage_orderbook_depth==0:
-            futures['spot_ask'] = futures.apply(lambda f: fees[f['underlying']]+0.5*(float(find_spot_ticker(markets, f, 'ask'))/float(find_spot_ticker(markets, f, 'bid'))-1), axis=1)*slippage_scaler
+            futures['spot_ask'] = futures.apply(lambda f: fees[f['underlying']+'/USD']+0.5*(float(find_spot_ticker(markets, f, 'ask'))/float(find_spot_ticker(markets, f, 'bid'))-1), axis=1)*slippage_scaler
             futures['spot_bid'] = -futures['spot_ask']
-            futures['future_ask'] = fees[futures['underlying']].values+0.5*(futures['ask'].astype(float)/futures['bid'].astype(float)-1)*slippage_scaler
+            futures['future_ask'] = futures.apply(lambda f: fees[f['underlying']+'/USD']+0.5*f['ask']/f['bid']-1, axis=1)*slippage_scaler
             futures['future_bid'] = -futures['future_ask']
             #futures['speed']=0##*futures['future_ask'] ### just 0
         else:

@@ -1,5 +1,3 @@
-import logging
-
 import sys
 import pandas as pd
 import os
@@ -8,9 +6,9 @@ from time import strftime
 from utils.ftx_utils import *
 from utils.io_utils import *
 from utils.config_loader import *
+from utils.io_utils import build_logging
 
 history_start = datetime(2019, 11, 26).replace(tzinfo=timezone.utc)
-LOGGER_NAME = __name__
 
 # all rates annualized, all volumes daily in usd
 async def get_history(dirname,
@@ -42,7 +40,7 @@ async def build_history(futures,
                         dirname=configLoader.get_mktdata_folder_path(),
                         end=datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0,second=0,microsecond=0)): # Runtime/Mktdata_database
     '''for now, increments local files and then uploads to s3'''
-    logger = logging.getLogger(LOGGER_NAME)
+    logger = logging.getLogger('histfeed')
     logger.info("BUILDING COROUTINES")
 
     coroutines = []
@@ -106,7 +104,7 @@ async def build_history(futures,
 async def correct_history(futures,exchange,hy_history,dirname=configLoader.get_mktdata_folder_path()):
     '''for now, increments local files and then uploads to s3'''
 
-    logger = logging.getLogger(LOGGER_NAME)
+    logger = logging.getLogger('histfeed')
     logger.info("CORRECTING HISTORY")
 
     coroutines = []
@@ -263,8 +261,7 @@ async def rate_history(future,exchange,
         data['rate_h'] = (mark['mark_h'] / indexes['indexes_h'] - 1)*365.25
         data['rate_l'] = (mark['mark_l'] / indexes['indexes_l'] - 1)*365.25
     else:
-        print('what is ' + future['symbol'] + ' ?')
-        return
+        raise Exception('what is ' + future['symbol'] + ' ?')
     
     data.columns = [exchange.market(future['symbol'])['id'] + '_' + c for c in data.columns]
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
@@ -382,9 +379,11 @@ def vwap_from_list(frequency, trades):
     return vwap
 
 
-async def ftx_history_main_wrapper(exchange_name, run_type, universe, nb_of_days):
+async def ftx_history_main_wrapper(run_type, exchange_name, universe_name, nb_of_days):
 
     exchange = await open_exchange(exchange_name,'')
+    universe = configLoader.get_bases(universe_name)
+    nb_of_days = int(nb_of_days)
     futures = pd.DataFrame(await Static.fetch_futures(exchange)).set_index('name')
     await exchange.load_markets()
 
@@ -397,7 +396,7 @@ async def ftx_history_main_wrapper(exchange_name, run_type, universe, nb_of_days
     if universe != []:
         futures = futures[futures.index.isin(universe)]
 
-    logger = logging.getLogger(LOGGER_NAME)
+    logger = logging.getLogger('histfeed')
 
     # Volume Screening
     if run_type == 'build':
@@ -418,121 +417,42 @@ async def ftx_history_main_wrapper(exchange_name, run_type, universe, nb_of_days
         await exchange.close()
         return hy_history
 
-def main(*args):
+def main(*args,**kwargs):
     '''
-        Parameters could be passed in any order
-        @params:
-           # For now, defaults to exchange_name = ftx
-           run_type = Build or correct
-           universe = [list of symbols to build the histFeed for]
-        @Example runs:
-            - main build ftx wide 100
-            - main ftx 100 all
-            - main correct ftx max
+        example: histfeed get ftx wide 5
+        args:
+           run_type = "build", "correct", "get"
+           exchange = "ftx"
+           universe = "institutional", "wide", "max", "all"
+           nb_days = int
    '''
+    args = args[1:]
+    logger = build_logging("histfeed", {logging.INFO: 'info.log'})
 
-    set_logger('histfeed')
-    logger = logging.getLogger(LOGGER_NAME)
+    args_validation = [['run_type',lambda x: x in ["build", "correct", "get"],'not in {}'.format(["build", "correct", "get"])],
+                  ['exchange',lambda x: x in ["ftx"],'not in {}'.format(["ftx"])],
+                  ['universe',lambda x: x in configLoader.get_universe_pool(),'not in {}'.format(configLoader.get_universe_pool())],
+                  ['nb_days',lambda x: isinstance(int(x),int),'not an int']]
+    for i,arg in enumerate(args_validation):
+        if not args_validation[i][1](args[i]):
+            error_msg = f'{args_validation[i][0]} {args_validation[i][2]}'
+            logger.critical(error_msg)
+            raise Exception(error_msg)
 
-    RUN_TYPES = ["build", "correct", "get"]
-    EXCHANGE_NAMES_AVAILABLE = ["ftx"]
-
-    args = list(*args)[1:]
-    if len(args) < 3:
-        logger.critical("Cannot run histfeed from the provided params.")
-        logger.critical(f'Parameters passed are {[arg for arg in args]}]')
-        logger.critical("Missing parameters")
-        logger.critical("3 or 4 parameters should be passed : build/correct, exchange_name, universe_filter and, optionally, the number of days")
-        logger.critical("---> Terminating...")
-        return -1
-    elif len(args) > 4:
-        logger.critical("Cannot run histfeed from the provided params.")
-        logger.critical(f'Parameters passed are {[arg for arg in args]}]')
-        logger.critical("Too many parameters")
-        logger.critical("3 or 4 parameters should be passed : build/correct, exchange_name, universe_filter and, optionally, the number of days")
-        logger.critical("---> Terminating...")
-    else:
-        # Getting exchange name, only ftx handled for now
-        try:
-            exchange_name = [x for x in args if x in EXCHANGE_NAMES_AVAILABLE][0]
-        except IndexError:
-            logger.critical("Cannot find the exchange_name param. The exchange_name param should be passed explicitly : only 'ftx' is handled for the moment")
-            logger.critical("---> Terminating...")
-            sys.exit(1)
-
-        # Getting the universe from the params passed
-        try:
-            universe_filter = [x for x in args if x in configLoader.get_universe_pool()][0]
-        except IndexError:
-            logger.critical(f"Cannot find the universe_filter param. The universe_filter param should be explicitly in {configLoader.get_universe_pool()}")
-            logger.critical("---> Terminating...")
-            sys.exit(1)
-
-        # Try loading the config
-        try:
-            universe = configLoader.get_bases(universe_filter)
-        except FileNotFoundError as err:
-            logger.critical(err)
-            logger.critical("---> Terminating...")
-            sys.exit(1)
-
-        # Getting the run_type
-        try:
-            run_type = [x for x in args if x in RUN_TYPES][0]
-        except IndexError:
-            logger.critical("Cannot find the run_type param. The run_type param should be passed explicitly : build/correct")
-            logger.critical("---> Terminating...")
-            sys.exit(1)
-
-        # Getting the nb_of_days, or defaulting to 100
-        try:
-            nb_of_days = [int(x) for x in args if x.isnumeric()][0]
-        except IndexError:
-            nb_of_days = 100
-            logger.info("Cannot find the nb_of_days param. Defaulting to nb_of_days=100")
-
-        # Make sure the exchange repo exists in mktdata/, if not creates it
-        mktdata_exchange_repo = configLoader.get_mktdata_folder_for_exchange(exchange_name)
-        if not os.path.exists(mktdata_exchange_repo):
-            os.umask(0)
-            os.makedirs(mktdata_exchange_repo, mode=0o777)
-
-        # Running histfeed
-        logger.info(f'histfeed running with params {[arg for arg in args]}')
-        try:
-            result = asyncio.run(ftx_history_main_wrapper(exchange_name, run_type, universe, nb_of_days))
-        except Exception as e:
-            filename = os.path.join(os.sep, 'tmp', 'histfeed', 'errors.txt')
-            with open(filename, 'a+') as fp:
-                fp.write(str(e))
-            raise e
-        return result
-        logger.info("histfeed terminated successfully...")
-
-def set_logger(app_name):
-    ''' Function that sets a logger for the app, for debugging purposes '''
-
-    time_date_stamp = strftime("%Y%m%d_%H%M%S")
-    filepath = os.path.join(os.sep, 'tmp', app_name)
-    if not os.path.exists(filepath):
+    # Make sure the exchange repo exists in mktdata/, if not creates it
+    mktdata_exchange_repo = configLoader.get_mktdata_folder_for_exchange(args[1])
+    if not os.path.exists(mktdata_exchange_repo):
         os.umask(0)
-        os.makedirs(filepath, mode=0o777)
+        os.makedirs(mktdata_exchange_repo, mode=0o777)
 
-    logging.basicConfig()
-    #filename=os.path.join(filepath, 'histfeed_' + time_date_stamp + '.log'),
-                        # filemode='a',
-                        # format='%(asctime)s,%(msecs)d %(name)s %(levelname)s %(message)s',
-                        # datefmt='%H:%M:%S',
-                        # level=logging.DEBUG
-
-    logger = logging.getLogger(LOGGER_NAME)
-    logger.setLevel(logging.INFO)
-
-    # Create file handler which logs even debug messages
-    filename = os.path.join(filepath, app_name + '_' + time_date_stamp + '.log')
-    fh = logging.FileHandler(filename)
-    fh.setFormatter(logging.Formatter('%(asctime)s %(name)s %(levelname)s %(message)s'))
-    fh.setLevel(logging.DEBUG)
-    logger.addHandler(fh)
-
-    logger.info("Logger set")
+    # Running histfeed
+    logger.info(f'histfeed running with params {args}')
+    try:
+        result = asyncio.run(ftx_history_main_wrapper(*args))
+    except Exception as e:
+        filename = os.path.join(os.sep, 'tmp', 'histfeed', 'errors.txt')
+        with open(filename, 'a+') as fp:
+            fp.write(str(e))
+        raise e
+    return result
+    logger.info("histfeed terminated successfully...")

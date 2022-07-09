@@ -86,6 +86,7 @@ class MarginCalculator:
                 float(openMarginFraction) - float(account_information['initialMarginRequirement']))
         self.actual_MM = float(totalPositionSize) * (
                 float(openMarginFraction) - float(account_information['maintenanceMarginRequirement']))
+        pv = account_information['totalAccountValue']
 
     # --------------- quick update methods -------------
 

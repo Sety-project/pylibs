@@ -1,12 +1,14 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # This program is dedicated to the public domain under the CC0 license.
+import importlib
 
-from histfeed.ftx_history import *
-from pfoptimizer.portoflio_optimizer import strategy_wrapper,enricher_wrapper
-from riskpnl.ftx_risk_pnl import ftx_portoflio_main
-from tradeexecutor.ftx_ws_execute import *
-from histfeed.ftx_history import ftx_history_main_wrapper
+modules = ['histfeed','pfoptimizer','riskpnl','tradeexecutor']
+for mod_name in modules:
+    importlib.import_module(f'{mod_name}.main')
+
+from utils.MyLogger import *
+
 import subprocess
 import shlex
 from ux.docker_access import *
@@ -41,16 +43,11 @@ def start(update, context):
 
 def help(update, context):
     """Send a message when the command /help is issued."""
-    update.message.reply_text('example requests:')
-    update.message.reply_text('* risk [exchange] [subaccount]-> live risk')
-    update.message.reply_text('* plex [exchange] [subaccount]-> compute plex')
-    update.message.reply_text('* hist [coin] [exchange] [days]-> history of BTC and related futures/borrow every 15m for past 7d')
-    update.message.reply_text('* basis [future] [size] [exchange] -> futures basis on ftx in size 10000')
-    update.message.reply_text('* sysperp [holding period] [signal horizon]: optimal perps')
-    update.message.reply_text('* exec: [sysperp,unwind,flatten] [ftx] [SysPerp]]')
-    update.message.reply_text('* docker ps')
-    update.message.reply_text('* docker stop: [appname]')
-    update.message.reply_text('* fromOptimal: live portoflio vs target')
+    update.message.reply_text('requests:\n')
+    for mod_name in modules:
+        module = importlib.import_module(f'{mod_name}.main')
+        func = getattr(module, 'main')
+        update.message.reply_text(f'{mod_name}\n{func.__doc__}')
 
 def echo(update, context):
     try:
@@ -68,27 +65,14 @@ def echo(update, context):
             log.to_csv(os.path.join(os.sep, "tmp", "ux", 'chathistory.csv'))
             return
 
-        if split_message[0] == 'hist':
-            split_message[0] = 'get'
-            exchange_name = 'ftx'
-            run_type = split_message[0]
-            universe = configLoader.get_bases(split_message[1])
-            nb_of_days = int(split_message[2])
-            data = asyncio.run(ftx_history_main_wrapper(exchange_name, run_type, universe, nb_of_days))
-        elif split_message[0] == 'basis':
-            type = 'perpetual' if len(split_message)<2 else str(split_message[1])
-            depth = 0 if len(split_message)<3 else int(split_message[2])
-            exchange_name = 'ftx' if len(split_message) < 4 else split_message[3]
-            data = enricher_wrapper(exchange_name,type,depth)
-#        elif update.effective_message.chat['first_name'] in whitelist:
-        elif split_message[0] in ['risk','plex','fromoptimal']:
-            # Call pyrun with the good params
-            if split_message[0] == 'plex':
-                data = ftx_portoflio_main(*split_message,accrue_log=False)
-            data = ftx_portoflio_main(*split_message)
-        elif split_message[0] == 'sysperp':
-            # Call pyrun with the good params
-            data = strategy_wrapper(*split_message)
+        if split_message[0] in modules:
+            module = importlib.import_module(f'{split_message[0]}.main')
+            main_func = getattr(module, 'main')
+
+            args = [arg.split('=')[0] for arg in split_message if len(arg.split('=')) == 1]
+            kwargs = dict([arg.split('=') for arg in split_message if len(arg.split('=')) == 2])
+
+            data = main_func(*args,**kwargs)
         elif split_message[0] == 'docker':
             if split_message[1] == 'ps':
                 response = docker_ps()
@@ -113,6 +97,7 @@ def echo(update, context):
             update.message.reply_text(''.join([f'{key} ----->\n {value}\n' for key, value in response.items()]))
             data = pd.DataFrame(response)
         elif split_message[0] == 'bash:':
+            raise Exception('disabled')
             response = bash_run(''.join(split_message[1:]))
             update.message.reply_text(''.join([f'{key} ----->\n {value}\n' for key, value in response.items()]))
             data = pd.DataFrame(response)
@@ -139,7 +124,7 @@ def echo(update, context):
 #               update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
     except Exception as e:
-        logger.critical(str(e))
+        logger.critical(str(e),stack_info=True)
         update.message.reply_text(str(e))
 
 def bash_run(command):

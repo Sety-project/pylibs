@@ -1,27 +1,27 @@
+import os
 import time as t
 
 import dateutil.parser
-import pandas as pd
 
 from utils.ftx_utils import *
-from utils.config_loader import *
 from utils.MyLogger import *
+from utils.io_utils import build_logging
 
-async def live_risk_wrapper(exchange='ftx',subaccount='SysPerp',nb_runs='1'):
+
+async def live_risk_wrapper(exchange,subaccount,nb_runs='1'):
     exchange_obj = await open_exchange(exchange,subaccount)
 
     # contruct markets_by_id
     futures = pd.DataFrame(await Static.fetch_futures(exchange_obj)).set_index('name')
     for i in range(int(nb_runs)):
-        risk = await live_risk(exchange_obj,futures)
+        if i>0: t.sleep(30)
+        risk = await live_risk(exchange_obj,subaccount,futures)
         logging.getLogger('pnl').info(risk)
-        t.sleep(30)
 
     await exchange_obj.close()
     return risk
 
-async def live_risk(exchange,futures):
-
+async def live_risk(exchange,subaccount,futures):
     all_balances = pd.DataFrame((await exchange.fetch_balance(params={}))['info']['result'],dtype=float)#'showAvgPrice':True})
     #balances = all_balances[(all_balances['total']!=0.0)&(all_balances['coin']!='USD')].fillna(0.0)
     balances = all_balances[abs(all_balances['usdValue']) > 1].fillna(0.0)
@@ -146,10 +146,14 @@ async def diff_portoflio(exchange,future_weights=pd.DataFrame()) -> pd.DataFrame
     result = result[np.abs(result['diffCoin'])>0]
     return result
 
-async def diff_portoflio_wrapper(**kwargs):
-    exchange = await open_exchange(exchange_name=kwargs['exchange'],subaccount=kwargs['subaccount'])
+async def diff_portoflio_wrapper(*args,**kwargs):
+    exchange = await open_exchange(*args)
     await exchange.load_markets()
-    future_weights = pd.read_csv('~/config/pfoptimizer/current_weights.csv')
+    filename = os.path.join(os.sep,configLoader.get_config_folder_path(),
+                            'pfoptimizer',
+                            kwargs['config'] if 'config' in kwargs else '',
+                            kwargs['filename'] if 'filename' in kwargs else 'current_weights.csv')
+    future_weights = configLoader.get_current_weights(filename)
     diff = await diff_portoflio(exchange,future_weights)
     await exchange.close()
     return diff
@@ -490,7 +494,7 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
 
     return cash_flows.sort_values(by='time',ascending=True)
 
-async def risk_and_pnl_wrapper(exchange='ftx',subaccount='debug',period='write_all'):
+async def risk_and_pnl_wrapper(exchange,subaccount,period='write_all'):
     exchange_obj = await open_exchange(exchange,subaccount)
     plex = await risk_and_pnl(exchange_obj,period)
     await exchange_obj.close()
@@ -553,39 +557,68 @@ async def risk_and_pnl(exchange,period):
         else:
             pnl.to_csv(pnl_filename)
 
-def main(*argv,**kwargs):
-    ''' TODO: improve input params'''
-    #pd.set_option('display.float_format',lambda x: '{:,.3f}'.format(x))
-    #f'{float(f"{i:.1g}"):g}'
-    logger = build_logging("pnl",{logging.INFO: 'info.log'})
+def main(*args,**kwargs):
+    '''
+        examples:
+            riskpnl risk ftx debug nb_runs=10
+            riskpnl plex ftx debug period=2d
+            riskpnl fromoptimal ftx debug
+        args:
+            run_type = ["risk", "plex", "batch_summarize_exec_logs", "fromoptimal"]
+            exchange = ["ftx"]
+            subaccount = any
+        kwargs:
+            nb_runs = integer (optionnal for risk, default=1)
+            period = nb days (optional for run_type="basis", default="all" )
+            dirname = str (optional for run_type="batch_summarize_exec_logs", default=/tmp/tradexecutor)
+            filename = (optional for fromoptimal, default=current_weights.csv)
+            config = /home/david/config/pfoptimizer_params.json (optionnal for fromoptimal)
+   '''
+    args = args[1:]
+    logger = build_logging("pnl", {logging.INFO: 'info.log'})
+
+    args_validation = [['run_type',lambda x: x in ["risk", "plex", "batch_summarize_exec_logs", "fromoptimal"],'not in {}'.format(["risk", "plex", "batch_log_reader", "fromoptimal"])],
+                       ['exchange',lambda x: x in ["ftx"],'not in {}'.format(["ftx"])],
+                       ['subaccount',lambda x: True,'not in {}'.format([""])]]
+    for i,arg in enumerate(args_validation):
+        if not args_validation[i][1](args[i]):
+            error_msg = f'{args_validation[i][0]} {args_validation[i][2]}'
+            logger.critical(error_msg)
+            raise Exception(error_msg)
+    kwargs_validation = {'nb_runs':[lambda x: isinstance(int(x),int),'integer needed'],
+                         'period':[lambda x: isinstance(parse_time_param(x),timedelta),'time period needed'],
+                         'dirname':[lambda x: os.path.isdir(x),'not found'],
+                         'filename':[lambda x: True,'not found'],# skew it....
+                         'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(),x)),'not found']}
+    for key,arg in kwargs.items():
+        if not kwargs_validation[key][0](arg):
+            error_msg = f'{key} {kwargs_validation[key][1]}'
+            logger.critical(error_msg)
+            raise Exception(error_msg)
 
     try:
-        if argv[1] == 'fromoptimal':
-            logger.critical(f'running {argv} {kwargs}')
-            diff=asyncio.run(diff_portoflio_wrapper(**kwargs))
+        if args[0] == 'fromoptimal':
+            logger.critical(f'running {args} {kwargs}')
+            diff=asyncio.run(diff_portoflio_wrapper(*args[1:],**kwargs))
             diff=diff.append(pd.Series({'coin': 'total', 'name': 'total'}).append(diff.sum(numeric_only=True)),ignore_index=True)
-            logger.info(diff.loc[diff['diffUSD'].apply(np.abs)>1,['coin','name','currentUSD','optimalUSD','diffUSD']].round(decimals=0))
+            return diff.loc[diff['diffUSD'].apply(np.abs)>1,['coin','name','currentUSD','optimalUSD','diffUSD']].round(decimals=0)
 
-        elif argv[1] == 'risk':
-            logger.critical(f'running {argv} {kwargs}')
-            risk = asyncio.run(live_risk_wrapper(**kwargs))
+        elif args[0] == 'risk':
+            logger.critical(f'running {args} {kwargs}')
+            risk = asyncio.run(live_risk_wrapper(*args[1:],**kwargs))
             return risk
 
-        elif argv[1] == 'plex':
-            logger.critical(f'running {argv} {kwargs}')
-            plex = asyncio.run(risk_and_pnl_wrapper(**kwargs))
-            return plex
+        elif args[0] == 'plex':
+            logger.critical(f'running {args} {kwargs}')
+            plex = asyncio.run(risk_and_pnl_wrapper(*args[1:],**kwargs))
+            return plex.pivot_table(index=['underlying','attribution'],columns='event_type',values='USDamt',aggfunc='sum',margins=True)
 
-        elif argv[1] == 'log_reader':
-            logger.critical(f'running {argv} {kwargs}')
-            log = ExecutionLogger.summarize_exec_logs(**kwargs)
-
-        elif argv[1] == 'batch_log_reader':
-            logger.critical(f'running {argv} {kwargs}')
-            log = ExecutionLogger.batch_summarize_exec_logs(**kwargs)
-
+        elif args[0] == 'batch_summarize_exec_logs':
+            logger.critical(f'running {args} {kwargs}')
+            log = ExecutionLogger.batch_summarize_exec_logs(*args[1:],**kwargs)
+            return log
         else:
-            logger.critical(f'commands: fromoptimal[exchange, subaccount]\nrisk[exchange, subaccount,nb_runs=1],plex[exchange, subaccount,period=write_all],log_reader[prefix=latest],batch_log_reader[dirname=/tmp/tradeexecutor]')
+            logger.critical(f'commands: fromoptimal[exchange, subaccount]\nrisk[exchange, subaccount,nb_runs=1],plex[exchange, subaccount,period=write_all],batch_summarize_exec_logs[exchange=ftx, subaccount= ,dirname=/tmp/tradeexecutor]')
     except Exception as e:
         logger.critical(str(e))
 

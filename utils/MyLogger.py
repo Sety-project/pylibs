@@ -4,53 +4,14 @@ from utils.ccxt_utilities import open_exchange
 from utils.io_utils import *
 import logging
 
-def build_logging(app_name,log_mapping={logging.INFO:'info.log',logging.WARNING:'warning.log',logging.CRITICAL:'program_flow.log'}):
-    '''log_mapping={logging.DEBUG:'debug.log'...
-    3 handlers: >=debug, ==info and >=warning'''
+from utils.io_utils import build_logging
 
-    class MyFilter(object):
-        '''this is to restrict info logger to info only'''
-        def __init__(self, level):
-            self.__level = level
-        def filter(self, logRecord):
-            return logRecord.levelno <= self.__level
-
-    # mkdir log repos if does not exist
-    log_path = os.path.join(os.sep, "tmp", app_name)
-    if not os.path.exists(log_path):
-        os.umask(0)
-        os.makedirs(log_path, mode=0o777)
-
-    logging.basicConfig()
-    logger = logging.getLogger(app_name)
-
-    # logs
-    for level,filename in log_mapping.items():
-        handler = logging.FileHandler(os.path.join(os.sep,log_path,f'{datetime.utcnow().strftime("%Y%m%d_%H%M%S")}_{filename}'), mode='w')
-        handler.setLevel(level)
-        handler.setFormatter(logging.Formatter('%(asctime)s %(name)s %(levelname)s %(message)s'))
-        #handler.addFilter(MyFilter(level))
-        logger.addHandler(handler)
-
-    # handler_alert = logging.handlers.SMTPHandler(mailhost='smtp.google.com',
-    #                                              fromaddr='david@pronoia.link',
-    #                                              toaddrs=['david@pronoia.link'],
-    #                                              subject='auto alert',
-    #                                              credentials=('david@pronoia.link', ''),
-    #                                              secure=None)
-    # handler_alert.setLevel(logging.CRITICAL)
-    # handler_alert.setFormatter(logging.Formatter(f"%(levelname)s: %(message)s"))
-    # self.myLogger.addHandler(handler_alert)
-
-    logger.setLevel(min(log_mapping.keys()))
-
-    return logger
 
 class ExecutionLogger(logging.Logger):
     '''it s a logger that can also write jsons, and summarize them'''
     def __init__(self,order_name,config,log_mapping=None):
         if log_mapping:
-            self.logger = build_logging('tradeexecutor',log_mapping)
+            self.logger = build_logging('tradeexecutor', log_mapping)
         else:
             self.logger = build_logging('tradeexecutor')
 
@@ -66,7 +27,7 @@ class ExecutionLogger(logging.Logger):
             await file.write(json.dumps(data, cls=NpEncoder))
 
     @staticmethod
-    def batch_summarize_exec_logs(dirname=os.path.join(os.sep, 'tmp', 'tradeexecutor'),
+    def batch_summarize_exec_logs(exchange='ftx', subaccount='',dirname=os.path.join(os.sep, 'tmp', 'tradeexecutor'),
                                   start=datetime(1970, 1, 1),
                                   end=datetime.now(),
                                   rebuild=True,
@@ -126,7 +87,7 @@ class ExecutionLogger(logging.Logger):
         return f'moved {len(removed_logs)} logs to unreadable'
 
     @staticmethod
-    def summarize_exec_logs(path_date, add_history_context=False):
+    def summarize_exec_logs(path_date, exchange='ftx', subaccount='',add_history_context=False):
         '''compile json logs into DataFrame summaries'''
         with open(f'{path_date}_events.json', 'r') as file:
             d = json.load(file)

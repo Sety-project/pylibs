@@ -1,8 +1,6 @@
 import time as t
 
-import numpy as np
-
-from utils.MyLogger import ExecutionLogger,build_logging
+from utils.MyLogger import ExecutionLogger
 
 from utils.ftx_utils import *
 from utils.config_loader import *
@@ -1334,16 +1332,20 @@ async def ftx_ws_spread_main_wrapper(order,config,logger,**kwargs):
 
 def main(*args,**kwargs):
     '''
+        examples:
+            tradeexecutor unwind exchange=ftx subaccount=debug config=prod
+            tradeexecutor /home/david/config/pfoptimizer/weight_shard_0.csv config=prod
         args:
-           order = 'unwind', 'flatten', or filename -> /home/david/config/pfoptimizer/filename
+           order = 'unwind', 'flatten', or filename -> /home/david/config/pfoptimizer/weight_shard_0.csv
         kwargs:
-           config_dir =  inserts a subdirectory for config ~/config/config_dir/tradeexecutor_params.json (optional)
+           config =  inserts a subdirectory for config ~/config/config_dir/tradeexecutor_params.json (optional)
            exchange = 'ftx' (mandatory for 'unwind', 'flatten')
            subaccount = 'SysPerp' (mandatory for 'unwind', 'flatten')
    '''
+    args = args[1:]
 
-    order = args[1]
-    config = configLoader.get_executor_params(order=order,dirname=kwargs['config_dir'] if 'config_dir' in kwargs else None)
+    order = args[0]
+    config = configLoader.get_executor_params(order=order,dirname=kwargs.pop('config') if 'config' in kwargs else None)
     logger = ExecutionLogger(order,config,{logging.INFO: 'exec_info.log', logging.WARNING: 'oms_warning.log', logging.CRITICAL: 'program_flow.log'})
 
     logger.logger.critical(f'------------------- running {order} with {config}')
