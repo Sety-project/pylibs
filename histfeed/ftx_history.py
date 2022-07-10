@@ -1,6 +1,6 @@
 from utils.ftx_utils import *
 from utils.config_loader import *
-from utils.io_utils import api
+from utils.io_utils import api_factory
 
 history_start = datetime(2019, 11, 26).replace(tzinfo=timezone.utc)
 
@@ -411,7 +411,12 @@ async def ftx_history_main_wrapper(run_type, exchange_name, universe_name, nb_of
         await exchange.close()
         return hy_history
 
-@api
+@api_factory(examples=["histfeed get ftx wide 5"],
+             args_validation=[['run_type',lambda x: x in ["build", "correct", "get"],'not in {}'.format(["build", "correct", "get"])],
+                  ['exchange',lambda x: x in ["ftx"],'not in {}'.format(["ftx"])],
+                  ['universe',lambda x: x in configLoader.get_universe_pool(),'not in {}'.format(configLoader.get_universe_pool())],
+                  ['nb_days',lambda x: isinstance(int(x),int),'not an int']],
+             kwargs_validation={})
 def main(*args,**kwargs):
     '''
         example: histfeed get ftx wide 5
@@ -423,16 +428,6 @@ def main(*args,**kwargs):
    '''
     # __logger is NOT an argument, it's provided by @api
     logger = kwargs.pop('__logger')
-
-    args_validation = [['run_type',lambda x: x in ["build", "correct", "get"],'not in {}'.format(["build", "correct", "get"])],
-                  ['exchange',lambda x: x in ["ftx"],'not in {}'.format(["ftx"])],
-                  ['universe',lambda x: x in configLoader.get_universe_pool(),'not in {}'.format(configLoader.get_universe_pool())],
-                  ['nb_days',lambda x: isinstance(int(x),int),'not an int']]
-    for i,arg in enumerate(args_validation):
-        if not args_validation[i][1](args[i]):
-            error_msg = f'{args_validation[i][0]} {args_validation[i][2]}'
-            logger.critical(error_msg)
-            raise Exception(error_msg)
 
     # Make sure the exchange repo exists in mktdata/, if not creates it
     mktdata_exchange_repo = configLoader.get_mktdata_folder_for_exchange(args[1])

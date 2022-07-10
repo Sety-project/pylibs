@@ -7,7 +7,7 @@ from utils.ftx_utils import Static, find_spot_ticker
 from utils.config_loader import *
 from histfeed.ftx_history import get_history
 from utils.ccxt_utilities import open_exchange
-from utils.io_utils import api
+from utils.io_utils import api_factory
 
 
 async def refresh_universe(exchange, universe_filter):
@@ -356,7 +356,15 @@ async def strategy_wrapper(**kwargs):
 
     return result
 
-@api
+@api_factory(examples=["pfoptimizer sysperp ftx subaccount=debug config=prod",
+                       "pfoptimizer basis ftx type=future depth=100000"],
+             args_validation=[
+                 ['run_type', lambda x: x in ["sysperp", "backtest", "depth", "basis"],'not in {}'.format(["sysperp", "backtest", "depth", "basis"])],
+                 ['exchange', lambda x: x in ["ftx"], 'not in {}'.format(["ftx"])]],
+             kwargs_validation={'type':[lambda x: ["perpetual", "future", "all"],'not in {}'.format(["perpetual", "future", "all"])],
+                                'subaccount':[lambda x: True,'not found'],
+                                'depth':[lambda x: isinstance(float(x),float),'need a float'],
+                                'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(),x)),'not found']})
 def main(*args,**kwargs):
     '''
         examples:

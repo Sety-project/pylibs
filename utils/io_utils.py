@@ -2,8 +2,8 @@
 import functools
 import importlib
 import inspect
+import subprocess
 import logging
-
 from utils.async_utils import async_wrap
 import sys,os,shutil,platform
 import json
@@ -194,13 +194,39 @@ def build_logging(app_name,log_mapping={logging.INFO:'info.log',logging.WARNING:
 
 class MyModules:
     current_module_list = ['histfeed', 'pfoptimizer', 'riskpnl', 'tradeexecutor', 'ux']
-    def __init__(self,filename):
+
+    def __init__(self,filename,examples,args_validation,kwargs_validation):
+        self.filename = filename
         self.name = os.path.split(os.path.split(filename)[0])[1]
         if self.name not in MyModules.current_module_list:
             raise Exception(f'new module {self.name} :(\nAdd it to the list :) ')
+        self.examples = examples
+        self.args_validation = args_validation
+        self.kwargs_validation = kwargs_validation
+
+    def validate_args(self,args):
+        '''check all args are present and valid'''
+        for i,arg in enumerate(self.args_validation):
+            if not self.args_validation[i][1](args[i]):
+                error_msg = f'{self.args_validation[i][0]} {self.args_validation[i][2]}'
+                logging.getLogger(self.name).critical(error_msg)
+                raise Exception(error_msg)
+
+    def validate_kwargs(self,kwargs):
+        '''check all kwargs are valid'''
+        for key,arg in kwargs.items():
+            if not self.kwargs_validation[key][0](arg):
+                error_msg = f'{key} {self.kwargs_validation[key][1]}'
+                logging.getLogger(self.name).critical(error_msg)
+                raise Exception(error_msg)
 
     def get_short_name(self):
         return self.name.split('_')[-1]
+
+    def run_test(self):
+        results = {example:subprocess.run(f'{self.filename} {example}')
+                   for example in self.examples}
+        return results
 
     @staticmethod
     def load_all_modules():
@@ -209,31 +235,36 @@ class MyModules:
         for mod_name in modules:
             importlib.import_module(f'{mod_name}.main')
 
+def api_factory(examples,args_validation,kwargs_validation):
+    def api(func):
+        '''
+        NB: the main function has to remove __logger from kwargs --> logger = kwargs.pop('__logger')
+        '''
+        @functools.wraps(func)
+        def wrapper_api(*args, **kwargs):
+            args=args[1:]
 
-def api(func):
-    '''
+            # build logger for current module
+            module = MyModules(inspect.stack()[1][1],examples,args_validation,kwargs_validation)
+            module_name = module.get_short_name()
+            logger = build_logging(module_name, {logging.INFO: 'info.log'})
 
-    NB: the main function has to remove __logger from kwargs --> logger = kwargs.pop('__logger')
-    '''
-    @functools.wraps(func)
-    def wrapper_api(*args, **kwargs):
-        args=args[1:]
+            # print arguments
+            logger.info(f'running {module_name} {args} ')
+            if '__logger' in kwargs:
+                raise Exception('__logger kwarg key is reserved')
 
-        # build logger for current module
-        module_name = MyModules(inspect.stack()[1][1]).get_short_name()
-        logger = build_logging(module_name, {logging.INFO: 'info.log'})
+            #validate arguments
+            module.validate_args(args)
+            module.validate_kwargs(kwargs)
 
-        # print arguments
-        logger.info(f'running {module_name} {args} ')
-        if '__logger' in kwargs:
-            raise Exception('__logger kwarg key is reserved')
-
-        # call and log exceptions or result
-        try:
-            return func(*args, **(kwargs| {'__logger':logger}))
-        except Exception as e:
-            logger.critical(str(e))
-            raise e
-        else:
-            logger.info(f'command {[(i, values[i]) for i in args]} returned {value}')
-    return wrapper_api
+            # call and log exceptions or result
+            try:
+                return func(*args, **(kwargs| {'__logger':logger}))
+            except Exception as e:
+                logger.critical(str(e))
+                raise e
+            else:
+                logger.info(f'command {[(i, values[i]) for i in args]} returned {value}')
+        return wrapper_api
+    return api

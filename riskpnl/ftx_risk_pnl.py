@@ -4,7 +4,7 @@ import dateutil.parser
 
 from utils.ftx_utils import *
 from utils.MyLogger import *
-from utils.io_utils import api
+from utils.io_utils import api_factory
 
 
 async def live_risk_wrapper(exchange,subaccount,nb_runs='1'):
@@ -556,7 +556,18 @@ async def risk_and_pnl(exchange,period):
         else:
             pnl.to_csv(pnl_filename)
 
-@api
+@api_factory(examples=["riskpnl risk ftx debug nb_runs=10",
+                       "riskpnl plex ftx debug period=2d",
+                       "riskpnl fromoptimal ftx debug"],
+             args_validation=[
+                 ['run_type', lambda x: x in ["risk", "plex", "batch_summarize_exec_logs", "fromoptimal"],'not in {}'.format(["risk", "plex", "batch_log_reader", "fromoptimal"])],
+                 ['exchange', lambda x: x in ["ftx"], 'not in {}'.format(["ftx"])],
+                 ['subaccount', lambda x: True, 'not in {}'.format([""])]],
+             kwargs_validation={'nb_runs':[lambda x: isinstance(int(x),int),'integer needed'],
+                                'period':[lambda x: isinstance(parse_time_param(x),timedelta),'time period needed'],
+                                'dirname':[lambda x: os.path.isdir(x),'not found'],
+                                'filename':[lambda x: True,'not found'],# skew it....
+                                'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(),x)),'not found']})
 def main(*args,**kwargs):
     '''
         examples:

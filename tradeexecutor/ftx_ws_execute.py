@@ -1,3 +1,4 @@
+import os.path
 import time as t
 
 from utils.MyLogger import ExecutionLogger
@@ -31,7 +32,7 @@ import ccxtpro
 
 # qd tu ecoutes un channel ws c'est un while true loop
 # c'est while symbol est encore running running_symbols
-from utils.io_utils import api
+from utils.io_utils import api_factory
 
 
 def symbol_locked(wrapped):
@@ -1312,7 +1313,13 @@ async def ftx_ws_spread_main_wrapper(order,config,logger,**kwargs):
             logging.getLogger('tradeexecutor').critical(str(e), exc_info=True)
         raise e
 
-@api
+@api_factory(examples=["tradeexecutor unwind exchange=ftx subaccount=debug config=prod",
+                       "tradeexecutor /home/david/config/pfoptimizer/weight_shard_0.csv config=prod"],
+             args_validation=[
+                 ['order', lambda x: x in ['unwind', 'flatten'] or os.path.isfile(x),'not in {} and not a file'.format(['unwind', 'flatten'])]],
+             kwargs_validation={'exchange':[lambda x: x in ['ftx'],'not in {}'.format(['ftx'])],
+                                'subaccount':[lambda x: True,'not found'],
+                                'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(),x)),'not found']})
 def main(*args,**kwargs):
     '''
         examples:
