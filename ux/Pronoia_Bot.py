@@ -62,10 +62,6 @@ def echo(update, context):
         if split_message[0] in MyModules.current_module_list:
             module = importlib.import_module(f'{split_message[0]}.main')
             main_func = getattr(module, 'main')
-
-            args = [arg.split('=')[0] for arg in split_message if len(arg.split('=')) == 1]
-            kwargs = dict([arg.split('=') for arg in split_message if len(arg.split('=')) == 2])
-
             data = main_func(*args,**kwargs)
         elif split_message[0] == 'docker':
             if split_message[1] == 'ps':
