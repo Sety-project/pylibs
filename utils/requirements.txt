@@ -2,7 +2,7 @@
 
 testresources  # For ccxt to install without warning
 python-dateutil
-ccxt
+ccxt==1.88.18
 scipy
 aiofiles
 numpy
