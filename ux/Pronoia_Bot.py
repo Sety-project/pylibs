@@ -1,13 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # This program is dedicated to the public domain under the CC0 license.
-import importlib
-
-modules = ['histfeed','pfoptimizer','riskpnl','tradeexecutor']
-for mod_name in modules:
-    importlib.import_module(f'{mod_name}.main')
-
-from utils.MyLogger import *
+from utils.io_utils import api,MyModules
+import importlib,logging
 
 import subprocess
 import shlex
@@ -31,8 +26,6 @@ bot.
 
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 
-logger = build_logging("ux",{logging.INFO: 'info.log'})
-
 # Define a few command handlers. These usually take the two arguments update and
 # context. Error handlers also receive the raised TelegramError object in error.
 def start(update, context):
@@ -44,15 +37,16 @@ def start(update, context):
 def help(update, context):
     """Send a message when the command /help is issued."""
     update.message.reply_text('requests:\n')
-    for mod_name in modules:
-        module = importlib.import_module(f'{mod_name}.main')
-        func = getattr(module, 'main')
-        update.message.reply_text(f'{mod_name}\n{func.__doc__}')
+    for mod_name in MyModules.current_module_list:
+        if mod_name != 'ux':
+            module = importlib.import_module(f'{mod_name}.main')
+            func = getattr(module, 'main')
+            update.message.reply_text(f'{mod_name}\n{func.__doc__}')
 
 def echo(update, context):
     try:
         caller = update.effective_message.chat['username']
-        logger.info(f'{caller} called {update.effective_message.text} at {datetime.datetime.utcnow()}')
+        logging.getLogger('ux').info(f'{caller} called {update.effective_message.text} at {datetime.datetime.utcnow()}')
 
         split_message = update.effective_message.text.split()
         split_message[0] = split_message[0].lower()
@@ -65,7 +59,7 @@ def echo(update, context):
             log.to_csv(os.path.join(os.sep, "tmp", "ux", 'chathistory.csv'))
             return
 
-        if split_message[0] in modules:
+        if split_message[0] in MyModules.current_module_list:
             module = importlib.import_module(f'{split_message[0]}.main')
             main_func = getattr(module, 'main')
 
@@ -77,13 +71,13 @@ def echo(update, context):
             if split_message[1] == 'ps':
                 response = docker_ps()
                 update.message.reply_text(f'<pre>{response}</pre>', parse_mode=ParseMode.HTML)
-                data = pd.DataFrame(response)
+                data = None
             elif split_message[1] == 'stop':
                 if len(split_message) < 3:
                     raise Exception('need appname for docker stop')
                 response = docker_stop(split_message[2])
                 update.message.reply_text(f'<pre>{response}</pre>', parse_mode=ParseMode.HTML)
-                data = pd.DataFrame(response)
+                data = None
             else:
                 raise Exception('docker ps or docker stop ?')
         elif split_message[0] == 'exec':
@@ -95,12 +89,12 @@ def echo(update, context):
             command = f"docker run -d -e USERNAME=\"ec2-user\" --network host \"878533356457.dkr.ecr.eu-west-2.amazonaws.com/tradeexecutor:latest\" --restart=on-failure --name=tradeexecutor_worker -e RUN_TYPE=\"{run_type}\" -e EXCHANGE_NAME=\"{exchange_name}\" -e SUB_ACCOUNT=\"{sub_account}\" -v ~/.cache/setyvault:/home/ec2-user/.cache/setyvault -v ~/config/prod:/home/ec2-user/config -v /tmp:/tmp"
             response = bash_run(command)
             update.message.reply_text(''.join([f'{key} ----->\n {value}\n' for key, value in response.items()]))
-            data = pd.DataFrame(response)
+            data = None
         elif split_message[0] == 'bash:':
             raise Exception('disabled')
             response = bash_run(''.join(split_message[1:]))
             update.message.reply_text(''.join([f'{key} ----->\n {value}\n' for key, value in response.items()]))
-            data = pd.DataFrame(response)
+            data = None
         else:
             raise Exception('unknown command, type /help')
 
@@ -109,9 +103,10 @@ def echo(update, context):
         if not os.path.exists(dirname):
             os.umask(000)
             os.makedirs(dirname, mode=0o777)
-        data.to_csv(filename)
-        with open(filename, "rb") as file:
-            update.message.bot.sendDocument(update.message['chat']['id'], document=file)
+        if data is not None:
+            data.to_csv(filename)
+            with open(filename, "rb") as file:
+                update.message.bot.sendDocument(update.message['chat']['id'], document=file)
 
 #            msg = update.message.reply_text(docker_status(split_message[0]))
 #            msg = docker_status(split_message[0])
@@ -124,7 +119,7 @@ def echo(update, context):
 #               update.message.reply_text(msg, parse_mode=ParseMode.HTML)
 
     except Exception as e:
-        logger.critical(str(e),stack_info=True)
+        logging.getLogger('ux').critical(str(e),stack_info=True)
         update.message.reply_text(str(e))
 
 def bash_run(command):
@@ -133,15 +128,17 @@ def bash_run(command):
     error_msg = completed_process.stderr
     return {'response':response,'error_msg':error_msg,'returncode':completed_process.returncode}
 
-def error(update, context):
-    """Log Errors caused by Updates."""
-    logger.critical('Update "%s" caused error "%s"', update, context.error)
+# def error(update, context):
+#     """Log Errors caused by Updates."""
+#     logging.getLogger('ux').critical('Update "%s" caused error "%s"', update, context.error)
 
-def main(*args):
+@api
+def main(*args,**kwargs):
     """Start the bot."""
     # Create the Updater and pass it your bot's token.
     # Make sure to set use_context=True to use the new context based callbacks
     # Post version 12 this will no longer be necessary
+    logger = kwargs.pop('__logger')
 
     updater = Updater('1752990518:AAF0NpZBMgBzRTSfoaDDk69Zr5AdtoKtWGk', use_context=True)
 
@@ -156,7 +153,7 @@ def main(*args):
     dp.add_handler(MessageHandler(Filters.text, echo))
 
     # log all errors
-    dp.add_error_handler(error)
+    #dp.add_error_handler(error)
 
     # Start the Bot
     updater.start_polling()

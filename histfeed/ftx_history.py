@@ -1,12 +1,6 @@
-import sys
-import pandas as pd
-import os
-from pathlib import Path
-from time import strftime
 from utils.ftx_utils import *
-from utils.io_utils import *
 from utils.config_loader import *
-from utils.io_utils import build_logging
+from utils.io_utils import api
 
 history_start = datetime(2019, 11, 26).replace(tzinfo=timezone.utc)
 
@@ -417,6 +411,7 @@ async def ftx_history_main_wrapper(run_type, exchange_name, universe_name, nb_of
         await exchange.close()
         return hy_history
 
+@api
 def main(*args,**kwargs):
     '''
         example: histfeed get ftx wide 5
@@ -426,8 +421,8 @@ def main(*args,**kwargs):
            universe = "institutional", "wide", "max", "all"
            nb_days = int
    '''
-    args = args[1:]
-    logger = build_logging("histfeed", {logging.INFO: 'info.log'})
+    # __logger is NOT an argument, it's provided by @api
+    logger = kwargs.pop('__logger')
 
     args_validation = [['run_type',lambda x: x in ["build", "correct", "get"],'not in {}'.format(["build", "correct", "get"])],
                   ['exchange',lambda x: x in ["ftx"],'not in {}'.format(["ftx"])],
@@ -445,14 +440,5 @@ def main(*args,**kwargs):
         os.umask(0)
         os.makedirs(mktdata_exchange_repo, mode=0o777)
 
-    # Running histfeed
-    logger.info(f'histfeed running with params {args}')
-    try:
-        result = asyncio.run(ftx_history_main_wrapper(*args))
-    except Exception as e:
-        filename = os.path.join(os.sep, 'tmp', 'histfeed', 'errors.txt')
-        with open(filename, 'a+') as fp:
-            fp.write(str(e))
-        raise e
+    result = asyncio.run(ftx_history_main_wrapper(*args))
     return result
-    logger.info("histfeed terminated successfully...")

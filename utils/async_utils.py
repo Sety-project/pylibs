@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import platform
-import asyncio,aiofiles,threading
+import asyncio, threading
 import functools
 
 if platform.system()=='Windows':
@@ -27,3 +27,9 @@ async def safe_gather(tasks,n=safe_gather_limit,semaphore=None,return_exceptions
         async with semaphore:
             return await task
     return await asyncio.gather(*(sem_task(task) for task in tasks),return_exceptions=return_exceptions)
+
+
+class CustomRLock(threading._PyRLock):
+    @property
+    def count(self):
+        return self._count

@@ -29,28 +29,10 @@ import ccxtpro
 # 'check_frequency': risk recon frequency. in seconds
 # 'delta_limit': in % of pv
 
-class CustomRLock(threading._PyRLock):
-    @property
-    def count(self):
-        return self._count
-
 # qd tu ecoutes un channel ws c'est un while true loop
 # c'est while symbol est encore running running_symbols
-def loop(func):
-    @functools.wraps(func)
-    async def wrapper_loop(*args, **kwargs):
-        self=args[0]
-        while len(args)==1 or (args[1] in args[0].running_symbols):
-            try:
-                value = await func(*args, **kwargs)
-            except ccxt.NetworkError as e:
-                self.myLogger.logger.info(str(e))
-                self.myLogger.logger.info('reconciling after '+func.__name__+' dropped off')
-                await self.reconcile() # implicitement redemarre la socket, ccxt fait ca comme ca
-            except Exception as e:
-                self.myLogger.logger.info(e, exc_info=True)
-                raise e
-    return wrapper_loop
+from utils.io_utils import api
+
 
 def symbol_locked(wrapped):
     # pour eviter que 2 ws agissent sur l'OMS en mm tps
@@ -1330,6 +1312,7 @@ async def ftx_ws_spread_main_wrapper(order,config,logger,**kwargs):
             logging.getLogger('tradeexecutor').critical(str(e), exc_info=True)
         raise e
 
+@api
 def main(*args,**kwargs):
     '''
         examples:
@@ -1342,13 +1325,10 @@ def main(*args,**kwargs):
            exchange = 'ftx' (mandatory for 'unwind', 'flatten')
            subaccount = 'SysPerp' (mandatory for 'unwind', 'flatten')
    '''
-    args = args[1:]
+    logger = kwargs.pop('__logger')
 
     order = args[0]
     config = configLoader.get_executor_params(order=order,dirname=kwargs.pop('config') if 'config' in kwargs else None)
-    logger = ExecutionLogger(order,config,{logging.INFO: 'exec_info.log', logging.WARNING: 'oms_warning.log', logging.CRITICAL: 'program_flow.log'})
-
-    logger.logger.critical(f'------------------- running {order} with {config}')
 
     while True:
         try:
@@ -1371,5 +1351,20 @@ def main(*args,**kwargs):
                 except myFtx.DoneDeal as e:
                     logger.logger.critical(f'{str(e)} TIMEOUT --> FLATTEN UNTIL FINISHED')
                     break
-        except Exception as e:
-            logger.logger.critical(str(e))
+
+
+def loop(func):
+    @functools.wraps(func)
+    async def wrapper_loop(*args, **kwargs):
+        self=args[0]
+        while len(args)==1 or (args[1] in args[0].running_symbols):
+            try:
+                value = await func(*args, **kwargs)
+            except ccxt.NetworkError as e:
+                self.myLogger.logger.info(str(e))
+                self.myLogger.logger.info('reconciling after '+func.__name__+' dropped off')
+                await self.reconcile() # implicitement redemarre la socket, ccxt fait ca comme ca
+            except Exception as e:
+                self.myLogger.logger.info(e, exc_info=True)
+                raise e
+    return wrapper_loop

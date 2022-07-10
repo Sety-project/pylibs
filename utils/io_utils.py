@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
+import functools
+import importlib
+import inspect
 import logging
 
-from utils.async_utils import *
+from utils.async_utils import async_wrap
 import sys,os,shutil,platform
 import json
 import pandas as pd
@@ -188,3 +191,49 @@ def build_logging(app_name,log_mapping={logging.INFO:'info.log',logging.WARNING:
     logger.setLevel(min(log_mapping.keys()))
 
     return logger
+
+class MyModules:
+    current_module_list = ['histfeed', 'pfoptimizer', 'riskpnl', 'tradeexecutor', 'ux']
+    def __init__(self,filename):
+        self.name = os.path.split(os.path.split(filename)[0])[1]
+        if self.name not in MyModules.current_module_list:
+            raise Exception(f'new module {self.name} :(\nAdd it to the list :) ')
+
+    def get_short_name(self):
+        return self.name.split('_')[-1]
+
+    @staticmethod
+    def load_all_modules():
+        '''not sure how to use that but i keep it there....'''
+        global modules
+        for mod_name in modules:
+            importlib.import_module(f'{mod_name}.main')
+
+
+def api(func):
+    '''
+
+    NB: the main function has to remove __logger from kwargs --> logger = kwargs.pop('__logger')
+    '''
+    @functools.wraps(func)
+    def wrapper_api(*args, **kwargs):
+        args=args[1:]
+
+        # build logger for current module
+        module_name = MyModules(inspect.stack()[1][1]).get_short_name()
+        logger = build_logging(module_name, {logging.INFO: 'info.log'})
+
+        # print arguments
+        logger.info(f'running {module_name} {args} ')
+        if '__logger' in kwargs:
+            raise Exception('__logger kwarg key is reserved')
+
+        # call and log exceptions or result
+        try:
+            return func(*args, **(kwargs| {'__logger':logger}))
+        except Exception as e:
+            logger.critical(str(e))
+            raise e
+        else:
+            logger.info(f'command {[(i, values[i]) for i in args]} returned {value}')
+    return wrapper_api

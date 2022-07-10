@@ -1,7 +1,5 @@
 import copy
-import inspect
 import datetime
-import os
 
 from pfoptimizer.ftx_snap_basis import *
 from riskpnl.ftx_risk_pnl import *
@@ -9,7 +7,7 @@ from utils.ftx_utils import Static, find_spot_ticker
 from utils.config_loader import *
 from histfeed.ftx_history import get_history
 from utils.ccxt_utilities import open_exchange
-from utils.io_utils import build_logging
+from utils.io_utils import api
 
 
 async def refresh_universe(exchange, universe_filter):
@@ -95,10 +93,6 @@ async def perp_vs_cash(
     param_type_allowed = config['TYPE_ALLOWED']['value']
     param_universe = config['UNIVERSE']['value']
     dir_name = configLoader.get_mktdata_folder_for_exchange(exchange.id)
-
-    frame = inspect.currentframe()
-    args, _, _, values = inspect.getargvalues(frame)
-    logging.getLogger('pfoptimizer').info(f'running {[(i, values[i]) for i in args]} ')
 
     futures = pd.DataFrame(await Static.fetch_futures(exchange)).set_index('name')
     now_time = datetime.utcnow().replace(tzinfo=timezone.utc)
@@ -362,6 +356,7 @@ async def strategy_wrapper(**kwargs):
 
     return result
 
+@api
 def main(*args,**kwargs):
     '''
         examples:
@@ -376,8 +371,7 @@ def main(*args,**kwargs):
             type = ["all","perpetual","future"] (optional for run_type="basis", default="all" )
             depth = float (optional for run_type="basis", default=0)
    '''
-    args = args[1:]
-    logger = build_logging("pfoptimizer", {logging.INFO: 'info.log'})
+    logger = kwargs.pop('__logger')
 
     args_validation = [['run_type',lambda x: x in ["sysperp", "backtest", "depth", "basis"],'not in {}'.format(["sysperp", "backtest", "depth", "basis"])],
                   ['exchange',lambda x: x in ["ftx"],'not in {}'.format(["ftx"])]]
@@ -402,8 +396,6 @@ def main(*args,**kwargs):
         subaccount = kwargs['subaccount']
 
     config = configLoader.get_pfoptimizer_params(dirname=kwargs['config'] if 'config' in kwargs else None)
-
-    logger.critical(f'Running {args} {kwargs}')
 
     if run_type == 'basis':
         if 'depth' in kwargs: kwargs['depth'] = float(kwargs['depth'])
@@ -463,10 +455,7 @@ def main(*args,**kwargs):
                                         slippage_override=slippage_override,
                                         backtest_start= datetime(2021,2,17).replace(tzinfo=timezone.utc),#.replace(minute=0, second=0, microsecond=0)-timedelta(days=2),# live start was datetime(2022,6,21,19),
                                         backtest_end = datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0, second=0, microsecond=0)-timedelta(hours=1)))
-        logger.critical("pfoptimizer terminated successfully...")
         return pd.DataFrame()
     else:
         logger.critical(f'commands: sysperp [signal_horizon] [holding_period], backtest, depth [signal_horizon] [holding_period]')
-
-    logger.critical("pfoptimizer terminated successfully...")
     return res
