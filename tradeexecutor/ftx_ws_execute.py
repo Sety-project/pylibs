@@ -1350,7 +1350,7 @@ def main(*args,**kwargs):
     logger = ExecutionLogger(order,config,log_mapping={logging.INFO: 'exec_info.log', logging.WARNING: 'oms_warning.log', logging.CRITICAL: 'program_flow.log'})
     logger.logger = kwargs.pop('__logger')
 
-    for i in range(int(kwargs['nb_runs'])):
+    for i in range(int(kwargs['nb_runs']) if 'nb_runs' in kwargs else 1):
         try:
             asyncio.run(ftx_ws_spread_main_wrapper(order,config,logger,**kwargs)) # --> I am filled or I timed out and I have flattened position
         except myFtx.DoneDeal as e:

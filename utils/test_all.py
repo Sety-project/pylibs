@@ -1,6 +1,7 @@
-from utils.api_utils import MyModules,api,build_logging
+from utils.api_utils import MyModules
 MyModules.load_all_modules()
 
 if __name__ == "__main__":
     for name,module in MyModules.current_module_list.items():
-        module.run_test()
+        if name is not 'ux':
+            module.run_test()

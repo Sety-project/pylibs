@@ -125,7 +125,7 @@ class MyModules:
 
     def run_test(self):
         root_dir = os.path.split(os.getcwd())[0]
-        filename = os.path.join(os.sep, root_dir, self.name, 'test_all.py')
+        filename = os.path.join(os.sep, root_dir, self.name, 'main.py')
         results = {example:subprocess.run(f'{sys.executable} {filename} {example}',shell=True) # subprocess.run
                    for example in self.examples}
         return results

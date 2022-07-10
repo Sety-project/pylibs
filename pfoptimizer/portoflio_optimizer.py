@@ -381,7 +381,8 @@ def main(*args,**kwargs):
 
     if run_type == 'basis':
         if 'depth' in kwargs: kwargs['depth'] = float(kwargs['depth'])
-        res = enricher_wrapper(*args,**kwargs)
+        kwargs.pop('subaccount')
+        res = enricher_wrapper(*args[1:],**kwargs)
     if run_type == 'sysperp':
         res = asyncio.run(strategy_wrapper(
             exchange_name=exchange_name,
