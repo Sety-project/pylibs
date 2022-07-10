@@ -1,10 +1,18 @@
+import asyncio
+import os
 import time as t
+from datetime import timedelta
 
 import dateutil.parser
+import numpy as np
+import pandas as pd
+
+from utils.MyLogger import ExecutionLogger
+from utils.config_loader import configLoader
 
 from utils.ftx_utils import *
 from utils.MyLogger import *
-from utils.io_utils import api_factory
+from utils.api_utils import MyModules,api
 
 
 async def live_risk_wrapper(exchange,subaccount,nb_runs='1'):
@@ -556,18 +564,8 @@ async def risk_and_pnl(exchange,period):
         else:
             pnl.to_csv(pnl_filename)
 
-@api_factory(examples=["riskpnl risk ftx debug nb_runs=10",
-                       "riskpnl plex ftx debug period=2d",
-                       "riskpnl fromoptimal ftx debug"],
-             args_validation=[
-                 ['run_type', lambda x: x in ["risk", "plex", "batch_summarize_exec_logs", "fromoptimal"],'not in {}'.format(["risk", "plex", "batch_log_reader", "fromoptimal"])],
-                 ['exchange', lambda x: x in ["ftx"], 'not in {}'.format(["ftx"])],
-                 ['subaccount', lambda x: True, 'not in {}'.format([""])]],
-             kwargs_validation={'nb_runs':[lambda x: isinstance(int(x),int),'integer needed'],
-                                'period':[lambda x: isinstance(parse_time_param(x),timedelta),'time period needed'],
-                                'dirname':[lambda x: os.path.isdir(x),'not found'],
-                                'filename':[lambda x: True,'not found'],# skew it....
-                                'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(),x)),'not found']})
+
+@api
 def main(*args,**kwargs):
     '''
         examples:
@@ -586,25 +584,6 @@ def main(*args,**kwargs):
             config = /home/david/config/pfoptimizer_params.json (optionnal for fromoptimal)
    '''
     logger = kwargs.pop('__logger')
-
-    args_validation = [['run_type',lambda x: x in ["risk", "plex", "batch_summarize_exec_logs", "fromoptimal"],'not in {}'.format(["risk", "plex", "batch_log_reader", "fromoptimal"])],
-                       ['exchange',lambda x: x in ["ftx"],'not in {}'.format(["ftx"])],
-                       ['subaccount',lambda x: True,'not in {}'.format([""])]]
-    for i,arg in enumerate(args_validation):
-        if not args_validation[i][1](args[i]):
-            error_msg = f'{args_validation[i][0]} {args_validation[i][2]}'
-            logger.critical(error_msg)
-            raise Exception(error_msg)
-    kwargs_validation = {'nb_runs':[lambda x: isinstance(int(x),int),'integer needed'],
-                         'period':[lambda x: isinstance(parse_time_param(x),timedelta),'time period needed'],
-                         'dirname':[lambda x: os.path.isdir(x),'not found'],
-                         'filename':[lambda x: True,'not found'],# skew it....
-                         'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(),x)),'not found']}
-    for key,arg in kwargs.items():
-        if not kwargs_validation[key][0](arg):
-            error_msg = f'{key} {kwargs_validation[key][1]}'
-            logger.critical(error_msg)
-            raise Exception(error_msg)
 
     if args[0] == 'fromoptimal':
         diff=asyncio.run(diff_portoflio_wrapper(*args[1:],**kwargs))

@@ -9,8 +9,10 @@ from utils.ccxt_utilities import *
 from histfeed.ftx_history import fetch_trades_history, vwap_from_list
 from riskpnl.ftx_risk_pnl import diff_portoflio
 from riskpnl.ftx_margin import MarginCalculator
+from utils.api_utils import MyModules,api
+from utils.async_utils import *
 
-import ccxtpro
+import ccxtpro,collections
 
 # parameters guide
 # 'max_nb_coins': 'sharding'
@@ -32,7 +34,6 @@ import ccxtpro
 
 # qd tu ecoutes un channel ws c'est un while true loop
 # c'est while symbol est encore running running_symbols
-from utils.io_utils import api_factory
 
 
 def symbol_locked(wrapped):
@@ -56,6 +57,22 @@ def symbol_locked(wrapped):
             except Exception as e:
                 pass
     return _wrapper
+
+def loop(func):
+    @functools.wraps(func)
+    async def wrapper_loop(*args, **kwargs):
+        self=args[0]
+        while len(args)==1 or (args[1] in args[0].running_symbols):
+            try:
+                value = await func(*args, **kwargs)
+            except ccxt.NetworkError as e:
+                self.myLogger.logger.info(str(e))
+                self.myLogger.logger.info('reconciling after '+func.__name__+' dropped off')
+                await self.reconcile() # implicitement redemarre la socket, ccxt fait ca comme ca
+            except Exception as e:
+                self.myLogger.logger.info(e, exc_info=True)
+                raise e
+    return wrapper_loop
 
 def intercept_message_during_reconciliation(wrapped):
     '''decorates self.watch_xxx(message) to block incoming messages during reconciliation'''
@@ -1311,15 +1328,10 @@ async def ftx_ws_spread_main_wrapper(order,config,logger,**kwargs):
             # await exchange.close()
         except Exception:
             logging.getLogger('tradeexecutor').critical(str(e), exc_info=True)
+        await exchange.close()
         raise e
 
-@api_factory(examples=["tradeexecutor unwind exchange=ftx subaccount=debug config=prod",
-                       "tradeexecutor /home/david/config/pfoptimizer/weight_shard_0.csv config=prod"],
-             args_validation=[
-                 ['order', lambda x: x in ['unwind', 'flatten'] or os.path.isfile(x),'not in {} and not a file'.format(['unwind', 'flatten'])]],
-             kwargs_validation={'exchange':[lambda x: x in ['ftx'],'not in {}'.format(['ftx'])],
-                                'subaccount':[lambda x: True,'not found'],
-                                'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(),x)),'not found']})
+@api
 def main(*args,**kwargs):
     '''
         examples:
@@ -1332,20 +1344,23 @@ def main(*args,**kwargs):
            exchange = 'ftx' (mandatory for 'unwind', 'flatten')
            subaccount = 'SysPerp' (mandatory for 'unwind', 'flatten')
    '''
-    logger = kwargs.pop('__logger')
 
     order = args[0]
     config = configLoader.get_executor_params(order=order,dirname=kwargs.pop('config') if 'config' in kwargs else None)
+    logger = ExecutionLogger(order,config,log_mapping={logging.INFO: 'exec_info.log', logging.WARNING: 'oms_warning.log', logging.CRITICAL: 'program_flow.log'})
+    logger.logger = kwargs.pop('__logger')
 
-    while True:
+    for i in range(int(kwargs['nb_runs'])):
         try:
             asyncio.run(ftx_ws_spread_main_wrapper(order,config,logger,**kwargs)) # --> I am filled or I timed out and I have flattened position
         except myFtx.DoneDeal as e:
             # Wait for 5 minutes and start over
+            if i>0:
+                logger.logger.critical(f'{str(e)} --> SLEEPING for 5 minutes...')
+                t.sleep(60 * 5)
             if not isinstance(e,myFtx.NothingToDo):
                 ExecutionLogger.batch_summarize_exec_logs()
-            logger.logger.critical(f'{str(e)} --> SLEEPING for 5 minutes...')
-            t.sleep(60 * 5)
+
         except myFtx.TimeBudgetExpired as e:
             logger.logger.critical(f'{str(e)} --> FLATTEN UNTIL FINISHED')
             while datetime.utcnow().replace(tzinfo=timezone.utc).minute < 50:
@@ -1358,20 +1373,3 @@ def main(*args,**kwargs):
                 except myFtx.DoneDeal as e:
                     logger.logger.critical(f'{str(e)} TIMEOUT --> FLATTEN UNTIL FINISHED')
                     break
-
-
-def loop(func):
-    @functools.wraps(func)
-    async def wrapper_loop(*args, **kwargs):
-        self=args[0]
-        while len(args)==1 or (args[1] in args[0].running_symbols):
-            try:
-                value = await func(*args, **kwargs)
-            except ccxt.NetworkError as e:
-                self.myLogger.logger.info(str(e))
-                self.myLogger.logger.info('reconciling after '+func.__name__+' dropped off')
-                await self.reconcile() # implicitement redemarre la socket, ccxt fait ca comme ca
-            except Exception as e:
-                self.myLogger.logger.info(e, exc_info=True)
-                raise e
-    return wrapper_loop

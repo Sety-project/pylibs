@@ -1,6 +1,7 @@
 from utils.ftx_utils import *
 from utils.config_loader import *
-from utils.io_utils import api_factory
+from utils.io_utils import  *
+from utils.api_utils import MyModules,api
 
 history_start = datetime(2019, 11, 26).replace(tzinfo=timezone.utc)
 
@@ -411,12 +412,7 @@ async def ftx_history_main_wrapper(run_type, exchange_name, universe_name, nb_of
         await exchange.close()
         return hy_history
 
-@api_factory(examples=["histfeed get ftx wide 5"],
-             args_validation=[['run_type',lambda x: x in ["build", "correct", "get"],'not in {}'.format(["build", "correct", "get"])],
-                  ['exchange',lambda x: x in ["ftx"],'not in {}'.format(["ftx"])],
-                  ['universe',lambda x: x in configLoader.get_universe_pool(),'not in {}'.format(configLoader.get_universe_pool())],
-                  ['nb_days',lambda x: isinstance(int(x),int),'not an int']],
-             kwargs_validation={})
+@api
 def main(*args,**kwargs):
     '''
         example: histfeed get ftx wide 5

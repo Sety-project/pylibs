@@ -2,10 +2,8 @@ from datetime import *
 from histfeed.ftx_history import fetch_trades_history
 from utils.ccxt_utilities import open_exchange
 from utils.io_utils import *
-import logging
-
-from utils.io_utils import build_logging
-
+from utils.async_utils import *
+from utils.api_utils import build_logging
 
 class ExecutionLogger(logging.Logger):
     '''it s a logger that can also write jsons, and summarize them'''

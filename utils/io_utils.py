@@ -4,6 +4,7 @@ import importlib
 import inspect
 import subprocess
 import logging
+from utils.config_loader import configLoader
 from utils.async_utils import async_wrap
 import sys,os,shutil,platform
 import json
@@ -33,11 +34,11 @@ async def async_read_csv(*args,**kwargs):
     return await coro(*args,**kwargs)
 
 def to_csv(*args,**kwargs):
-    return args[0].to_csv(*args[1:],**kwargs)
+    return args[0].to_csv(*args,**kwargs)
 
 async def async_to_csv(*args,**kwargs):
     coro = async_wrap(to_csv)
-    return await coro(*args,**kwargs)
+    return await coro(*args[1:],**kwargs)
 
 def to_parquet(df,filename,mode="w"):
     if mode == 'a' and os.path.isfile(filename):
@@ -148,123 +149,3 @@ def parse_time_param(param):
         horizon = int(param.split('w')[0])
         horizon = timedelta(weeks=horizon)
     return horizon
-
-
-def build_logging(app_name,log_mapping={logging.INFO:'info.log',logging.WARNING:'warning.log',logging.CRITICAL:'program_flow.log'}):
-    '''log_mapping={logging.DEBUG:'debug.log'...
-    3 handlers: >=debug, ==info and >=warning'''
-
-    class MyFilter(object):
-        '''this is to restrict info logger to info only'''
-        def __init__(self, level):
-            self.__level = level
-        def filter(self, logRecord):
-            return logRecord.levelno <= self.__level
-
-    # mkdir log repos if does not exist
-    log_path = os.path.join(os.sep, "tmp", app_name)
-    if not os.path.exists(log_path):
-        os.umask(0)
-        os.makedirs(log_path, mode=0o777)
-
-    logging.basicConfig()
-    logger = logging.getLogger(app_name)
-
-    # logs
-    for level,filename in log_mapping.items():
-        handler = logging.FileHandler(os.path.join(os.sep,log_path,f'{datetime.utcnow().strftime("%Y%m%d_%H%M%S")}_{filename}'), mode='w')
-        handler.setLevel(level)
-        handler.setFormatter(logging.Formatter('%(asctime)s %(name)s %(levelname)s %(message)s'))
-        #handler.addFilter(MyFilter(level))
-        logger.addHandler(handler)
-
-    # handler_alert = logging.handlers.SMTPHandler(mailhost='smtp.google.com',
-    #                                              fromaddr='david@pronoia.link',
-    #                                              toaddrs=['david@pronoia.link'],
-    #                                              subject='auto alert',
-    #                                              credentials=('david@pronoia.link', ''),
-    #                                              secure=None)
-    # handler_alert.setLevel(logging.CRITICAL)
-    # handler_alert.setFormatter(logging.Formatter(f"%(levelname)s: %(message)s"))
-    # self.myLogger.addHandler(handler_alert)
-
-    logger.setLevel(min(log_mapping.keys()))
-
-    return logger
-
-class MyModules:
-    current_module_list = ['histfeed', 'pfoptimizer', 'riskpnl', 'tradeexecutor', 'ux']
-
-    def __init__(self,filename,examples,args_validation,kwargs_validation):
-        self.filename = filename
-        self.name = os.path.split(os.path.split(filename)[0])[1]
-        if self.name not in MyModules.current_module_list:
-            raise Exception(f'new module {self.name} :(\nAdd it to the list :) ')
-        self.examples = examples
-        self.args_validation = args_validation
-        self.kwargs_validation = kwargs_validation
-
-    def validate_args(self,args):
-        '''check all args are present and valid'''
-        for i,arg in enumerate(self.args_validation):
-            if not self.args_validation[i][1](args[i]):
-                error_msg = f'{self.args_validation[i][0]} {self.args_validation[i][2]}'
-                logging.getLogger(self.name).critical(error_msg)
-                raise Exception(error_msg)
-
-    def validate_kwargs(self,kwargs):
-        '''check all kwargs are valid'''
-        for key,arg in kwargs.items():
-            if not self.kwargs_validation[key][0](arg):
-                error_msg = f'{key} {self.kwargs_validation[key][1]}'
-                logging.getLogger(self.name).critical(error_msg)
-                raise Exception(error_msg)
-
-    def get_short_name(self):
-        return self.name.split('_')[-1]
-
-    def run_test(self):
-        results = {example:subprocess.run(f'{self.filename} {example}')
-                   for example in self.examples}
-        return results
-
-    @staticmethod
-    def load_all_modules():
-        '''not sure how to use that but i keep it there....'''
-        global modules
-        for mod_name in modules:
-            importlib.import_module(f'{mod_name}.main')
-
-def api_factory(examples,args_validation,kwargs_validation):
-    def api(func):
-        '''
-        NB: the main function has to remove __logger from kwargs --> logger = kwargs.pop('__logger')
-        '''
-        @functools.wraps(func)
-        def wrapper_api(*args, **kwargs):
-            args=args[1:]
-
-            # build logger for current module
-            module = MyModules(inspect.stack()[1][1],examples,args_validation,kwargs_validation)
-            module_name = module.get_short_name()
-            logger = build_logging(module_name, {logging.INFO: 'info.log'})
-
-            # print arguments
-            logger.info(f'running {module_name} {args} ')
-            if '__logger' in kwargs:
-                raise Exception('__logger kwarg key is reserved')
-
-            #validate arguments
-            module.validate_args(args)
-            module.validate_kwargs(kwargs)
-
-            # call and log exceptions or result
-            try:
-                return func(*args, **(kwargs| {'__logger':logger}))
-            except Exception as e:
-                logger.critical(str(e))
-                raise e
-            else:
-                logger.info(f'command {[(i, values[i]) for i in args]} returned {value}')
-        return wrapper_api
-    return api

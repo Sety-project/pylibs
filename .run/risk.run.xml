@@ -6,13 +6,13 @@
     <envs>
       <env name="PYTHONUNBUFFERED" value="1" />
     </envs>
-    <option name="SDK_HOME" value="" />
+    <option name="SDK_HOME" value="$PROJECT_DIR$/.venv3.9/bin/python" />
     <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/riskpnl" />
-    <option name="IS_MODULE_SDK" value="true" />
+    <option name="IS_MODULE_SDK" value="false" />
     <option name="ADD_CONTENT_ROOTS" value="true" />
     <option name="ADD_SOURCE_ROOTS" value="true" />
     <option name="SCRIPT_NAME" value="$PROJECT_DIR$/riskpnl/main.py" />
-    <option name="PARAMETERS" value="batch_log_reader ftx SysPerp" />
+    <option name="PARAMETERS" value="risk ftx debug" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="false" />

@@ -7,8 +7,7 @@ from utils.ftx_utils import Static, find_spot_ticker
 from utils.config_loader import *
 from histfeed.ftx_history import get_history
 from utils.ccxt_utilities import open_exchange
-from utils.io_utils import api_factory
-
+from utils.api_utils import MyModules,api
 
 async def refresh_universe(exchange, universe_filter):
     ''' Reads from universe.json '''
@@ -356,15 +355,7 @@ async def strategy_wrapper(**kwargs):
 
     return result
 
-@api_factory(examples=["pfoptimizer sysperp ftx subaccount=debug config=prod",
-                       "pfoptimizer basis ftx type=future depth=100000"],
-             args_validation=[
-                 ['run_type', lambda x: x in ["sysperp", "backtest", "depth", "basis"],'not in {}'.format(["sysperp", "backtest", "depth", "basis"])],
-                 ['exchange', lambda x: x in ["ftx"], 'not in {}'.format(["ftx"])]],
-             kwargs_validation={'type':[lambda x: ["perpetual", "future", "all"],'not in {}'.format(["perpetual", "future", "all"])],
-                                'subaccount':[lambda x: True,'not found'],
-                                'depth':[lambda x: isinstance(float(x),float),'need a float'],
-                                'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(),x)),'not found']})
+@api
 def main(*args,**kwargs):
     '''
         examples:
@@ -381,23 +372,6 @@ def main(*args,**kwargs):
    '''
     logger = kwargs.pop('__logger')
 
-    args_validation = [['run_type',lambda x: x in ["sysperp", "backtest", "depth", "basis"],'not in {}'.format(["sysperp", "backtest", "depth", "basis"])],
-                  ['exchange',lambda x: x in ["ftx"],'not in {}'.format(["ftx"])]]
-    for i,arg in enumerate(args_validation):
-        if not args_validation[i][1](args[i]):
-            error_msg = f'{args_validation[i][0]} {args_validation[i][2]}'
-            logger.critical(error_msg)
-            raise Exception(error_msg)
-    kwargs_validation = {'subaccount':[lambda x: True,'not in {}'.format([""])],
-                  'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(),x)),'not found'],
-                  'type':[lambda x: x in ["all","perpetual","future"],'not in {}'.format(["all","perpetual","future"])],
-                  'depth':[lambda x: isinstance(float(x),float) ,'not a float']}
-    for key,arg in kwargs.items():
-        if not kwargs_validation[key][0](arg):
-            error_msg = f'{key} {kwargs_validation[key][1]}'
-            logger.critical(error_msg)
-            raise Exception(error_msg)
-
     run_type = args[0]
     exchange_name = args[1]
     if run_type == 'sysperp':
@@ -407,7 +381,7 @@ def main(*args,**kwargs):
 
     if run_type == 'basis':
         if 'depth' in kwargs: kwargs['depth'] = float(kwargs['depth'])
-        res = enricher_wrapper(*args[1:],**kwargs)
+        res = enricher_wrapper(*args,**kwargs)
     if run_type == 'sysperp':
         res = asyncio.run(strategy_wrapper(
             exchange_name=exchange_name,
