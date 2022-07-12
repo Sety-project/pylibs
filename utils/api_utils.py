@@ -1,4 +1,4 @@
-import logging,os,sys,datetime,subprocess,importlib,functools
+import logging,os,sys,datetime,subprocess,importlib,functools,pathlib
 from utils.io_utils import parse_time_param
 from utils.config_loader import configLoader
 
@@ -121,7 +121,7 @@ class MyModules:
         content = '#!/bin/bash \n \n python3 main.py'+ ''.join(
             [f' ${arg[0].upper()}' for arg in self.args_validation] + \
             [f' {kwarg}=${kwarg.upper()}' for kwarg in self.kwargs_validation])
-        root_dir = os.path.split(os.getcwd())[0]
+        root_dir = pathlib.Path(__file__).resolve().parent.parent
         filename = os.path.join(os.sep, root_dir, self.name, 'run.sh')
         with open(filename,'w') as fp:
             fp.write(content)
@@ -139,7 +139,7 @@ class MyModules:
             importlib.import_module(f'{mod_name}.main')
 
     def run_test(self):
-        root_dir = os.path.split(os.getcwd())[0]
+        root_dir = pathlib.Path(__file__).resolve().parent.parent
         filename = os.path.join(os.sep, root_dir, self.name, 'main.py')
         results = {example:subprocess.run(f'{sys.executable} {filename} {example}',shell=True) # subprocess.run
                    for example in self.examples}
