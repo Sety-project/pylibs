@@ -374,7 +374,7 @@ def vwap_from_list(frequency, trades):
     return vwap
 
 
-async def ftx_history_main_wrapper(run_type, exchange_name, universe_name, nb_days):
+async def ftx_history_main_wrapper(run_type, exchange_name, universe_name, nb_days=1):
 
     exchange = await open_exchange(exchange_name,'')
     universe = configLoader.get_bases(universe_name)
