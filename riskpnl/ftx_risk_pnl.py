@@ -484,8 +484,8 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
             cash_flows = cash_flows.append(future_portfolio[['start_time','time','coin','USDamt','event_type','attribution','end_mark']], ignore_index=True)
 
     unexplained=pd.DataFrame()
-    unexplained['USDamt']=end_portfolio.loc[end_portfolio['event_type']=='PV','usdAmt'].values - \
-                start_portfolio.loc[start_portfolio['event_type']=='PV','usdAmt'].values - \
+    unexplained['USDamt']=end_portfolio.loc[end_portfolio['event_type']=='PV','coinAmt'].values - \
+                start_portfolio.loc[start_portfolio['event_type']=='PV','coinAmt'].values - \
                 cash_flows['USDamt'].sum()
     unexplained['coin'] = 'USD'
     unexplained['attribution'] = 'USD'
@@ -558,11 +558,10 @@ async def risk_and_pnl(exchange,period):
         pnl_filename = os.path.join(os.sep, dirname, 'all_pnl.csv')
         if os.path.isfile(pnl_filename):
             all_pnl = pd.concat([pd.read_csv(pnl_filename,index_col=0),pnl],axis=0)
-            #all_pnl['time'] = all_pnl['time'].apply(lambda t: pd.to_datetime(t).replace(tzinfo=timezone.utc))
-            #all_pnl['start_time'] = all_pnl['start_time'].apply(lambda t: pd.to_datetime(t).replace(tzinfo=timezone.utc))
-            all_pnl.to_csv(pnl_filename)
         else:
-            pnl.to_csv(pnl_filename)
+            all_pnl = pnl
+        all_pnl.to_csv(pnl_filename)
+        return all_pnl
 
 
 @api

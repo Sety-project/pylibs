@@ -68,7 +68,7 @@ def api(func):
         logger = build_logging(module_name, {logging.INFO: 'info.log'})
 
         # print arguments
-        logger.info(f'running {module_name} {args} ')
+        logger.info(f'running {module_name} args={args} kwargs={kwargs}')
         if '__logger' in kwargs:
             raise Exception('__logger kwarg key is reserved')
 
@@ -78,12 +78,12 @@ def api(func):
 
         # call and log exceptions or result
         try:
-            return func(*args, **(kwargs | {'__logger': logger}))
+            result = func(*args, **(kwargs | {'__logger': logger}))
+            logger.info(f'command returned {str(result)}')
+            return result
         except Exception as e:
             logger.critical(str(e))
             raise e
-        else:
-            logger.info(f'command {[(i, values[i]) for i in args]} returned {value}')
 
     return wrapper_api
 
@@ -102,7 +102,7 @@ class MyModules:
         '''check all args are present and valid'''
         for i,arg in enumerate(self.args_validation):
             if not self.args_validation[i][1](args[i]):
-                error_msg = f'{self.args_validation[i][0]} {self.args_validation[i][2]}'
+                error_msg = f'{self.args_validation[i][0]} {args[i]} {self.args_validation[i][2]}'
                 logging.getLogger(self.name).critical(error_msg)
                 raise Exception(error_msg)
 

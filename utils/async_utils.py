@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import platform
-import asyncio, threading
+import asyncio, threading,aiofiles
 import functools
 
 if platform.system()=='Windows':
