@@ -123,7 +123,7 @@ class MyModules:
             [f' {kwarg}=${kwarg.upper()}' for kwarg in self.kwargs_validation])
         root_dir = pathlib.Path(__file__).resolve().parent.parent
         filename = os.path.join(os.sep, root_dir, self.name, 'run.sh')
-        with open(filename,'w') as fp:
+        with open(filename,'w+') as fp:
             fp.write(content)
 
     @staticmethod
