@@ -47,7 +47,11 @@ def build_logging(app_name,log_mapping={logging.INFO:'info.log',logging.WARNING:
 def extract_args_kwargs(command):
     args = [arg.split('=')[0] for arg in command if len(arg.split('=')) == 1]
     args = args[1:]
-    kwargs = dict([arg.split('=') for arg in command if len(arg.split('=')) == 2])
+    kwargs = dict()
+    for arg in command:
+        key_value = arg.split('=')
+        if len(key_value) == 2 and key_value[1] != "not_passed":
+            kwargs |= {key_value[0],key_value[1]}
     return args,kwargs
 
 def api(func):
@@ -113,9 +117,20 @@ class MyModules:
     def get_short_name(self):
         return self.name.split('_')[-1]
 
+    def generate_run_sh(self):
+        content = '#!/bin/bash \n \n python3 main.py'+ ''.join(
+            [f' ${arg[0].upper()}' for arg in self.args_validation] + \
+            [f' {kwarg}=${kwarg.upper()}' for kwarg in self.kwargs_validation])
+        root_dir = os.path.split(os.getcwd())[0]
+        filename = os.path.join(os.sep, root_dir, self.name, 'run.sh')
+        with open(filename,'w') as fp:
+            fp.write(content)
+
     @staticmethod
     def register(name,examples,args_validation,kwargs_validation):
-        MyModules.current_module_list |= {name: MyModules(name,examples,args_validation,kwargs_validation)}
+        module = MyModules(name,examples,args_validation,kwargs_validation)
+        MyModules.current_module_list |= {name: module}
+        module.generate_run_sh()
 
     @staticmethod
     def load_all_modules():
@@ -134,9 +149,8 @@ MyModules.register(name='histfeed',
                    examples=["get ftx wide 5"],
                    args_validation=[['run_type',lambda x: x in ["build", "correct", "get"],'not in {}'.format(["build", "correct", "get"])],
                                     ['exchange',lambda x: x in ["ftx"],'not in {}'.format(["ftx"])],
-                                    ['universe',lambda x: x in configLoader.get_universe_pool(),'not in {}'.format(configLoader.get_universe_pool())],
-                                    ['nb_days',lambda x: isinstance(int(x),int),'not an int']],
-                   kwargs_validation={})
+                                    ['universe',lambda x: x in configLoader.get_universe_pool(),'not in {}'.format(configLoader.get_universe_pool())]],
+                   kwargs_validation={'nb_days': [lambda x: isinstance(int(x), int), 'not an int']})
 MyModules.register(name='pfoptimizer',
                    examples=["sysperp ftx subaccount=debug config=prod",
                              "basis ftx type=future depth=100000"],
