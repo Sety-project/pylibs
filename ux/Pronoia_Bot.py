@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # This program is dedicated to the public domain under the CC0 license.
-from utils.api_utils import MyModules,api,MyModules
+from utils.api_utils import extract_args_kwargs,api,MyModules
 import importlib,logging
 
 import subprocess
@@ -62,10 +62,7 @@ def echo(update, context):
         if split_message[0] in MyModules.current_module_list:
             module = importlib.import_module(f'{split_message[0]}.main')
             main_func = getattr(module, 'main')
-
-            args = [arg.split('=')[0] for arg in split_message if len(arg.split('=')) == 1]
-            kwargs = dict([arg.split('=') for arg in split_message if len(arg.split('=')) == 2])
-
+            args, kwargs = extract_args_kwargs(split_message)
             data = main_func(*args,**kwargs)
         elif split_message[0] == 'docker':
             if split_message[1] == 'ps':

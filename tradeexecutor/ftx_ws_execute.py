@@ -1343,6 +1343,7 @@ def main(*args,**kwargs):
            config =  inserts a subdirectory for config ~/config/config_dir/tradeexecutor_params.json (optional)
            exchange = 'ftx' (mandatory for 'unwind', 'flatten')
            subaccount = 'SysPerp' (mandatory for 'unwind', 'flatten')
+           nb_runs = 1
    '''
 
     order = args[0]
