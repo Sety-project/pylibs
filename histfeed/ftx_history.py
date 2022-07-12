@@ -374,11 +374,11 @@ def vwap_from_list(frequency, trades):
     return vwap
 
 
-async def ftx_history_main_wrapper(run_type, exchange_name, universe_name, nb_of_days):
+async def ftx_history_main_wrapper(run_type, exchange_name, universe_name, nb_days):
 
     exchange = await open_exchange(exchange_name,'')
     universe = configLoader.get_bases(universe_name)
-    nb_of_days = int(nb_of_days)
+    nb_days = int(nb_days)
     futures = pd.DataFrame(await Static.fetch_futures(exchange)).set_index('name')
     await exchange.load_markets()
 
@@ -402,13 +402,13 @@ async def ftx_history_main_wrapper(run_type, exchange_name, universe_name, nb_of
         raise Exception('bug. does not correct')
         logger.info("Building history for correct")
         hy_history = await get_history(dir_name, futures, history_start)
-        end = datetime.utcnow().replace(tzinfo=timezone.utc)-timedelta(days=nb_of_days)
+        end = datetime.utcnow().replace(tzinfo=timezone.utc)-timedelta(days=nb_days)
         await correct_history(futures, exchange, hy_history[:end])
         await build_history(futures, exchange, dir_name)
         await exchange.close()
     elif run_type == 'get':
         logger.info("Getting history...")
-        hy_history = await get_history(dir_name, futures, 24 * nb_of_days)
+        hy_history = await get_history(dir_name, futures, 24 * nb_days)
         await exchange.close()
         return hy_history
 
