@@ -23,7 +23,7 @@ async def live_risk_wrapper(exchange,subaccount,nb_runs='1'):
     for i in range(int(nb_runs)):
         if i>0: t.sleep(30)
         risk = await live_risk(exchange_obj,subaccount,futures)
-        logging.getLogger('pnl').info(risk)
+        logging.getLogger('riskpnl').info(risk)
 
     await exchange_obj.close()
     return risk
@@ -509,7 +509,7 @@ async def risk_and_pnl_wrapper(exchange,subaccount,period='write_all'):
 
 async def risk_and_pnl(exchange,period):
     end_time = datetime.utcnow().replace(tzinfo=timezone.utc)
-    dirname = os.path.join(os.sep,'tmp','pnl')
+    dirname = os.path.join(os.sep,'tmp','riskpnl')
 
     # initialize directory and previous_risk if needed
     if not os.path.exists(dirname):
@@ -545,7 +545,7 @@ async def risk_and_pnl(exchange,period):
     if period != 'write_all':
         period = parse_time_param(period)
         result = pnl[pnl['time']>end_time-period]
-        logging.getLogger('pnl').info(result)
+        logging.getLogger('riskpnl').info(result)
         return result
     else:
         # accrue and archive risk otherwise
