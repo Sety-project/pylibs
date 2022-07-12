@@ -1,3 +1,3 @@
-#!/bin/bash
-#$DOCKER_IMAGE
-python3 main.py
+#!/bin/bash 
+ 
+ python3 main.py
