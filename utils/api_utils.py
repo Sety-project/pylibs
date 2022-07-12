@@ -130,7 +130,7 @@ class MyModules:
     def register(name,examples,args_validation,kwargs_validation):
         module = MyModules(name,examples,args_validation,kwargs_validation)
         MyModules.current_module_list |= {name: module}
-        module.generate_run_sh()
+        #module.generate_run_sh()
 
     @staticmethod
     def load_all_modules():
