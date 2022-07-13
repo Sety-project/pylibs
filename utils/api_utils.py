@@ -44,13 +44,13 @@ def build_logging(app_name,log_mapping={logging.INFO:'info.log',logging.WARNING:
 
     return logger
 
-def extract_args_kwargs(command):
+def extract_args_kwargs(command,not_passed_token="not_passed"):
     args = [arg.split('=')[0] for arg in command if len(arg.split('=')) == 1]
     args = args[1:]
     kwargs = dict()
     for arg in command:
         key_value = arg.split('=')
-        if len(key_value) == 2 and key_value[1] != "not_passed":
+        if len(key_value) == 2 and key_value[1] != not_passed_token:
             kwargs |= {key_value[0]:key_value[1]}
     return args,kwargs
 
@@ -82,7 +82,7 @@ def api(func):
             logger.info(f'command returned {str(result)}')
             return result
         except Exception as e:
-            logger.critical(str(e))
+            logger.critical(str(e),stack_info=True)
             raise e
 
     return wrapper_api
@@ -90,11 +90,11 @@ def api(func):
 class MyModules:
     current_module_list = dict()
 
-    def __init__(self,name,examples,args_validation,kwargs_validation):
+    def __init__(self,name,testcase,args_validation,kwargs_validation):
         self.name = name
         if self.name in MyModules.current_module_list:
             raise Exception(f'module {self.name} already in the list')
-        self.examples = examples
+        self.testcase = testcase
         self.args_validation = args_validation
         self.kwargs_validation = kwargs_validation
 
@@ -127,8 +127,8 @@ class MyModules:
             fp.write(content)
 
     @staticmethod
-    def register(name,examples,args_validation,kwargs_validation):
-        module = MyModules(name,examples,args_validation,kwargs_validation)
+    def register(name,testcase,args_validation,kwargs_validation):
+        module = MyModules(name,testcase,args_validation,kwargs_validation)
         MyModules.current_module_list |= {name: module}
         #module.generate_run_sh()
 
@@ -142,17 +142,17 @@ class MyModules:
         root_dir = pathlib.Path(__file__).resolve().parent.parent
         filename = os.path.join(os.sep, root_dir, self.name, 'main.py')
         results = {example:subprocess.run(f'{sys.executable} {filename} {example}',shell=True) # subprocess.run
-                   for example in self.examples}
+                   for example in self.testcase}
         return results
 
 MyModules.register(name='histfeed',
-                   examples=["get ftx wide 5"],
+                   testcase=["get ftx wide 5"],
                    args_validation=[['run_type',lambda x: x in ["build", "correct", "get"],'not in {}'.format(["build", "correct", "get"])],
                                     ['exchange',lambda x: x in ["ftx"],'not in {}'.format(["ftx"])],
                                     ['universe',lambda x: x in configLoader.get_universe_pool(),'not in {}'.format(configLoader.get_universe_pool())]],
                    kwargs_validation={'nb_days': [lambda x: isinstance(int(x), int), 'not an int']})
 MyModules.register(name='pfoptimizer',
-                   examples=["sysperp ftx subaccount=debug config=prod",
+                   testcase=["sysperp ftx subaccount=debug config=prod",
                              "basis ftx type=future depth=100000"],
                    args_validation=[
                        ['run_type', lambda x: x in ["sysperp", "backtest", "depth", "basis"],'not in {}'.format(["sysperp", "backtest", "depth", "basis"])],
@@ -162,7 +162,7 @@ MyModules.register(name='pfoptimizer',
                                       'depth':[lambda x: isinstance(float(x),float),'need a float'],
                                       'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(),x)),'not found']})
 MyModules.register(name='riskpnl',
-                   examples=["risk ftx debug nb_runs=10",
+                   testcase=["risk ftx debug nb_runs=10",
                              "plex ftx debug period=2d",
                              "fromoptimal ftx debug"],
                    args_validation=[
@@ -175,7 +175,7 @@ MyModules.register(name='riskpnl',
                                       'filename':[lambda x: True,'not found'],# skew it....
                                       'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(),x)),'not found']})
 MyModules.register(name='tradeexecutor',
-                   examples=["unwind exchange=ftx subaccount=debug config=prod",
+                   testcase=["unwind exchange=ftx subaccount=debug config=prod",
                              "/home/david/config/pfoptimizer/weight_shard_0.csv config=prod"],
                    args_validation=[
                        ['order', lambda x: x in ['unwind', 'flatten'] or isinstance(x,str),'not in {} and not a file'.format(['unwind', 'flatten'])]],
@@ -184,6 +184,6 @@ MyModules.register(name='tradeexecutor',
                                       'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(),x)),'not found'],
                                       'nb_runs':[lambda x: isinstance(int(x),int),'integer needed']})
 MyModules.register(name='ux',
-                   examples=[""],
+                   testcase=[""],
                    args_validation=[],
                    kwargs_validation={})

@@ -498,34 +498,39 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
 
     return cash_flows.sort_values(by='time',ascending=True)
 
-async def risk_and_pnl_wrapper(exchange,subaccount,period='write_all'):
+async def risk_and_pnl_wrapper(exchange,subaccount,**kwargs):
     exchange_obj = await open_exchange(exchange,subaccount)
-    plex = await risk_and_pnl(exchange_obj,period)
+    plex = await risk_and_pnl(exchange_obj,**kwargs)
     await exchange_obj.close()
     return plex
 
-async def risk_and_pnl(exchange,period):
+async def risk_and_pnl(exchange,**kwargs):
     end_time = datetime.utcnow().replace(tzinfo=timezone.utc)
-    dirname = os.path.join(os.sep,'tmp','riskpnl')
+    log_path = os.path.join(os.sep,'tmp','riskpnl')
+    database_path = os.path.join(os.sep,configLoader.get_config_folder_path(),kwargs['config'])
 
-    # initialize directory and previous_risk if needed
-    if not os.path.exists(dirname):
-        os.umask(0)
-        os.makedirs(dirname, mode=0o777)
-
-    risk_filename = os.path.join(os.sep,dirname,'all_risk.csv')
-    if not os.path.isfile(risk_filename):
+    def make_initial_risk(end_time):
         previous_risk = pd.DataFrame()
         previous_risk = previous_risk.append(pd.DataFrame(index=[0], data=dict(
-            zip(['time', 'coin', 'coinAmt', 'event_type', 'attribution', 'spot', 'mark'],
+            zip(['time', 'coin', 'coinAmt', 'event_type', 'attribution', 'spot', 'mark', 'exchange', 'subaccount'],
                 [end_time - timedelta(hours=1), 'USD', 0.0, 'delta', 'USD', 1.0, 1.0]))))
         previous_risk = previous_risk.append(pd.DataFrame(index=[0], data=dict(
-            zip(['time', 'coin', 'coinAmt', 'event_type', 'attribution', 'spot', 'mark'],
+            zip(['time', 'coin', 'coinAmt', 'event_type', 'attribution', 'spot', 'mark', 'exchange', 'subaccount'],
                 [end_time - timedelta(hours=1), 'USD', 0.0, 'PV', 'USD', 1.0, 1.0]))))
-        previous_risk.to_csv(risk_filename)
+        return previous_risk
 
-    # need to retrieve previous risk / marks
-    previous_risk = pd.read_csv(risk_filename,index_col=0)
+    risk_filename = os.path.join(os.sep,database_path,'all_risk.csv')
+    if not os.path.isfile(risk_filename):
+        previous_risk = make_initial_risk(end_time)
+        previous_risk.to_csv(risk_filename)
+    else:
+        # need to retrieve previous risk / marks
+        previous_risk = pd.read_csv(risk_filename,index_col=0)
+
+    previous_risk = previous_risk[(previous_risk['exchange'] == exchange.id) & (previous_risk['subaccount'] == exchange.headers['FTX-SUBACCOUNT'])]
+    if previous_risk.empty:
+        previous_risk = make_initial_risk(end_time)
+
     previous_risk['time'] = previous_risk['time'].apply(lambda date: pd.to_datetime(date).replace(tzinfo=timezone.utc))
     start_time = previous_risk['time'].max()
     start_portfolio = previous_risk[(previous_risk['time']<start_time+timedelta(milliseconds= 1000)) \
@@ -534,32 +539,36 @@ async def risk_and_pnl(exchange,period):
     # calculate risk
     # 14s is to avoid looking into the future to fetch prices
     end_portfolio = await fetch_portfolio(exchange, end_time - timedelta(seconds=14)) # it's live in fact, end_time just there for records
+    end_portfolio['exchange'] = exchange.id
+    end_portfolio['subaccount'] = exchange.headers['FTX-SUBACCOUNT']
+
     # calculate pnl
     pnl = await compute_plex(exchange,start=start_time,end=end_time,start_portfolio=start_portfolio,end_portfolio=end_portfolio)
+    pnl['exchange'] = exchange.id
+    pnl['subaccount'] = exchange.headers['FTX-SUBACCOUNT']
     pnl.sort_values(by='time',ascending=True,inplace=True)
 
     # return pnl period is specified
-    if period != 'write_all':
-        period = parse_time_param(period)
+    if 'period' in kwargs:
+        period = parse_time_param(kwargs['period'])
         result = pnl[pnl['time']>end_time-period]
         logging.getLogger('riskpnl').info(result)
         return result
     else:
         # accrue and archive risk otherwise
-        end_portfolio.to_csv(os.path.join(dirname,end_time.strftime("%Y%m%d_%H%M%S") + '_risk.json'))
-        pnl.to_csv(os.path.join(dirname, end_time.strftime("%Y%m%d_%H%M%S") + '_pnl.json'))
+        end_portfolio.to_csv(os.path.join(log_path,end_time.strftime("%Y%m%d_%H%M%S") + '_risk.json'))
+        pnl.to_csv(os.path.join(database_path, end_time.strftime("%Y%m%d_%H%M%S") + '_pnl.json'))
 
         all_risk = pd.concat([previous_risk,end_portfolio],axis=0)
         all_risk.to_csv(risk_filename)
 
-        pnl_filename = os.path.join(os.sep, dirname, 'all_pnl.csv')
+        pnl_filename = os.path.join(os.sep, database_path, 'all_pnl.csv')
         if os.path.isfile(pnl_filename):
             all_pnl = pd.concat([pd.read_csv(pnl_filename,index_col=0),pnl],axis=0)
         else:
             all_pnl = pnl
-        all_pnl.to_csv(pnl_filename)
+        all_pnl.to_csv(os.path.join(log_path,end_time.strftime("%Y%m%d_%H%M%S") + '_pnl.json'))
         return all_pnl
-
 
 @api
 def main(*args,**kwargs):
@@ -598,4 +607,4 @@ def main(*args,**kwargs):
         log = ExecutionLogger.batch_summarize_exec_logs(*args[1:],**kwargs)
         return log
     else:
-        logger.critical(f'commands: fromoptimal[exchange, subaccount]\nrisk[exchange, subaccount,nb_runs=1],plex[exchange, subaccount,period=write_all],batch_summarize_exec_logs[exchange=ftx, subaccount= ,dirname=/tmp/tradeexecutor]')
+        logger.critical(f'commands: fromoptimal[exchange, subaccount]\nrisk[exchange, subaccount,nb_runs=1],plex[exchange, subaccount,period=2],batch_summarize_exec_logs[exchange=ftx, subaccount= ,dirname=/tmp/tradeexecutor]')
