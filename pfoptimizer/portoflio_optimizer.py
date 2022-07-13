@@ -75,7 +75,7 @@ async def refresh_universe(exchange, universe_filter):
 # runs optimization * [time, params]
 async def perp_vs_cash(
         exchange,
-        config,
+        config_name,
         signal_horizon,
         holding_period,
         slippage_override,
@@ -89,6 +89,7 @@ async def perp_vs_cash(
         optional_params=[]):# verbose,warm_start
 
     # Load defaults params
+    config = configLoader.get_pfoptimizer_params(dirname=config_name)
     param_type_allowed = config['TYPE_ALLOWED']['value']
     param_universe = config['UNIVERSE']['value']
     dir_name = configLoader.get_mktdata_folder_for_exchange(exchange.id)
@@ -147,7 +148,7 @@ async def perp_vs_cash(
 
     ## ----------- enrich/carry filter, get history, populate concentration limit
     enriched = await enricher(exchange, filtered, holding_period, equity=equity,
-                              slippage_override=slippage_override, slippage_orderbook_depth=slippage_orderbook_depth,
+                              slippage_override=slippage_override, depth=slippage_orderbook_depth,
                               slippage_scaler=slippage_scaler,
                               params={'override_slippage': True, 'type_allowed': type_allowed, 'fee_mode': 'retail'})
 
@@ -278,7 +279,7 @@ async def perp_vs_cash(
 
     # for live, send last optimized, and also shard them by coin.
     if backtest_start == backtest_end:
-        pfoptimizer_path = os.path.join(configLoader.get_config_folder_path(), "pfoptimizer")
+        pfoptimizer_path = os.path.join(configLoader.get_config_folder_path(), config_name if config_name else '', "pfoptimizer")
 
         # write logs
         if not os.path.exists(pfoptimizer_path):
@@ -331,7 +332,7 @@ async def strategy_wrapper(**kwargs):
 
     coroutines = [perp_vs_cash(
         exchange=exchange,
-        config=kwargs['config'],
+        config_name=kwargs['config_name'],
         equity_override=equity_override,
         concentration_limit=concentration_limit,
         mktshare_limit=mktshare_limit,
@@ -362,8 +363,8 @@ def main(*args,**kwargs):
             pfoptimizer sysperp ftx subaccount=debug config=prod
             pfoptimizer basis ftx type=future depth=100000
         args:
-            run_type = ["sysperp", "backtest", "depth", "basis"] (mandatory param)
-            exchange = ["ftx"] (mandatory param)
+            run_type = ["sysperp", "backtest", "depth", "basis"]
+            exchange = ["ftx"]
         kwargs:
             subaccount = any (mandatory param for sysperp)
             config = /home/david/config/pfoptimizer_params.json (optionnal)
@@ -381,13 +382,12 @@ def main(*args,**kwargs):
 
     if run_type == 'basis':
         if 'depth' in kwargs: kwargs['depth'] = float(kwargs['depth'])
-        kwargs.pop('subaccount')
         res = enricher_wrapper(*args[1:],**kwargs)
     if run_type == 'sysperp':
         res = asyncio.run(strategy_wrapper(
             exchange_name=exchange_name,
             subaccount=subaccount,
-            config=config,
+            config_name=kwargs['config'] if 'config' in kwargs else None, # yuk..
             equity_override=[config["EQUITY_OVERRIDE"]["value"]],
             concentration_limit=[config["CONCENTRATION_LIMIT"]["value"]],
             mktshare_limit=[config["MKTSHARE_LIMIT"]["value"]],

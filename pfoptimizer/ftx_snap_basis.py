@@ -41,7 +41,7 @@ async def enricher(exchange,
                    holding_period,
                    equity,
                    slippage_override=-999,
-                   slippage_orderbook_depth=0,
+                   depth=0,
                    slippage_scaler=1.0,
                    params={'override_slippage': True, 'type_allowed': ['perpetual'], 'fee_mode': 'retail'}):
 
@@ -90,8 +90,8 @@ async def enricher(exchange,
 
     # transaction costs
     costs = await fetch_rate_slippage(futures, exchange, holding_period,
-                                    slippage_override, slippage_orderbook_depth, slippage_scaler,
-                                    params)
+                                      slippage_override, depth, slippage_scaler,
+                                      params)
     futures = futures.join(costs, how = 'outer')
 
     # spot carries
@@ -114,8 +114,8 @@ async def enricher(exchange,
 
     return futures.drop(columns=['carryLong','carryShort'])
 
-def enricher_wrapper(exchange_name,type='all',depth=0) ->pd.DataFrame():
-    async def enricher_subwrapper(exchange_name,type,depth):
+def enricher_wrapper(exchange_name,**kwargs) ->pd.DataFrame():
+    async def enricher_subwrapper(exchange_name,**kwargs):
         exclusion_list = configLoader.get_pfoptimizer_params()['EXCLUSION_LIST']['value']
         holding_period = parse_time_param(configLoader.get_pfoptimizer_params()['HOLDING_PERIOD']['value'])
         signal_horizon = parse_time_param(configLoader.get_pfoptimizer_params()['SIGNAL_HORIZON']['value'])
@@ -130,9 +130,9 @@ def enricher_wrapper(exchange_name,type='all',depth=0) ->pd.DataFrame():
             & (futures['tokenizedEquity'] != True)]
 
         filtered = futures[~futures['underlying'].isin(exclusion_list)]
-        type = ['future','perpetual'] if type == 'all' else [type]
+        type = ['future','perpetual'] if kwargs['type'] == 'all' else [kwargs['type']]
         enriched = await enricher(exchange, filtered, timedelta(weeks=1), equity=1.0,
-                                  slippage_override=-999, slippage_orderbook_depth=depth,
+                                  slippage_override=-999, depth=kwargs['depth'],
                                   slippage_scaler=1.0,
                                   params={'override_slippage': False, 'type_allowed': type, 'fee_mode': 'retail'})
         #await build_history(futures, exchange)
