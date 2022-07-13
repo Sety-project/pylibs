@@ -1272,11 +1272,12 @@ async def get_exec_request(*argv,subaccount):
 
     return target_portfolio
 
-async def ftx_ws_spread_main_wrapper(order,config,logger,**kwargs):
+async def ftx_ws_spread_main_wrapper(order,config_name,logger,**kwargs):
     try:
         # open exchange
+        config = configLoader.get_executor_params(order=order,dirname=config_name)
         if order not in ['unwind','flatten']:
-            future_weights = configLoader.get_current_weights(order)
+            future_weights = configLoader.get_current_weights(filename=order,dirname=config_name)
             exchange_name = future_weights['exchange'].unique()[0]
             subaccount = future_weights['subaccount'].unique()[0]
         else:
@@ -1347,13 +1348,14 @@ def main(*args,**kwargs):
    '''
 
     order = args[0]
-    config = configLoader.get_executor_params(order=order,dirname=kwargs.pop('config') if 'config' in kwargs else None)
+    config_name = kwargs.pop('config')
+    config = configLoader.get_executor_params(order=order,dirname=config_name if 'config' in kwargs else None)
     logger = ExecutionLogger(order,config,log_mapping={logging.INFO: 'exec_info.log', logging.WARNING: 'oms_warning.log', logging.CRITICAL: 'program_flow.log'})
     logger.logger = kwargs.pop('__logger')
 
     for i in range(int(kwargs.pop('nb_runs')) if 'nb_runs' in kwargs else 1):
         try:
-            asyncio.run(ftx_ws_spread_main_wrapper(order,config,logger,**kwargs)) # --> I am filled or I timed out and I have flattened position
+            asyncio.run(ftx_ws_spread_main_wrapper(order,config_name,logger,**kwargs)) # --> I am filled or I timed out and I have flattened position
         except myFtx.DoneDeal as e:
             # Wait for 5 minutes and start over
             if i>0:

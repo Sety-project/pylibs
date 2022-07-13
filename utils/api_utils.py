@@ -178,7 +178,7 @@ MyModules.register(name='tradeexecutor',
                    examples=["unwind exchange=ftx subaccount=debug config=prod",
                              "/home/david/config/pfoptimizer/weight_shard_0.csv config=prod"],
                    args_validation=[
-                       ['order', lambda x: x in ['unwind', 'flatten'] or os.path.isfile(x),'not in {} and not a file'.format(['unwind', 'flatten'])]],
+                       ['order', lambda x: x in ['unwind', 'flatten'] or isinstance(x,str),'not in {} and not a file'.format(['unwind', 'flatten'])]],
                    kwargs_validation={'exchange':[lambda x: x in ['ftx'],'not in {}'.format(['ftx'])],
                                       'subaccount':[lambda x: True,'not found'],
                                       'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(),x)),'not found'],

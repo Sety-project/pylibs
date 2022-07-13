@@ -90,10 +90,15 @@ class configLoader():
                 f"File {filename} not found")
 
     @staticmethod
-    def set_current_weights(weights_filename=_current_weights_filename):
+    def set_current_weights(weights_filename=_current_weights_filename,dirname=None):
         ''' Used by tradeexecutor (only) to read current weights to have '''
         try:
-            configLoader._current_weights = pd.read_csv(weights_filename)
+            if dirname:
+                filename = os.path.join(configLoader._config_folder_path, dirname, 'pfoptimizer', weights_filename)
+            else:
+                filename = os.path.join(configLoader._config_folder_path, 'pfoptimizer', weights_filename)
+
+            configLoader._current_weights = pd.read_csv(filename)
         except FileNotFoundError:
             raise FileNotFoundError(
                 f"File {weights_filename} not found")
@@ -171,11 +176,11 @@ class configLoader():
         return configLoader._executor_params
 
     @staticmethod
-    def get_current_weights(weights_filename):   # Excel file
+    def get_current_weights(filename,dirname=None):   # Excel file
         ''' Used by trade_executor to access current_weights '''
         # Read each time the method is called.
         # Mandatory to catch the weights refreshed every hour
-        configLoader.set_current_weights(weights_filename)
+        configLoader.set_current_weights(filename,dirname)
         return configLoader._current_weights
 
     # PERSIST params
