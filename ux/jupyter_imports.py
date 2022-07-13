@@ -5,6 +5,7 @@ from datetime import *
 import numpy as np
 import pandas as pd
 
+import plotly.express as px
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
 from matplotlib import cm

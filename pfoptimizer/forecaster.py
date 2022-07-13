@@ -78,7 +78,7 @@ def ftx_forecaster_main(*args):
 
     coins = ['ETH','AAVE']
     features = ['funding','price', 'borrowOI', 'volume', 'borrow']
-    label_func = lambda coin,data: data[getattr(ColumnNames,'funding')(coin)]-data[getattr(ColumnNames,'borrow')(coin)]
+    label_func = lambda coin,data: -data[getattr(ColumnNames,'funding')(coin)]-data[getattr(ColumnNames,'borrow')(coin)]
     horizon_windows = [1, 2, 3, 4, 6, 8, 12, 18, 24, 36, 48, 60, 72, 84, 168]
     holding_windows = [1,4,8,12,24,36,48]
 

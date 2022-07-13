@@ -977,12 +977,42 @@ class myFtx(ccxtpro.ftx):
 
         #risk
         delta_timestamp = self.risk_state[coin][symbol]['delta_timestamp']
+        delta_plus = self.risk_state[coin]['netDelta'] + sum(self.margin.open_orders[symbol]['longs']
+                                                             for symbol in self.margin.open_orders
+                                                             if self.markets[symbol]['base']==coin
+                                                             and symbol in self.margin.open_orders)
+        delta_minus = self.risk_state[coin]['netDelta'] + sum(self.margin.open_orders[symbol]['shorts']
+                                                             for symbol in self.margin.open_orders
+                                                              if self.markets[symbol]['base']==coin
+                                                             and symbol in self.margin.open_orders)
+        total_delta_plus = sum(data['delta'] + self.margin.open_orders[symbol]['longs'] if 'longs' in self.margin.open_orders[symbol] else 0
+                               for coin,coin_data in self.risk_state.items()
+                               for symbol,data in coin_data.items())
+        total_delta_minus = sum(data['delta'] + self.margin.open_orders[symbol]['shorts'] if 'shorts' in self.margin.open_orders[symbol] else 0
+                               for coin,coin_data in self.risk_state.items()
+                               for symbol,data in coin_data.items())
+        global_delta_plus = delta_plus + self.parameters['global_beta'] * (total_delta_plus - delta_plus)
+        global_delta_minus = delta_minus + self.parameters['global_beta'] * (total_delta_minus - delta_minus)
+
         globalDelta = self.risk_state[coin]['netDelta'] + self.parameters['global_beta'] * (self.total_delta - self.risk_state[coin]['netDelta'])
         marginal_risk = np.abs(globalDelta/mid + original_size)-np.abs(globalDelta/mid)
         delta_limit = self.limit.delta_limit * self.pv
 
         # if increases risk but not out of limit, trim and go passive.
         if marginal_risk>0:
+            # if (global_delta_plus / mid + original_size) > delta_limit:
+            #     trimmed_size = delta_limit - global_delta_plus / mid
+            #     self.myLogger.logger.debug(
+            #         f'{original_size * mid} {symbol} would increase risk over {self.limit.delta_limit * 100}% of {self.pv} --> trimming to {trimmed_size * mid}')
+            # elif (global_delta_minus / mid + original_size) < -delta_limit:
+            #     trimmed_size = -delta_limit - global_delta_minus / mid
+            #     self.myLogger.logger.debug(
+            #         f'{original_size * mid} {symbol} would increase risk over {self.limit.delta_limit * 100}% of {self.pv} --> trimming to {trimmed_size * mid}')
+            # else:
+            #     trimmed_size = original_size
+            # if np.sign(trimmed_size) != np.sign(original_size):
+            #     self.myLogger.logger.debug(f'skipping (we don t flip orders)')
+            #     return
             if np.abs(globalDelta / mid + original_size) > delta_limit:
                 if (globalDelta / mid + original_size) > delta_limit:
                     trimmed_size = delta_limit - globalDelta / mid
@@ -1348,8 +1378,8 @@ def main(*args,**kwargs):
    '''
 
     order = args[0]
-    config_name = kwargs.pop('config')
-    config = configLoader.get_executor_params(order=order,dirname=config_name if 'config' in kwargs else None)
+    config_name = kwargs.pop('config') if 'config' in kwargs else None
+    config = configLoader.get_executor_params(order=order,dirname=config_name)
     logger = ExecutionLogger(order,config,log_mapping={logging.INFO: 'exec_info.log', logging.WARNING: 'oms_warning.log', logging.CRITICAL: 'program_flow.log'})
     logger.logger = kwargs.pop('__logger')
 
