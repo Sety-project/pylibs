@@ -507,7 +507,9 @@ async def risk_and_pnl_wrapper(exchange,subaccount,**kwargs):
 async def risk_and_pnl(exchange,**kwargs):
     end_time = datetime.utcnow().replace(tzinfo=timezone.utc)
     log_path = os.path.join(os.sep,'tmp','riskpnl')
-    database_path = os.path.join(os.sep,configLoader.get_config_folder_path(),kwargs['config'])
+    database_path = os.path.join(os.sep,configLoader.get_config_folder_path())
+    if 'config' in kwargs:
+        database_path = os.path.join(os.sep, database_path, kwargs['config'])
 
     def make_initial_risk(end_time):
         previous_risk = pd.DataFrame()
