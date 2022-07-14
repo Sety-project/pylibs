@@ -78,7 +78,6 @@ COPY --chown=$USER:$USER /tradeexecutor $TRADEEXECUTOR_PATH
 COPY --chown=$USER:$USER /ccxtpro $CCXTPRO_PATH
 COPY --chown=$USER:$USER /ux $UX_PATH
 
-RUN chmod 666 /var/run/docker.sock
 RUN chmod +x $UX_PATH/run.sh
 
 # Run container as root to be able to create and write in folders
