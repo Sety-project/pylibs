@@ -152,8 +152,8 @@ MyModules.register(name='histfeed',
                                     ['universe',lambda x: x in configLoader.get_universe_pool(),'not in {}'.format(configLoader.get_universe_pool())]],
                    kwargs_validation={'nb_days': [lambda x: isinstance(int(x), int), 'not an int']})
 MyModules.register(name='pfoptimizer',
-                   testbed=["sysperp ftx subaccount=debug config=prod",
-                             "basis ftx type=future depth=100000"],
+                   testbed=["sysperp ftx subaccount=debug",
+                             "basis ftx instrument_type=future depth=100000"],
                    args_validation=[
                        ['run_type', lambda x: x in ["sysperp", "backtest", "depth", "basis"],'not in {}'.format(["sysperp", "backtest", "depth", "basis"])],
                        ['exchange', lambda x: x in ["ftx"], 'not in {}'.format(["ftx"])]],
@@ -175,7 +175,7 @@ MyModules.register(name='riskpnl',
                                       'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(config_name=x))),'not found']})
 MyModules.register(name='tradeexecutor',
                    testbed=[#"unwind exchange=ftx subaccount=debug config=prod",
-                             "~/config/prod/pfoptimizer/weight_shard_0.csv config=prod"],
+                             "weights_ftx_SysPerp_0.csv"],
                    args_validation=[
                        ['order', lambda x: x in ['unwind', 'flatten'] or isinstance(x,str),'not in {} and not a file'.format(['unwind', 'flatten'])]],
                    kwargs_validation={'exchange':[lambda x: x in ['ftx'],'not in {}'.format(['ftx'])],
