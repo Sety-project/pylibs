@@ -114,8 +114,8 @@ async def enricher(exchange,
 
     return futures.drop(columns=['carryLong','carryShort'])
 
-def enricher_wrapper(exchange_name,**kwargs) ->pd.DataFrame():
-    async def enricher_subwrapper(exchange_name,**kwargs):
+def enricher_wrapper(exchange_name,instrument_type,depth) ->pd.DataFrame():
+    async def enricher_subwrapper(exchange_name,instrument_type,depth):
         exclusion_list = configLoader.get_pfoptimizer_params()['EXCLUSION_LIST']['value']
         holding_period = parse_time_param(configLoader.get_pfoptimizer_params()['HOLDING_PERIOD']['value'])
         signal_horizon = parse_time_param(configLoader.get_pfoptimizer_params()['SIGNAL_HORIZON']['value'])
@@ -130,11 +130,10 @@ def enricher_wrapper(exchange_name,**kwargs) ->pd.DataFrame():
             & (futures['tokenizedEquity'] != True)]
 
         filtered = futures[~futures['underlying'].isin(exclusion_list)]
-        type = ['future','perpetual'] if kwargs['type'] == 'all' else [kwargs['type']]
         enriched = await enricher(exchange, filtered, timedelta(weeks=1), equity=1.0,
-                                  slippage_override=-999, depth=kwargs['depth'],
+                                  slippage_override=-999, depth=depth,
                                   slippage_scaler=1.0,
-                                  params={'override_slippage': False, 'type_allowed': type, 'fee_mode': 'retail'})
+                                  params={'override_slippage': False, 'type_allowed': instrument_type, 'fee_mode': 'retail'})
         #await build_history(futures, exchange)
         nowtime = datetime.utcnow().replace(tzinfo=timezone.utc)
         hy_history = await get_history(dirname,enriched,start_or_nb_hours=nowtime-holding_period-signal_horizon,end=nowtime)
@@ -151,7 +150,7 @@ def enricher_wrapper(exchange_name,**kwargs) ->pd.DataFrame():
 
         await exchange.close()
         return data
-    return asyncio.run(enricher_subwrapper(exchange_name,type,depth))
+    return asyncio.run(enricher_subwrapper(exchange_name,instrument_type,depth))
 
 def update(futures,point_in_time,history,equity,
            intLongCarry, intShortCarry, intUSDborrow,intBorrow,E_long,E_short,E_intUSDborrow,E_intBorrow,
