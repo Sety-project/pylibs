@@ -160,7 +160,7 @@ MyModules.register(name='pfoptimizer',
                    kwargs_validation={'type':[lambda x: ["perpetual", "future", "all"],'not in {}'.format(["perpetual", "future", "all"])],
                                       'subaccount':[lambda x: True,'not found'],
                                       'depth':[lambda x: isinstance(float(x),float),'need a float'],
-                                      'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(),x)),'not found']})
+                                      'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(config_name=x))),'not found']})
 MyModules.register(name='riskpnl',
                    testcase=["risk ftx debug nb_runs=10",
                              "plex ftx debug period=2d",
@@ -173,7 +173,7 @@ MyModules.register(name='riskpnl',
                                       'period':[lambda x: isinstance(parse_time_param(x),datetime.timedelta),'time period needed'],
                                       'dirname':[lambda x: os.path.isdir(x),'not found'],
                                       'filename':[lambda x: True,'not found'],# skew it....
-                                      'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(),x)),'not found']})
+                                      'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(config_name=x))),'not found']})
 MyModules.register(name='tradeexecutor',
                    testcase=["unwind exchange=ftx subaccount=debug config=prod",
                              "/home/david/config/pfoptimizer/weight_shard_0.csv config=prod"],
@@ -181,7 +181,7 @@ MyModules.register(name='tradeexecutor',
                        ['order', lambda x: x in ['unwind', 'flatten'] or isinstance(x,str),'not in {} and not a file'.format(['unwind', 'flatten'])]],
                    kwargs_validation={'exchange':[lambda x: x in ['ftx'],'not in {}'.format(['ftx'])],
                                       'subaccount':[lambda x: True,'not found'],
-                                      'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(),x)),'not found'],
+                                      'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(config_name=x))),'not found'],
                                       'nb_runs':[lambda x: isinstance(int(x),int),'integer needed']})
 MyModules.register(name='ux',
                    testcase=[""],

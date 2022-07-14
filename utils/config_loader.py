@@ -105,8 +105,8 @@ class configLoader():
 
     ### GETTERS ###
     @staticmethod
-    def get_config_folder_path():
-        return configLoader._config_folder_path
+    def get_config_folder_path(config_name=None,**kwargs):
+        return os.path.join(os.sep,configLoader._config_folder_path,config_name if config_name else '')
 
     @staticmethod
     def get_mktdata_folder_path():

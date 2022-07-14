@@ -279,7 +279,7 @@ async def perp_vs_cash(
 
     # for live, send last optimized, and also shard them by coin.
     if backtest_start == backtest_end:
-        pfoptimizer_path = os.path.join(configLoader.get_config_folder_path(), config_name if config_name else '', "pfoptimizer")
+        pfoptimizer_path = os.path.join(configLoader.get_config_folder_path(config_name=config_name), "pfoptimizer")
 
         # write logs
         if not os.path.exists(pfoptimizer_path):
@@ -301,15 +301,6 @@ async def perp_vs_cash(
         display = display.drop(index=['USD', 'total']).sort_values(by='optimalWeight',key=lambda f: np.abs(f),ascending=False).append(totals)
         #display= display[display['absWeight'].cumsum()>display.loc['total','absWeight']*.1]
         logging.getLogger('pfoptimizer').info(display)
-
-        # send bus message
-        pfoptimizer_res_last_filename = os.path.join(pfoptimizer_path, "current_weights.csv")
-        optimized.to_csv(pfoptimizer_res_last_filename)
-        optimized = optimized.drop(index=['USD', 'total']).sort_values(by='optimalWeight', key=lambda f: np.abs(f),
-                                                                       ascending=False)
-        for i in range(optimized.shape[0]):
-            pfoptimizer_res_last_filename = os.path.join(pfoptimizer_path, f"weight_shard_{i}.csv")
-            optimized.iloc[[i]].to_csv(pfoptimizer_res_last_filename)
 
         return optimized
 
@@ -351,10 +342,10 @@ async def strategy_wrapper(**kwargs):
         for holding_period in kwargs['holding_period']
         for slippage_override in kwargs['slippage_override']]
 
-    result = await safe_gather(coroutines)
+    optimized = await safe_gather(coroutines)
     await exchange.close()
 
-    return result
+    return optimized
 
 @api
 def main(*args,**kwargs):
@@ -397,7 +388,18 @@ def main(*args,**kwargs):
             holding_period=[parse_time_param(config['HOLDING_PERIOD']['value'])],
             slippage_override=[config["SLIPPAGE_OVERRIDE"]["value"]],
             backtest_start=None,
-            backtest_end=None))[0]
+            backtest_end=None))
+        optimized = res[0]
+        # send bus message
+        pfoptimizer_path = os.path.join(configLoader.get_config_folder_path(**kwargs), "pfoptimizer")
+        pfoptimizer_res_last_filename = os.path.join(pfoptimizer_path,
+                                                     f"weights_{exchange_name}_{subaccount}")
+        optimized.to_csv(f'{pfoptimizer_res_last_filename}.csv')
+        optimized = optimized.drop(index=['USD', 'total']).sort_values(by='optimalWeight', key=lambda f: np.abs(f),
+                                                                       ascending=False)
+        for i in range(optimized.shape[0]):
+            optimized.iloc[[i]].to_csv(f"{pfoptimizer_res_last_filename}_{i}.csv")
+
     elif run_type == 'depth':
         global UNIVERSE
         UNIVERSE = 'max'  # set universe to 'max'
