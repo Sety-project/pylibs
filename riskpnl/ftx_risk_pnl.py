@@ -559,7 +559,7 @@ async def risk_and_pnl(exchange,**kwargs):
     else:
         # accrue and archive risk otherwise
         end_portfolio.to_csv(os.path.join(log_path,end_time.strftime("%Y%m%d_%H%M%S") + '_risk.json'))
-        pnl.to_csv(os.path.join(database_path, end_time.strftime("%Y%m%d_%H%M%S") + '_pnl.json'))
+        pnl.to_csv(os.path.join(log_path, end_time.strftime("%Y%m%d_%H%M%S") + '_pnl.json'))
 
         all_risk = pd.concat([previous_risk,end_portfolio],axis=0)
         all_risk.to_csv(risk_filename)

@@ -985,10 +985,10 @@ class myFtx(ccxtpro.ftx):
                                                              for symbol in self.margin.open_orders
                                                               if self.markets[symbol]['base']==coin
                                                              and symbol in self.margin.open_orders)
-        total_delta_plus = sum(data['delta'] + self.margin.open_orders[symbol]['longs'] if 'longs' in self.margin.open_orders[symbol] else 0
+        total_delta_plus = sum(data['delta'] + self.margin.open_orders[symbol]['longs'] if symbol in self.margin.open_orders else 0
                                for coin,coin_data in self.risk_state.items() if coin in self.currencies
                                for symbol,data in coin_data.items() if symbol in self.markets)
-        total_delta_minus = sum(data['delta'] + self.margin.open_orders[symbol]['shorts'] if 'shorts' in self.margin.open_orders[symbol] else 0
+        total_delta_minus = sum(data['delta'] + self.margin.open_orders[symbol]['shorts'] if symbol in self.margin.open_orders else 0
                                for coin,coin_data in self.risk_state.items() if coin in self.currencies
                                for symbol,data in coin_data.items() if symbol in self.markets)
         global_delta_plus = delta_plus + self.parameters['global_beta'] * (total_delta_plus - delta_plus)
