@@ -548,7 +548,7 @@ class myFtx(ccxtpro.ftx):
                              for symbol, data in coin_data.items())}
         if data_dict =={}:
             self.exec_parameters = {'timestamp': end.timestamp() * 1000}
-            raise myFtx.DoneDeal('nothing to do')
+            raise myFtx.NothingToDo()
 
         self.running_symbols = [symbol
                                     for coin_data in data_dict.values()
@@ -985,12 +985,12 @@ class myFtx(ccxtpro.ftx):
                                                              for symbol in self.margin.open_orders
                                                               if self.markets[symbol]['base']==coin
                                                              and symbol in self.margin.open_orders)
-        total_delta_plus = sum(data['delta'] + self.margin.open_orders[symbol]['longs'] if symbol in self.margin.open_orders else 0
+        total_delta_plus = sum(data['delta'] + self.margin.open_orders[symbol]['longs']
                                for coin,coin_data in self.risk_state.items() if coin in self.currencies
-                               for symbol,data in coin_data.items() if symbol in self.markets)
-        total_delta_minus = sum(data['delta'] + self.margin.open_orders[symbol]['shorts'] if symbol in self.margin.open_orders else 0
+                               for symbol,data in coin_data.items() if symbol in self.markets and symbol in self.margin.open_orders)
+        total_delta_minus = sum(data['delta'] + self.margin.open_orders[symbol]['shorts']
                                for coin,coin_data in self.risk_state.items() if coin in self.currencies
-                               for symbol,data in coin_data.items() if symbol in self.markets)
+                               for symbol,data in coin_data.items() if symbol in self.markets and symbol in self.margin.open_orders)
         global_delta_plus = delta_plus + self.parameters['global_beta'] * (total_delta_plus - delta_plus)
         global_delta_minus = delta_minus + self.parameters['global_beta'] * (total_delta_minus - delta_minus)
 
@@ -1047,7 +1047,7 @@ class myFtx(ccxtpro.ftx):
                 self.peg_or_stopout(symbol, size, orderbook,
                                     edit_trigger_depth=params['edit_trigger_depth'],
                                     edit_price_depth='rush_out', stop_depth=None)
-                self.myLogger.logger.warning(f'rushing out of {coin}')
+                if abs(size) > 0: self.myLogger.logger.warning(f'rushing out of {size} {coin}')
                 return
             # limit order if level is acceptable (saves margin compared to faraway order)
             elif current_basket_price < self.exec_parameters[coin]['entry_level']:

@@ -3,7 +3,7 @@ from histfeed.ftx_history import fetch_trades_history
 from utils.ccxt_utilities import open_exchange
 from utils.io_utils import *
 from utils.async_utils import *
-from utils.api_utils import build_logging
+from utils.api_utils import build_logging,extract_args_kwargs
 
 class ExecutionLogger(logging.Logger):
     '''it s a logger that can also write jsons, and summarize them'''
@@ -21,11 +21,12 @@ class ExecutionLogger(logging.Logger):
         self.json_filename = os.path.join(os.sep,'tmp','tradeexecutor','archive',f'{abs(hash_id)}')
 
     async def data_to_json(self, data, suffix):
-        async with aiofiles.open(f'{self.json_filename}_{suffix}.json', mode='w') as file:
-            await file.write(json.dumps(data, cls=NpEncoder))
+        if len(data) > 0:
+            async with aiofiles.open(f'{self.json_filename}_{suffix}.json', mode='w') as file:
+                await file.write(json.dumps(data, cls=NpEncoder))
 
     @staticmethod
-    def batch_summarize_exec_logs(exchange='ftx', subaccount='',dirname=os.path.join(os.sep, 'tmp', 'tradeexecutor'),
+    def batch_summarize_exec_logs(exchange='ftx', subaccount='',dirname=os.path.join(os.sep, 'tmp', 'prod', 'tradeexecutor'),
                                   start=datetime(1970, 1, 1),
                                   end=datetime.now(),
                                   rebuild=True,
@@ -65,10 +66,10 @@ class ExecutionLogger(logging.Logger):
         removed_logs = []
         for filename in filenames:
             try:
-                new_logs = ExecutionLogger.summarize_exec_logs(os.path.join(os.sep, archive_dirname, filename), add_history_context)
+                new_logs = ExecutionLogger.summarize_exec_logs(path_date=os.path.join(os.sep, archive_dirname, filename), add_history_context=add_history_context)
                 for key in tab_list:
                     df = new_logs['parameters']
-                    new_logs[key]['log_time'] = df.loc[df['index']=='inception_time',0].squeeze()
+                    new_logs[key]['log_time'] = datetime.utcfromtimestamp(df.loc[df['index']=='inception_time',0].squeeze()/1000).replace(tzinfo=timezone.utc)
                     compiled_logs[key] = pd.concat([compiled_logs[key], new_logs[key]], axis=0)
             except Exception as e:
                 for suffix in ['events', 'request', 'risk_reconciliations']:
@@ -98,7 +99,11 @@ class ExecutionLogger(logging.Logger):
             parameters = pd.Series(d.pop('parameters')).reset_index()
             request = pd.DataFrame(d).T.reset_index()
 
-        data = pd.concat([data for clientOrderId, data in events.items()], axis=0)
+        if len(events)>0:
+            data = pd.concat([data for clientOrderId, data in events.items()], axis=0)
+        else:
+            raise Exception('no fill to parse')
+
         data.loc[data['lifecycle_state'] == 'filled', 'filled'] = data.loc[
             data['lifecycle_state'] == 'filled', 'amount']
         if data[data['filled'] > 0].empty:
@@ -111,23 +116,24 @@ class ExecutionLogger(logging.Logger):
                             'ack_event': clientOrderId_data[
                                 (clientOrderId_data['lifecycle_state'] == 'acknowledged') & (
                                             clientOrderId_data['comment'] == 'websocket_acknowledgment')].iloc[0],
-                            'last_fill_event': clientOrderId_data[clientOrderId_data['filled'] > 0].iloc[-1]}
+                            'last_fill_event': clientOrderId_data[clientOrderId_data['filled'] > 0].iloc[-1],
+                            'filled': clientOrderId_data['filled'].max()}
                        for clientOrderId, clientOrderId_data in data.groupby(by='clientOrderId') if
                        clientOrderId_data['filled'].max() > 0}
         by_clientOrderId = pd.DataFrame({
             clientOrderId:
                 {'symbol': clientOrderId_data['inception_event']['symbol'],
                  'coin': clientOrderId_data['inception_event']['symbol'].split('/')[0],
-                 'slice_started': clientOrderId_data['inception_event']['timestamp'],
-                 'tick_to_order_local': clientOrderId_data['ack_event']['timestamp'] -
+                 'pending_local': clientOrderId_data['inception_event']['timestamp'],
+                 'pending_to_ack_local': clientOrderId_data['ack_event']['timestamp'] -
                                         clientOrderId_data['inception_event']['timestamp'],
-                 'mid_at_inception': 0.5 * (
+                 'mid_at_pending': 0.5 * (
                              clientOrderId_data['inception_event']['bid'] + clientOrderId_data['inception_event'][
                          'ask']),
                  'amount': clientOrderId_data['inception_event']['amount'] * (
                      1 if clientOrderId_data['last_fill_event']['side'] == 'buy' else -1),
 
-                 'filled': clientOrderId_data['last_fill_event']['filled'] * (
+                 'filled': clientOrderId_data['filled'] * (
                      1 if clientOrderId_data['last_fill_event']['side'] == 'buy' else -1),
                  'price': clientOrderId_data['last_fill_event']['price'],
                  # TODO: what happens when there are only partial fills ?
@@ -136,7 +142,7 @@ class ExecutionLogger(logging.Logger):
                                           clientOrderId_data['inception_event']['symbol'][:3] else
                                           np.NAN))
                             for x in clientOrderId_data['last_fill_event']['fees']),
-                 'slice_ended': clientOrderId_data['last_fill_event']['timestamp']}
+                 'last_fill_local': clientOrderId_data['last_fill_event']['timestamp']}
             for clientOrderId, clientOrderId_data in temp_events.items()}).T.reset_index()
 
         if __debug__:
@@ -145,7 +151,7 @@ class ExecutionLogger(logging.Logger):
 
         by_symbol = pd.DataFrame({
             symbol:
-                {'time_to_execute': symbol_data['slice_ended'].max() - symbol_data['slice_started'].min(),
+                {'time_to_execute': symbol_data['last_fill_local'].max() - symbol_data['pending_local'].min(),
                  'slippage_bps': 10000 * np.sign(symbol_data['filled'].sum()) * (
                              (symbol_data['filled'] * symbol_data['price']).sum() / symbol_data['filled'].sum() /
                              request.loc[request['index'] == symbol, 'spot'].squeeze() - 1),
@@ -167,10 +173,10 @@ class ExecutionLogger(logging.Logger):
         fill_history = []
         if add_history_context:
             for symbol, symbol_data in by_clientOrderId.groupby(by='symbol'):
-                df = symbol_data[['slice_ended', 'filled', 'price']]
-                df['slice_ended'] = df['slice_ended'].apply(
+                df = symbol_data[['last_fill_local', 'filled', 'price']]
+                df['last_fill_local'] = df['last_fill_local'].apply(
                     lambda t: datetime.utcfromtimestamp(t / 1000).replace(tzinfo=timezone.utc))
-                df.set_index('slice_ended', inplace=True)
+                df.set_index('last_fill_local', inplace=True)
                 df = df.rename(columns={
                     'price': symbol.replace('/USD:USD', '-PERP').replace('/USD', '') + '_fills_price',
                     'filled': symbol.replace('/USD:USD', '-PERP').replace('/USD', '') + '_fills_filled'})
@@ -190,7 +196,7 @@ class ExecutionLogger(logging.Logger):
 
             start_time = parameters['inception_time']
             history = pd.concat([asyncio.run(
-                build_vwap(start_time, by_clientOrderId['slice_ended'].max()))] + fill_history).sort_index()
+                build_vwap(start_time, by_clientOrderId['last_fill_local'].max()))] + fill_history).sort_index()
 
         by_symbol = pd.concat([by_symbol,
                                pd.DataFrame({'index': ['average'],
@@ -224,3 +230,7 @@ class ExecutionLogger(logging.Logger):
                    'data': data,
                    'risk_recon': risk
                } | ({'history': history} if add_history_context else {})
+
+if __name__ == "__main__":
+    args, kwargs = extract_args_kwargs(sys.argv)
+    ExecutionLogger.batch_summarize_exec_logs(*args,**kwargs)

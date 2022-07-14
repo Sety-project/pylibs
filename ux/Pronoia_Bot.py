@@ -37,11 +37,9 @@ def start(update, context):
 def help(update, context):
     """Send a message when the command /help is issued."""
     update.message.reply_text('requests:\n')
-    for mod_name in MyModules.current_module_list:
+    for mod_name,data in MyModules.current_module_list.items():
         if mod_name != 'ux':
-            module = importlib.import_module(f'{mod_name}.main')
-            func = getattr(module, 'main')
-            update.message.reply_text(f'{mod_name}\n{func.__doc__}')
+            update.message.reply_text('\n'.join([mod_name]+data['testbed']))
 
 def echo(update, context):
     try:

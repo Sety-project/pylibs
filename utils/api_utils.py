@@ -90,11 +90,11 @@ def api(func):
 class MyModules:
     current_module_list = dict()
 
-    def __init__(self,name,testcase,args_validation,kwargs_validation):
+    def __init__(self,name,testbed,args_validation,kwargs_validation):
         self.name = name
         if self.name in MyModules.current_module_list:
             raise Exception(f'module {self.name} already in the list')
-        self.testcase = testcase
+        self.testbed = testbed
         self.args_validation = args_validation
         self.kwargs_validation = kwargs_validation
 
@@ -127,8 +127,8 @@ class MyModules:
             fp.write(content)
 
     @staticmethod
-    def register(name,testcase,args_validation,kwargs_validation):
-        module = MyModules(name,testcase,args_validation,kwargs_validation)
+    def register(name,testbed,args_validation,kwargs_validation):
+        module = MyModules(name,testbed,args_validation,kwargs_validation)
         MyModules.current_module_list |= {name: module}
         #module.generate_run_sh()
 
@@ -141,18 +141,18 @@ class MyModules:
     def run_test(self):
         root_dir = pathlib.Path(__file__).resolve().parent.parent
         filename = os.path.join(os.sep, root_dir, self.name, 'main.py')
-        results = {example:subprocess.run(f'{sys.executable} {filename} {example}',shell=True) # subprocess.run
-                   for example in self.testcase}
+        results = {test:subprocess.run(f'{sys.executable} {filename} {test}',shell=True) # subprocess.run
+                   for test in self.testbed}
         return results
 
 MyModules.register(name='histfeed',
-                   testcase=["get ftx wide 1"],
+                   testbed=["get ftx wide 1"],
                    args_validation=[['run_type',lambda x: x in ["build", "correct", "get"],'not in {}'.format(["build", "correct", "get"])],
                                     ['exchange',lambda x: x in ["ftx"],'not in {}'.format(["ftx"])],
                                     ['universe',lambda x: x in configLoader.get_universe_pool(),'not in {}'.format(configLoader.get_universe_pool())]],
                    kwargs_validation={'nb_days': [lambda x: isinstance(int(x), int), 'not an int']})
 MyModules.register(name='pfoptimizer',
-                   testcase=["sysperp ftx subaccount=debug config=prod",
+                   testbed=["sysperp ftx subaccount=debug config=prod",
                              "basis ftx type=future depth=100000"],
                    args_validation=[
                        ['run_type', lambda x: x in ["sysperp", "backtest", "depth", "basis"],'not in {}'.format(["sysperp", "backtest", "depth", "basis"])],
@@ -162,7 +162,7 @@ MyModules.register(name='pfoptimizer',
                                       'depth':[lambda x: isinstance(float(x),float),'need a float'],
                                       'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(config_name=x))),'not found']})
 MyModules.register(name='riskpnl',
-                   testcase=["risk ftx debug nb_runs=1",
+                   testbed=["risk ftx debug nb_runs=1",
                              "plex ftx debug period=2d"],
                    args_validation=[
                        ['run_type', lambda x: x in ["risk", "plex", "batch_summarize_exec_logs", "fromoptimal"],'not in {}'.format(["risk", "plex", "batch_log_reader", "fromoptimal"])],
@@ -174,7 +174,7 @@ MyModules.register(name='riskpnl',
                                       'filename':[lambda x: True,'not found'],# skew it....
                                       'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(config_name=x))),'not found']})
 MyModules.register(name='tradeexecutor',
-                   testcase=[#"unwind exchange=ftx subaccount=debug config=prod",
+                   testbed=[#"unwind exchange=ftx subaccount=debug config=prod",
                              "~/config/prod/pfoptimizer/weight_shard_0.csv config=prod"],
                    args_validation=[
                        ['order', lambda x: x in ['unwind', 'flatten'] or isinstance(x,str),'not in {} and not a file'.format(['unwind', 'flatten'])]],
@@ -183,6 +183,6 @@ MyModules.register(name='tradeexecutor',
                                       'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(config_name=x))),'not found'],
                                       'nb_runs':[lambda x: isinstance(int(x),int),'integer needed']})
 MyModules.register(name='ux',
-                   testcase=[""],
+                   testbed=[""],
                    args_validation=[],
                    kwargs_validation={})
