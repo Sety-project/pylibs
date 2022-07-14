@@ -156,7 +156,7 @@ async def diff_portoflio(exchange,future_weights=pd.DataFrame()) -> pd.DataFrame
 async def diff_portoflio_wrapper(*args,**kwargs):
     exchange = await open_exchange(*args)
     await exchange.load_markets()
-    future_weights = configLoader.get_current_weights(filename=kwargs['filename'] if 'filename' in kwargs else 'current_weights.csv',
+    future_weights = configLoader.get_current_weights(filename=kwargs['filename'],
                                                       dirname=kwargs['config'] if 'config' in kwargs else None)
     diff = await diff_portoflio(exchange,future_weights)
     await exchange.close()

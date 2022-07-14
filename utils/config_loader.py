@@ -4,9 +4,9 @@ import pandas as pd
 from pathlib import Path
 
 class configLoader():
-    _home = "~" # not Path.home() because docker run -v ~/config/prod:/home/ec2-user/config
-    _config_folder_path = os.path.join(_home, "config")
-    _mktdata_folder_path = os.path.join(_home, "mktdata")
+    _home = Path.home() # but docker run -v ~/config/prod:/home/ec2-user/config
+    _config_folder_path = os.path.join(os.sep, _home, "config")
+    _mktdata_folder_path = os.path.join(os.sep, _home, "mktdata")
 
     _universe_pool = ["all", "max", "wide", "institutional"]
     _universe = None             # dict
@@ -22,13 +22,12 @@ class configLoader():
     _pfoptimizer_params_filename = "pfoptimizer_params.json"    # Used by pfoptimizer
     _static_params_filename = "static_params.xlsx"
     _executor_params_filename = "tradeexecutor_params.json"     # Used by tradeexecutor
-    _current_weights_filename = "current_weights.csv"
 
     ### SETTERS ###
     @staticmethod
     def set_universe():
         try:
-            with open(os.path.join(configLoader._config_folder_path, configLoader._universe_filename), "r") as f:
+            with open(os.path.join(os.sep, configLoader._config_folder_path, configLoader._universe_filename), "r") as f:
                 configLoader._universe = json.loads(f.read())
         except FileNotFoundError:
             raise FileNotFoundError(f"File {os.path.join(configLoader._config_folder_path, configLoader._universe_filename)} not found")
@@ -43,9 +42,9 @@ class configLoader():
                 raise Exception('only sysperp has config')
 
             if dirname:
-                filename = os.path.join(configLoader._config_folder_path, dirname, params_filename)
+                filename = os.path.join(os.sep, configLoader._config_folder_path, dirname, params_filename)
             else:
-                filename = os.path.join(configLoader._config_folder_path, params_filename)
+                filename = os.path.join(os.sep, configLoader._config_folder_path, params_filename)
 
             with open(filename, "r") as f:
                 configLoader._pfoptimizer_params = json.loads(f.read())
@@ -59,15 +58,15 @@ class configLoader():
             configLoader._static_params_used = pd.read_excel(os.path.join(configLoader._config_folder_path, configLoader._static_params_filename), sheet_name='used').set_index('coin')
             configLoader._static_params_saved = pd.read_excel(os.path.join(configLoader._config_folder_path, configLoader._static_params_filename), sheet_name='saved').set_index('coin')
         except FileNotFoundError:
-            raise FileNotFoundError(f"File {os.path.join(configLoader._config_folder_path, configLoader._static_params_filename)} not found")
+            raise FileNotFoundError(f"File {os.path.join(os.sep, configLoader._config_folder_path, configLoader._static_params_filename)} not found")
 
     @staticmethod
     def set_universe_params():
         try:
-            with open(os.path.join(configLoader._config_folder_path, configLoader._universe_params_filename), "r") as f:
+            with open(os.path.join(os.sep, configLoader._config_folder_path, configLoader._universe_params_filename), "r") as f:
                 configLoader._universe_params = json.loads(f.read())
         except FileNotFoundError:
-            raise FileNotFoundError(f"File {os.path.join(configLoader._config_folder_path, configLoader._universe_params_filename)} not found")
+            raise FileNotFoundError(f"File {os.path.join(os.sep, configLoader._config_folder_path, configLoader._universe_params_filename)} not found")
 
     @staticmethod
     def set_executor_params(order,dirname=None):
@@ -79,9 +78,9 @@ class configLoader():
                 params_filename = configLoader._executor_params_filename
 
             if dirname:
-                filename = os.path.join(configLoader._config_folder_path, dirname, params_filename)
+                filename = os.path.join(os.sep, configLoader._config_folder_path, dirname, params_filename)
             else:
-                filename = os.path.join(configLoader._config_folder_path, params_filename)
+                filename = os.path.join(os.sep, configLoader._config_folder_path, params_filename)
 
             with open(filename, "r") as f:
                 configLoader._executor_params = json.loads(f.read())
@@ -90,13 +89,13 @@ class configLoader():
                 f"File {filename} not found")
 
     @staticmethod
-    def set_current_weights(weights_filename=_current_weights_filename,dirname=None):
+    def set_current_weights(weights_filename,dirname=None):
         ''' Used by tradeexecutor (only) to read current weights to have '''
         try:
             if dirname:
-                filename = os.path.join(configLoader._config_folder_path, dirname, 'pfoptimizer', weights_filename)
+                filename = os.path.join(os.sep, configLoader._config_folder_path, dirname, 'pfoptimizer', weights_filename)
             else:
-                filename = os.path.join(configLoader._config_folder_path, 'pfoptimizer', weights_filename)
+                filename = os.path.join(os.sep, configLoader._config_folder_path, 'pfoptimizer', weights_filename)
 
             configLoader._current_weights = pd.read_csv(filename)
         except FileNotFoundError:
@@ -114,7 +113,7 @@ class configLoader():
 
     @staticmethod
     def get_mktdata_folder_for_exchange(exchange):
-        return os.path.join(configLoader._mktdata_folder_path, exchange)
+        return os.path.join(os.sep, configLoader._mktdata_folder_path, exchange)
 
     @staticmethod
     def get_universe_filename():
@@ -187,16 +186,16 @@ class configLoader():
     @staticmethod
     def persist_universe_params(new_params):
         try:
-            with open(os.path.join(configLoader._config_folder_path, configLoader._universe_params_filename), "w") as outfile:
+            with open(os.path.join(os.sep, configLoader._config_folder_path, configLoader._universe_params_filename), "w") as outfile:
                 json.dump(new_params, outfile, ensure_ascii=False, indent=4, default=str)
         except FileNotFoundError:
-            raise FileNotFoundError(f"Cannot write file {os.path.join(configLoader._config_folder_path, configLoader._universe_params_filename)}")
+            raise FileNotFoundError(f"Cannot write file {os.path.join(os.sep, configLoader._config_folder_path, configLoader._universe_params_filename)}")
 
     # PERSIST params
     @staticmethod
     def persist_universe(new_universe):
         try:
-            with open(os.path.join(configLoader._config_folder_path, configLoader._universe_filename), "w") as outfile:
+            with open(os.path.join(os.sep, configLoader._config_folder_path, configLoader._universe_filename), "w") as outfile:
                 json.dump(new_universe, outfile, ensure_ascii=False, indent=4, default=str)
         except FileNotFoundError:
-            raise FileNotFoundError(f"Cannot write file {os.path.join(configLoader._config_folder_path, configLoader._universe_filename)}")
+            raise FileNotFoundError(f"Cannot write file {os.path.join(os.sep, configLoader._config_folder_path, configLoader._universe_filename)}")
