@@ -569,7 +569,7 @@ async def risk_and_pnl(exchange,**kwargs):
             all_pnl = pd.concat([pd.read_csv(pnl_filename,index_col=0),pnl],axis=0)
         else:
             all_pnl = pnl
-        all_pnl.to_csv(os.path.join(log_path,end_time.strftime("%Y%m%d_%H%M%S") + '_pnl.json'))
+        all_pnl.to_csv(pnl_filename)
         return all_pnl
 
 @api
