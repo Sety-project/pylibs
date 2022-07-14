@@ -146,7 +146,7 @@ class MyModules:
         return results
 
 MyModules.register(name='histfeed',
-                   testcase=["get ftx wide 5"],
+                   testcase=["get ftx wide 1"],
                    args_validation=[['run_type',lambda x: x in ["build", "correct", "get"],'not in {}'.format(["build", "correct", "get"])],
                                     ['exchange',lambda x: x in ["ftx"],'not in {}'.format(["ftx"])],
                                     ['universe',lambda x: x in configLoader.get_universe_pool(),'not in {}'.format(configLoader.get_universe_pool())]],
@@ -162,9 +162,8 @@ MyModules.register(name='pfoptimizer',
                                       'depth':[lambda x: isinstance(float(x),float),'need a float'],
                                       'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(config_name=x))),'not found']})
 MyModules.register(name='riskpnl',
-                   testcase=["risk ftx debug nb_runs=10",
-                             "plex ftx debug period=2d",
-                             "fromoptimal ftx debug"],
+                   testcase=["risk ftx debug nb_runs=1",
+                             "plex ftx debug period=2d"],
                    args_validation=[
                        ['run_type', lambda x: x in ["risk", "plex", "batch_summarize_exec_logs", "fromoptimal"],'not in {}'.format(["risk", "plex", "batch_log_reader", "fromoptimal"])],
                        ['exchange', lambda x: x in ["ftx"], 'not in {}'.format(["ftx"])],
@@ -175,8 +174,8 @@ MyModules.register(name='riskpnl',
                                       'filename':[lambda x: True,'not found'],# skew it....
                                       'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(config_name=x))),'not found']})
 MyModules.register(name='tradeexecutor',
-                   testcase=["unwind exchange=ftx subaccount=debug config=prod",
-                             "/home/david/config/pfoptimizer/weight_shard_0.csv config=prod"],
+                   testcase=[#"unwind exchange=ftx subaccount=debug config=prod",
+                             "~/config/prod/pfoptimizer/weight_shard_0.csv config=prod"],
                    args_validation=[
                        ['order', lambda x: x in ['unwind', 'flatten'] or isinstance(x,str),'not in {} and not a file'.format(['unwind', 'flatten'])]],
                    kwargs_validation={'exchange':[lambda x: x in ['ftx'],'not in {}'.format(['ftx'])],
