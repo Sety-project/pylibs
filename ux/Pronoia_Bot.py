@@ -39,7 +39,8 @@ def help(update, context):
     update.message.reply_text('requests:\n')
     for mod_name,data in MyModules.current_module_list.items():
         if mod_name != 'ux':
-            update.message.reply_text('\n'.join([f'{mod_name} -->']+data.testbed))
+            for test in data.testbed:
+                update.message.reply_text(f'{mod_name} '+str(test))
 
 def echo(update, context):
     try:

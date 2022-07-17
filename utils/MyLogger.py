@@ -7,11 +7,15 @@ from utils.api_utils import build_logging,extract_args_kwargs
 
 class ExecutionLogger(logging.Logger):
     '''it s a logger that can also write jsons, and summarize them'''
-    def __init__(self,order_name,config,log_mapping=None):
-        if log_mapping:
-            self.logger = build_logging('tradeexecutor', log_mapping)
+    def __init__(self,order_name,config,log_mapping=None,logger=None):
+
+        if logger:
+            self.logger = logger
         else:
-            self.logger = build_logging('tradeexecutor')
+            if log_mapping:
+                self.logger = build_logging('tradeexecutor', log_mapping)
+            else:
+                self.logger = build_logging('tradeexecutor')
 
         log_path = os.path.join(os.sep,'tmp','tradeexecutor','archive')
         if not os.path.exists(log_path):
@@ -41,13 +45,13 @@ class ExecutionLogger(logging.Logger):
             os.makedirs(unreadable_dirname, mode=0o777)
 
         # read already compiled logs
-        tab_list = ['request', 'parameters', 'by_coin', 'by_symbol', 'by_clientOrderId', 'data', 'risk_recon'] + (
+        tab_list = ['inventory_target', 'parameters', 'by_coin', 'by_symbol', 'by_clientOrderId', 'data', 'risk_recon'] + (
             ['history'] if add_history_context else [])
         try:
             if rebuild: raise Exception('not an exception: just skip history on rebuild=True')
             compiled_logs = {tab: pd.read_csv(os.path.join(os.sep, dirname, f'all_{tab}.csv'), index_col='index') for
                              tab in tab_list}
-            max_compiled_date = compiled_logs['request']['log_time'].max()
+            max_compiled_date = compiled_logs['inventory_target']['log_time'].max()
         except Exception as e:
             compiled_logs = {tab: pd.DataFrame() for tab in tab_list}
             max_compiled_date = datetime(1970,1,1)
@@ -72,7 +76,7 @@ class ExecutionLogger(logging.Logger):
                     new_logs[key]['log_time'] = datetime.utcfromtimestamp(df.loc[df['index']=='inception_time',0].squeeze()/1000).replace(tzinfo=timezone.utc)
                     compiled_logs[key] = pd.concat([compiled_logs[key], new_logs[key]], axis=0)
             except Exception as e:
-                for suffix in ['events', 'request', 'risk_reconciliations']:
+                for suffix in ['events', 'inventory_target', 'risk_reconciliations']:
                     filename = f'{date}_{suffix}.json'
                     if os.path.isfile(os.path.join(os.sep, archive_dirname, filename)):
                         removed_logs.extend(filename)
@@ -222,7 +226,7 @@ class ExecutionLogger(logging.Logger):
                             axis=0, ignore_index=True)
 
         return {
-                   'request': request,
+                   'inventory_target': request,
                    'parameters': parameters,
                    'by_coin': by_coin,
                    'by_symbol': by_symbol,

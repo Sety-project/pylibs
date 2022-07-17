@@ -303,8 +303,8 @@ async def perp_vs_cash(
         logging.getLogger('pfoptimizer').info(display)
 
         return optimized
-
-    return trajectory
+    else:
+        return trajectory
 
 async def strategy_wrapper(**kwargs):
 
@@ -372,11 +372,11 @@ def main(*args,**kwargs):
     config = configLoader.get_pfoptimizer_params(dirname=kwargs['config'] if 'config' in kwargs else None)
 
     if run_type == 'basis':
-        instrument_type = ['future', 'perpetual'] if kwargs['type'] == 'all' else [kwargs['type']]
+        instrument_type = ['future', 'perpetual'] if kwargs['instrument_type'] == 'all' else [kwargs['type']]
         depth = float(kwargs['depth']) if 'depth' in kwargs else 0
         res = enricher_wrapper(*args[1:],instrument_type,depth)
     if run_type == 'sysperp':
-        res = asyncio.run(strategy_wrapper(
+        res_list = asyncio.run(strategy_wrapper(
             exchange_name=exchange_name,
             subaccount=subaccount,
             config_name=kwargs['config'] if 'config' in kwargs else None, # yuk..
@@ -390,16 +390,16 @@ def main(*args,**kwargs):
             slippage_override=[config["SLIPPAGE_OVERRIDE"]["value"]],
             backtest_start=None,
             backtest_end=None))
-        optimized = res[0]
+        res = res_list[0]
         # send bus message
         pfoptimizer_path = os.path.join(configLoader.get_config_folder_path(**kwargs), "pfoptimizer")
         pfoptimizer_res_last_filename = os.path.join(pfoptimizer_path,
                                                      f"weights_{exchange_name}_{subaccount}")
-        optimized.to_csv(f'{pfoptimizer_res_last_filename}.csv')
-        optimized = optimized.drop(index=['USD', 'total']).sort_values(by='optimalWeight', key=lambda f: np.abs(f),
+        res.to_csv(f'{pfoptimizer_res_last_filename}.csv')
+        res = res.drop(index=['USD', 'total']).sort_values(by='optimalWeight', key=lambda f: np.abs(f),
                                                                        ascending=False)
-        for i in range(optimized.shape[0]):
-            optimized.iloc[[i]].to_csv(f"{pfoptimizer_res_last_filename}_{i}.csv")
+        for i in range(res.shape[0]):
+            res.iloc[[i]].to_csv(f"{pfoptimizer_res_last_filename}_{i}.csv")
 
     elif run_type == 'depth':
         global UNIVERSE
