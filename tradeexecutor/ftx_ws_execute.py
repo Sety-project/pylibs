@@ -552,10 +552,7 @@ class InventoryManager(dict):
 
     @staticmethod
     async def build(exchange,nowtime,order):
-        # build order
         result = InventoryManager(nowtime.timestamp() * 1000, exchange.myLogger.logger, order)
-
-
         await result.read_source()
 
         trading_fees = await exchange.fetch_trading_fees()
@@ -580,8 +577,20 @@ class InventoryManager(dict):
             self[cash_symbol] = {'target':target,
                                  'spot_price':spot}
         if perp_symbol not in self:
-            self[perp_symbol] = {'target':-target.squeeze(),
+            self[perp_symbol] = {'target':-target,
                                  'spot_price':spot}
+
+        if self[cash_symbol]['target'] != target or self[perp_symbol]['target'] != -target:
+
+            self.logger.critical('{} weight changed from {} to {}'.format(
+                cash_symbol,self[cash_symbol]['target']*spot,target*spot))
+            self[cash_symbol]['target'] = target
+            self[cash_symbol]['spot_price'] = spot
+
+            self.logger.critical('{} weight changed from {} to {}'.format(
+                perp_symbol, self[perp_symbol]['target'] * spot,-target * spot))
+            self[perp_symbol]['target'] = -target
+            self[perp_symbol]['spot_price'] = spot
 
     def update_quoter_params(self, exchange):
         '''scales order placement params with time'''
@@ -614,12 +623,12 @@ class InventoryManager(dict):
 
             # edit_price_depth = how far to put limit on risk increasing orders
             data['edit_price_depth'] = stdev * np.sqrt(exchange.parameters['edit_price_tolerance']) * scaler
-
-            # aggressive_edit_price_depth = how far to put limit on risk reducing orders
-            data['aggressive_edit_price_depth'] = exchange.parameters['aggressive_edit_price_tolerance'] * data['priceIncrement']
-
             # edit_trigger_depth = how far to let the mkt go before re-pegging limit orders
             data['edit_trigger_depth'] = stdev * np.sqrt(exchange.parameters['edit_trigger_tolerance']) * scaler
+
+            # aggressive version understand tolerance as price increment
+            data['aggressive_edit_price_depth'] = max(1,exchange.parameters['aggressive_edit_price_tolerance']) * data['priceIncrement']
+            data['aggressive_edit_trigger_depth'] = max(1,exchange.parameters['aggressive_edit_price_tolerance']) * data['priceIncrement']
 
             # stop_depth = how far to set the stop on risk reducing orders
             data['stop_depth'] = stdev * np.sqrt(exchange.parameters['stop_tolerance']) * scaler
@@ -1042,6 +1051,7 @@ class myFtx(ccxtpro.ftx):
                 return
             # limit order if level is acceptable (saves margin compared to faraway order)
             elif current_basket_price < self.inventory_target[symbol]['entry_level']:
+                edit_trigger_depth=params['edit_trigger_depth']
                 edit_price_depth = params['edit_price_depth']
                 stop_depth = None
             # hold off to save margin, if level is bad-ish
@@ -1050,9 +1060,10 @@ class myFtx(ccxtpro.ftx):
         # if decrease risk, go aggressive
         else:
             size = original_size
+            edit_trigger_depth = params['aggressive_edit_trigger_depth']
             edit_price_depth = params['aggressive_edit_price_depth']
             stop_depth = params['stop_depth']
-        self.peg_or_stopout(symbol,size,orderbook,edit_trigger_depth=params['edit_trigger_depth'],edit_price_depth=edit_price_depth,stop_depth=stop_depth)
+        self.peg_or_stopout(symbol,size,orderbook,edit_trigger_depth=edit_trigger_depth,edit_price_depth=edit_price_depth,stop_depth=stop_depth)
 
     def peg_or_stopout(self,symbol,size,orderbook,edit_trigger_depth,edit_price_depth,stop_depth=None):
         '''places an order after checking OMS + margin
@@ -1334,7 +1345,7 @@ def main(*args,**kwargs):
     order = args[0]
     config_name = kwargs.pop('config') if 'config' in kwargs else None
     config = configLoader.get_executor_params(order=order,dirname=config_name)
-    logger = ExecutionLogger(order,config,log_mapping={logging.INFO: 'exec_info.log', logging.WARNING: 'oms_warning.log', logging.CRITICAL: 'program_flow.log'})
+    logger = ExecutionLogger(order,config,log_date=None,log_mapping={logging.INFO: 'exec_info.log', logging.WARNING: 'oms_warning.log', logging.CRITICAL: 'program_flow.log'})
     logger.logger = kwargs.pop('__logger')
 
     asyncio.run(ftx_ws_spread_main_wrapper(order,config_name,logger,**kwargs)) # --> I am filled or I timed out and I have flattened position
