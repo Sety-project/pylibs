@@ -93,7 +93,7 @@ def monitor_inventory_target(self, weights):
 
     filename = os.path.join(os.sep, configLoader._config_folder_path, 'prod', 'pfoptimizer',
                             f'weights_{exchange}_{subaccount}.csv')
-    my_file_watch = MyFileSocket(filename,self.update_target)
+    my_file_watch = MyFileSocket(filename, self.read_source)
 
     wm = pyinotify.WatchManager()
     mask = pyinotify.IN_DELETE | pyinotify.IN_CREATE  | pyinotify.IN_MODIFY # watched events

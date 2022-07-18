@@ -7,21 +7,21 @@ from utils.api_utils import build_logging,extract_args_kwargs
 
 class ExecutionLogger(logging.Logger):
     '''it s a logger that can also write jsons, and summarize them'''
-    def __init__(self,order_name,config,log_mapping=None,logger=None):
+    def __init__(self,order_name,config,log_date=datetime.utcnow(),log_mapping=None,logger=None):
 
         if logger:
             self.logger = logger
         else:
             if log_mapping:
-                self.logger = build_logging('tradeexecutor', log_mapping)
+                self.logger = build_logging('tradeexecutor', log_date=log_date, log_mapping=log_mapping)
             else:
-                self.logger = build_logging('tradeexecutor')
+                self.logger = build_logging('tradeexecutor', log_date=log_date)
 
         log_path = os.path.join(os.sep,'tmp','tradeexecutor','archive')
         if not os.path.exists(log_path):
             os.umask(0)
             os.makedirs(log_path, mode=0o777)
-        hash_id = hash(json.dumps(config | {'timestamp': datetime.utcnow().timestamp(),'order_name':order_name}, sort_keys=True))
+        hash_id = hash(json.dumps(config | {'timestamp': log_date.timestamp(),'order_name':order_name}, sort_keys=True))
         self.json_filename = os.path.join(os.sep,'tmp','tradeexecutor','archive',f'{abs(hash_id)}')
 
     async def data_to_json(self, data, suffix):

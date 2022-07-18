@@ -2,9 +2,12 @@ import logging,os,sys,datetime,subprocess,importlib,functools,pathlib
 from utils.io_utils import parse_time_param
 from utils.config_loader import configLoader
 
-def build_logging(app_name,log_mapping={logging.INFO:'info.log',logging.WARNING:'warning.log',logging.CRITICAL:'program_flow.log'}):
+def build_logging(app_name,
+                  log_date=datetime.datetime.utcnow(),
+                  log_mapping={logging.INFO:'info.log',logging.WARNING:'warning.log',logging.CRITICAL:'program_flow.log'}):
     '''log_mapping={logging.DEBUG:'debug.log'...
-    3 handlers: >=debug, ==info and >=warning'''
+    3 handlers: >=debug, ==info and >=warning
+    if not log_date no date in filename'''
 
     class MyFilter(object):
         '''this is to restrict info logger to info only'''
@@ -24,7 +27,7 @@ def build_logging(app_name,log_mapping={logging.INFO:'info.log',logging.WARNING:
 
     # logs
     for level,filename in log_mapping.items():
-        handler = logging.FileHandler(os.path.join(os.sep,log_path,f'{datetime.datetime.utcnow().strftime("%Y%m%d_%H%M%S")}_{filename}'), mode='w')
+        handler = logging.FileHandler(os.path.join(os.sep,log_path,f'{log_date.strftime("%Y%m%d_%H%M%S")}_{filename}' if log_date else filename), mode='w')
         handler.setLevel(level)
         handler.setFormatter(logging.Formatter('%(asctime)s %(name)s %(levelname)s %(message)s'))
         #handler.addFilter(MyFilter(level))
@@ -65,7 +68,7 @@ def api(func):
         # build logger for current module
         module = MyModules.current_module_list[func.__module__.split('.')[0]]
         module_name = module.get_short_name()
-        logger = build_logging(module_name, {logging.INFO: 'info.log'})
+        logger = build_logging(module_name, log_mapping={logging.INFO: 'info.log'})
 
         # print arguments
         logger.info(f'running {module_name} args={args} kwargs={kwargs}')
@@ -153,11 +156,11 @@ MyModules.register(name='histfeed',
                    kwargs_validation={'nb_days': [lambda x: isinstance(int(x), int), 'not an int']})
 MyModules.register(name='pfoptimizer',
                    testbed=["sysperp ftx subaccount=debug",
-                             "basis ftx instrument_type=future depth=100000"],
+                             "basis ftx instrument_type=perpetual depth=100000"],
                    args_validation=[
                        ['run_type', lambda x: x in ["sysperp", "backtest", "depth", "basis"],'not in {}'.format(["sysperp", "backtest", "depth", "basis"])],
                        ['exchange', lambda x: x in ["ftx"], 'not in {}'.format(["ftx"])]],
-                   kwargs_validation={'type':[lambda x: ["perpetual", "future", "all"],'not in {}'.format(["perpetual", "future", "all"])],
+                   kwargs_validation={'instrument_type':[lambda x: ["perpetual", "future", "all"],'not in {}'.format(["perpetual", "future", "all"])],
                                       'subaccount':[lambda x: True,'not found'],
                                       'depth':[lambda x: isinstance(float(x),float),'need a float'],
                                       'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(config_name=x))),'not found']})
@@ -175,7 +178,7 @@ MyModules.register(name='riskpnl',
                                       'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(config_name=x))),'not found']})
 MyModules.register(name='tradeexecutor',
                    testbed=[#"unwind exchange=ftx subaccount=debug config=prod",
-                             "weights_ftx_SysPerp_0.csv"],
+                             "weights_ftx_debug_0.csv"],
                    args_validation=[
                        ['order', lambda x: x in ['unwind', 'flatten'] or isinstance(x,str),'not in {} and not a file'.format(['unwind', 'flatten'])]],
                    kwargs_validation={'exchange':[lambda x: x in ['ftx'],'not in {}'.format(['ftx'])],
