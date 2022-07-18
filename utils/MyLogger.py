@@ -21,7 +21,8 @@ class ExecutionLogger(logging.Logger):
         if not os.path.exists(log_path):
             os.umask(0)
             os.makedirs(log_path, mode=0o777)
-        hash_id = hash(json.dumps(config | {'timestamp': log_date.timestamp(),'order_name':order_name}, sort_keys=True))
+
+        hash_id = hash(json.dumps(config|{'order_name':order_name}|({'timestamp': log_date.timestamp()} if log_date else {}),sort_keys=True))
         self.json_filename = os.path.join(os.sep,'tmp','tradeexecutor','archive',f'{abs(hash_id)}')
 
     async def data_to_json(self, data, suffix):
