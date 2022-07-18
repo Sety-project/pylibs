@@ -372,7 +372,7 @@ def main(*args,**kwargs):
     config = configLoader.get_pfoptimizer_params(dirname=kwargs['config'] if 'config' in kwargs else None)
 
     if run_type == 'basis':
-        instrument_type = ['future', 'perpetual'] if kwargs['instrument_type'] == 'all' else [kwargs['type']]
+        instrument_type = ['future', 'perpetual'] if kwargs['instrument_type'] == 'all' else [kwargs['instrument_type']]
         depth = float(kwargs['depth']) if 'depth' in kwargs else 0
         res = enricher_wrapper(*args[1:],instrument_type,depth)
     if run_type == 'sysperp':
