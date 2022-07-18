@@ -15,7 +15,7 @@ from utils.api_utils import api
 from utils.async_utils import *
 from utils.io_utils import async_read_csv
 
-import ccxtpro,collections,pyinotify,copy
+import ccxtpro,collections,copy
 
 # parameters guide
 # 'max_nb_coins': 'sharding'
