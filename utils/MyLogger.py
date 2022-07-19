@@ -5,30 +5,30 @@ from utils.io_utils import *
 from utils.async_utils import *
 from utils.api_utils import build_logging,extract_args_kwargs
 
-class ExecutionLogger(logging.Logger):
+class ExecutionLogger:
     '''it s a logger that can also write jsons, and summarize them'''
-    def __init__(self,order_name,config,log_date=datetime.utcnow(),log_mapping=None,logger=None):
-
-        if logger:
-            self.logger = logger
-        else:
-            if log_mapping:
-                self.logger = build_logging('tradeexecutor', log_date=log_date, log_mapping=log_mapping)
-            else:
-                self.logger = build_logging('tradeexecutor', log_date=log_date)
-
-        log_path = os.path.join(os.sep,'tmp','tradeexecutor','archive')
+    def __init__(self,log_date=datetime.utcnow(),exchange_name='ftx'):
+        log_path = os.path.join(os.sep, 'tmp', 'tradeexecutor', 'archive')
         if not os.path.exists(log_path):
             os.umask(0)
             os.makedirs(log_path, mode=0o777)
+        self.json_filename = os.path.join(os.sep, 'tmp', 'tradeexecutor', 'archive',
+                                          f'{log_date.strftime("%Y%m%d_%H%M%S")}')
 
-        hash_id = hash(json.dumps(config|{'order_name':order_name}|({'timestamp': log_date.timestamp()} if log_date else {}),sort_keys=True))
-        self.json_filename = os.path.join(os.sep,'tmp','tradeexecutor','archive',f'{abs(hash_id)}')
+        #hash_id = hash(json.dumps(config|{'order_name':order_name}|({'timestamp': log_date.timestamp()} if log_date else {}),sort_keys=True))
+        self.mktdata_dirname = configLoader.get_mktdata_folder_for_exchange(f'{exchange_name}_tickdata')
+        if not os.path.exists(self.mktdata_dirname):
+            os.umask(0)
+            os.makedirs(self.mktdata_dirname, mode=0o777)
 
     async def data_to_json(self, data, suffix):
         if len(data) > 0:
             async with aiofiles.open(f'{self.json_filename}_{suffix}.json', mode='w') as file:
                 await file.write(json.dumps(data, cls=NpEncoder))
+
+    async def to_mktdata(self, data, filename):
+        async with aiofiles.open(f'{os.path.join(os.sep,self.mktdata_dirname,filename)}', mode='a+') as file:
+            await file.write(json.dumps(data, cls=NpEncoder))
 
     @staticmethod
     def batch_summarize_exec_logs(exchange='ftx', subaccount='',dirname=os.path.join(os.sep, 'tmp', 'prod', 'tradeexecutor'),
@@ -64,7 +64,7 @@ class ExecutionLogger(logging.Logger):
             try:
                 modification_date = os.path.getmtime(os.path.join(os.sep, archive_dirname, f))
                 if max(max_compiled_date,start) <= datetime.utcfromtimestamp(modification_date) <= end:
-                    filenames += [f.replace('_events.json','')]
+                    filenames += [f.replace('_order_lifecycle.json','')]
             except Exception as e:  # always outside (start,end)
                 continue
 
@@ -77,7 +77,7 @@ class ExecutionLogger(logging.Logger):
                     new_logs[key]['log_time'] = datetime.utcfromtimestamp(df.loc[df['index']=='inception_time',0].squeeze()/1000).replace(tzinfo=timezone.utc)
                     compiled_logs[key] = pd.concat([compiled_logs[key], new_logs[key]], axis=0)
             except Exception as e:
-                for suffix in ['events', 'inventory_target', 'risk_reconciliations']:
+                for suffix in ['order_lifecycle', 'inventory_target', 'risk_reconciliations']:
                     filename = f'{date}_{suffix}.json'
                     if os.path.isfile(os.path.join(os.sep, archive_dirname, filename)):
                         removed_logs.extend(filename)
@@ -95,17 +95,17 @@ class ExecutionLogger(logging.Logger):
         '''compile json logs into DataFrame summaries'''
         with open(f'{path_date}_events.json', 'r') as file:
             d = json.load(file)
-            events = {clientId: pd.DataFrame(data).reset_index() for clientId, data in d.items()}
+            order_lifecycle = {clientId: pd.DataFrame(data).reset_index() for clientId, data in d.items()}
         with open(f'{path_date}_risk_reconciliations.json', 'r') as file:
             d = json.load(file)
-            risk = pd.DataFrame(d).reset_index()
-        with open(f'{path_date}_request.json', 'r') as file:
+            risk_reconciliations = pd.DataFrame(d).reset_index()
+        with open(f'{path_date}_inventory_target.json', 'r') as file:
             d = json.load(file)
             parameters = pd.Series(d.pop('parameters')).reset_index()
-            request = pd.DataFrame(d).T.reset_index()
+            inventory_target = pd.DataFrame(d).T.reset_index()
 
-        if len(events)>0:
-            data = pd.concat([data for clientOrderId, data in events.items()], axis=0)
+        if len(order_lifecycle)>0:
+            data = pd.concat([data for clientOrderId, data in order_lifecycle.items()], axis=0)
         else:
             raise Exception('no fill to parse')
 
@@ -159,7 +159,7 @@ class ExecutionLogger(logging.Logger):
                 {'time_to_execute': symbol_data['last_fill_local'].max() - symbol_data['pending_local'].min(),
                  'slippage_bps': 10000 * np.sign(symbol_data['filled'].sum()) * (
                              (symbol_data['filled'] * symbol_data['price']).sum() / symbol_data['filled'].sum() /
-                             request.loc[request['index'] == symbol, 'spot'].squeeze() - 1),
+                             inventory_target.loc[inventory_target['index'] == symbol, 'spot'].squeeze() - 1),
                  'fee': 10000 * symbol_data['fee'].sum() / np.abs((symbol_data['filled'] * symbol_data['price']).sum()),
                  'filledUSD': (symbol_data['filled'] * symbol_data['price']).sum(),
                  'coin': symbol.split('/')[0]
@@ -227,13 +227,13 @@ class ExecutionLogger(logging.Logger):
                             axis=0, ignore_index=True)
 
         return {
-                   'inventory_target': request,
+                   'inventory_target': inventory_target,
                    'parameters': parameters,
                    'by_coin': by_coin,
                    'by_symbol': by_symbol,
                    'by_clientOrderId': by_clientOrderId,
                    'data': data,
-                   'risk_recon': risk
+                   'risk_recon': risk_reconciliations
                } | ({'history': history} if add_history_context else {})
 
 if __name__ == "__main__":

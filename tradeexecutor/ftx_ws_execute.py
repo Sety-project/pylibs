@@ -22,8 +22,7 @@ import ccxtpro,collections,copy
 # 'max_nb_coins': 'sharding'
 # 'time_budget': scaling aggressiveness to 0 at time_budget (in seconds)
 # 'global_beta': other coin weight in the global risk
-# 'max_cache_size': mkt data cache
-# 'message_cache_size': missed messages cache
+# 'cache_size': missed messages cache
 # 'entry_tolerance': green light if basket better than quantile(entry_tolerance)
 # 'rush_in_tolerance': mkt enter on both legs if basket better than quantile(rush_tolerance)
 # 'rush_out_tolerance': mkt close on both legs if basket worse than quantile(rush_tolerance)
@@ -51,7 +50,7 @@ def symbol_locked(wrapped):
         self=args[0]
         symbol = args[1]['clientOrderId'].split('_')[1]
         while self.lock[symbol].count:
-            self.myLogger.logger.info(f'{self.lock[symbol].count}th race conditions on {symbol} blocking {wrapped.__name__}')
+            self.logger.info(f'{self.lock[symbol].count}th race conditions on {symbol} blocking {wrapped.__name__}')
             #await asyncio.sleep(0)
         with self.lock[symbol]:
             try:
@@ -70,11 +69,11 @@ def loop(func):
             try:
                 value = await func(*args, **kwargs)
             except ccxt.NetworkError as e:
-                self.myLogger.logger.info(str(e))
-                self.myLogger.logger.info('reconciling after '+func.__name__+' dropped off')
+                self.logger.info(str(e))
+                self.logger.info('reconciling after '+func.__name__+' dropped off')
                 await self.reconcile() # implicitement redemarre la socket, ccxt fait ca comme ca
             except Exception as e:
-                self.myLogger.logger.info(e, exc_info=True)
+                self.logger.info(e, exc_info=True)
                 raise e
     return wrapper_loop
 
@@ -84,7 +83,7 @@ def intercept_message_during_reconciliation(wrapped):
     def _wrapper(*args, **kwargs):
         self=args[0]
         if args[0].lock['reconciling'].locked():
-            self.myLogger.logger.warning(f'message during reconciliation{args[2]}')
+            self.logger.warning(f'message during reconciliation{args[2]}')
             self.message_missed.append(args[2])
         else:
             return wrapped(*args, **kwargs)
@@ -100,7 +99,11 @@ class OrderManager(dict):
         super().__init__()
         self.latest_order_reconcile_timestamp = timestamp
         self.latest_fill_reconcile_timestamp = timestamp
-        self.logger = build_logging('oms',log_date=None,log_mapping={logging.WARNING:"oms_warnings.log"})
+        self.logger = logging.getLogger('tradeexecutor')
+        self.fill_flag = False
+
+    def json_encoder(self):
+        return dict(self)
 
     '''various helpers'''
 
@@ -318,6 +321,7 @@ class OrderManager(dict):
     @symbol_locked
     def fill(self,order_event):
         '''order_event: id, trigger,timestamp,amount,order,symbol'''
+        self.fill_flag = True
         # 1) resolve clientID
         clientOrderId = self.find_clientID_from_fill(order_event)
         symbol = order_event['symbol']
@@ -413,20 +417,20 @@ class PositionManager(dict):
             self.delta_limit = limit
             self.check_frequency = check_frequency
 
-    def __init__(self,timestamp,logger,parameters):
+    def __init__(self,timestamp,parameters):
         super().__init__()
         self.pv = None
         self.margin = None
         self.limit = None
         self.timestamp = timestamp
-        self.logger = logger
+        self.logger = logging.getLogger('tradeexecutor')
         self.risk_reconciliations = []
         self.parameters = parameters
         self.markets = None
 
     @staticmethod
     async def build(exchange,nowtime,parameters):
-        result = PositionManager(nowtime, exchange.myLogger.logger, parameters)
+        result = PositionManager(nowtime, parameters)
         result.limit = PositionManager.LimitBreached(parameters['check_frequency'], parameters['delta_limit'])
 
         for symbol, data in exchange.inventory_target.items():
@@ -544,15 +548,18 @@ class PositionManager(dict):
                 'global_delta_minus': global_delta_minus}
 
 class InventoryManager(dict):
-    def __init__(self,timestamp,logger,filename):
+    def __init__(self,timestamp,filename):
         super().__init__()
         self.timestamp = timestamp
-        self.logger = logger
         self.filename = filename
+        self.logger = logging.getLogger('tradeexecutor')
+
+    def json_encoder(self):
+        return {'timestamp':self.timestamp} | self
 
     @staticmethod
     async def build(exchange,nowtime,order):
-        result = InventoryManager(nowtime.timestamp() * 1000, exchange.myLogger.logger, order)
+        result = InventoryManager(nowtime.timestamp() * 1000, order)
         await result.read_source()
 
         trading_fees = await exchange.fetch_trading_fees()
@@ -582,12 +589,12 @@ class InventoryManager(dict):
 
         if self[cash_symbol]['target'] != target or self[perp_symbol]['target'] != -target:
 
-            self.logger.critical('{} weight changed from {} to {}'.format(
+            self.logger.info('{} weight changed from {} to {}'.format(
                 cash_symbol,self[cash_symbol]['target']*spot,target*spot))
             self[cash_symbol]['target'] = target
             self[cash_symbol]['spot_price'] = spot
 
-            self.logger.critical('{} weight changed from {} to {}'.format(
+            self.logger.info('{} weight changed from {} to {}'.format(
                 perp_symbol, self[perp_symbol]['target'] * spot,-target * spot))
             self[perp_symbol]['target'] = -target
             self[perp_symbol]['spot_price'] = spot
@@ -642,33 +649,34 @@ class InventoryManager(dict):
         self.logger.info(f'scaled params by {scaler} at {nowtime}')
 
 class myFtx(ccxtpro.ftx):
-    def __init__(self, parameters, logger=None, config = dict()):
+    def __init__(self, parameters, config = dict()):
         super().__init__(config=config)
         self.parameters = parameters
+
         self.lock = {'reconciling':threading.Lock()}
-        self.message_missed = collections.deque(maxlen=parameters['message_cache_size'])
-        self.options['tradesLimit'] = parameters['message_cache_size']
+        if __debug__: self.all_messages = collections.deque(maxlen=parameters['cache_size']*10)
+        self.rest_semaphor = asyncio.Semaphore(safe_gather_limit)
+
+        self.message_missed = collections.deque(maxlen=parameters['cache_size'])
+        self.options['tradesLimit'] = parameters['cache_size']
+
         self.orderbook_history = None
         self.trades_history = None
         # self.trades is in ccxtpro
-        if __debug__: self.all_messages = collections.deque(maxlen=parameters['message_cache_size']*10)
-        self.rest_semaphor = asyncio.Semaphore(safe_gather_limit)
 
         self.order_lifecycle = None
-
         self.inventory_target = None
-
         self.risk_state = None
-
-        self.myLogger = logger if logger is not None else build_logging('tradeexecutor')
+        self.logger = logging.getLogger('tradeexecutor')
+        self.data_logger = ExecutionLogger(exchange_name=self.id)
 
     @staticmethod
-    async def open_exec_exchange(exchange_name, subaccount, config, logger):
+    async def open_exec_exchange(exchange_name, subaccount, config):
         '''TODO unused for now'''
         if exchange_name not in ['ftx']:
             raise Exception(f'exchange {exchange_name} not implemented')
         else:
-            exchange = myFtx(config, logger, config={  ## David personnal
+            exchange = myFtx(config, config={  ## David personnal
                 'enableRateLimit': True,
                 'apiKey': 'ZUWyqADqpXYFBjzzCQeUTSsxBZaMHeufPFgWYgQU',
                 'secret': api_params['ftx']['key'],
@@ -732,7 +740,7 @@ class myFtx(ccxtpro.ftx):
         # remove series
 
         self.lock |= {symbol: CustomRLock() for symbol in self.inventory_target}
-        self.orderbook_history = {symbol: collections.deque(maxlen=parameters['message_cache_size']*10)
+        self.orderbook_history = {symbol: collections.deque(maxlen=parameters['cache_size'])
                                   for symbol in self.inventory_target}
 
         # initialize trades_history
@@ -752,12 +760,6 @@ class myFtx(ccxtpro.ftx):
         # populates risk, pv and IM
         self.order_lifecycle = OrderManager(self.inventory_target.timestamp)
         await self.reconcile()
-
-        # Dumps the order that it received from current_weight.xlsx. only logs
-        await self.myLogger.data_to_json({symbol:data
-                                          for symbol,data in self.inventory_target.items()}
-                                         | {'parameters': {'inception_time':self.inventory_target.timestamp} | self.inventory_target},
-                                         'inventory_target')
 
     async def reconcile(self):
         '''update risk using rest
@@ -785,7 +787,7 @@ class myFtx(ccxtpro.ftx):
             self.inventory_target.update_quoter_params(self)
 
             # replay missed _messages.
-            self.myLogger.logger.warning(f'replaying {len(self.message_missed)} messages after recon')
+            self.logger.warning(f'replaying {len(self.message_missed)} messages after recon')
             while self.message_missed:
                 message = self.message_missed.popleft()
                 data = self.safe_value(message, 'data')
@@ -803,11 +805,16 @@ class myFtx(ccxtpro.ftx):
                     #orderbook = self.parse_order_book(data,symbol,data['time'])
                     #self.process_order_book(symbol, orderbook | {'orderTrigger':'replayed'})
 
-        # critical job is done, release lock
-        await self.myLogger.data_to_json(self.order_lifecycle,'events')
-        await self.myLogger.data_to_json(self.risk_state.risk_reconciliations,'risk_reconciliations')
-        await self.myLogger.data_to_json(self.trades, 'trades')
-        await self.myLogger.data_to_json(self.orderbook_history, 'orderbook_history')
+        # critical job is done, release lock and print data
+        coin = self.markets[list(self.inventory_target.keys())[0]]['base']
+        coros = [self.data_logger.to_mktdata(self.trades, f'trades_{coin}.json'),
+                 self.data_logger.to_mktdata(self.orderbook_history, f'orderbook_history_{coin}.json')]
+        if self.order_lifecycle.fill_flag:
+            coros += [self.data_logger.data_to_json(self.order_lifecycle,'order_lifecycle'),
+                      self.data_logger.data_to_json(self.risk_state.risk_reconciliations,'risk_reconciliations'),
+                      self.data_logger.data_to_json(self.inventory_target,'inventory_target')]
+            self.order_lifecycle.fill_flag = False
+        await asyncio.gather(*coros)
 
 
     # --------------------------------------------------------------------------------------------
@@ -882,7 +889,7 @@ class myFtx(ccxtpro.ftx):
             self.order_lifecycle.fill(fill)
 
             # logger.info
-            self.myLogger.logger.warning('{} filled after {}: {} {} at {}'.format(fill['clientOrderId'],
+            self.logger.warning('{} filled after {}: {} {} at {}'.format(fill['clientOrderId'],
                                                                       fill['timestamp'] - int(fill['clientOrderId'].split('_')[-1]),
                                                                       fill['side'], fill['amount'],
                                                                       fill['price']))
@@ -891,7 +898,7 @@ class myFtx(ccxtpro.ftx):
             target = self.inventory_target[symbol]['target'] * fill['price']
             diff = (self.inventory_target[symbol]['target'] - self.risk_state[symbol]['delta']) * fill['price']
             initial = self.inventory_target[symbol]['target'] * fill['price'] - diff
-            self.myLogger.logger.warning('{} risk at {} ms: {}% done [current {}, initial {}, target {}]'.format(
+            self.logger.warning('{} risk at {} ms: {}% done [current {}, initial {}, target {}]'.format(
                 symbol,
                 self.risk_state[symbol]['delta_timestamp'],
                 (current - initial) / diff * 100,
@@ -927,9 +934,9 @@ class myFtx(ccxtpro.ftx):
             if coin not in absolute_risk:
                 absolute_risk[coin] = abs(sum(data['delta'] for data in self.risk_state.values()))
         if sum(absolute_risk.values()) > self.risk_state.pv * self.risk_state.limit.delta_limit:
-            self.myLogger.logger.info(f'absolute_risk {absolute_risk} > {self.risk_state.pv * self.risk_state.limit.delta_limit}')
+            self.logger.info(f'absolute_risk {absolute_risk} > {self.risk_state.pv * self.risk_state.limit.delta_limit}')
         if self.risk_state.margin.actual_IM < self.risk_state.pv/100:
-            self.myLogger.logger.info(f'IM {self.risk_state.margin.actual_IM}  < 1%')
+            self.logger.info(f'IM {self.risk_state.margin.actual_IM}  < 1%')
 
     async def watch_ticker(self, symbol, params={}):
         '''watch_order_book is faster than watch_tickers so we DON'T LISTEN TO TICKERS. Dirty...'''
@@ -964,9 +971,8 @@ class myFtx(ccxtpro.ftx):
             depth = (self.inventory_target[symbol]['target'] - self.risk_state[symbol]['delta'] / self.mid(symbol)) * self.mid(symbol)
             side_px = sweep_price_atomic(self.orderbooks[symbol], depth)
             opposite_side_px = sweep_price_atomic(self.orderbooks[symbol], -depth)
-            mid_at_depth = 0.5*(side_px+opposite_side_px)
-            self.orderbook_history[symbol].append({key:self.orderbooks[symbol][key] for key in ['timestamp','bids','asks']}
-                                                  |{'mid_at_depth':mid_at_depth})
+            self.orderbook_history[symbol].append([{key:self.orderbooks[symbol][key] for key in ['timestamp','bids','asks']}
+                                                  |{'depth':depth,'bid_at_depth':min(side_px,opposite_side_px),'ask_at_depth':max(side_px,opposite_side_px)}])
 
     # --------------------------------------------------------------------------------------------
     # ---------------------------------- order placement -----------------------------------------
@@ -1001,16 +1007,16 @@ class myFtx(ccxtpro.ftx):
         if marginal_risk>0:
             # if (global_delta_plus / mid + original_size) > delta_limit:
             #     trimmed_size = delta_limit - global_delta_plus / mid
-            #     self.myLogger.logger.debug(
+            #     self.logger.debug(
             #         f'{original_size * mid} {symbol} would increase risk over {self.limit.delta_limit * 100}% of {self.risk_state.pv} --> trimming to {trimmed_size * mid}')
             # elif (global_delta_minus / mid + original_size) < -delta_limit:
             #     trimmed_size = -delta_limit - global_delta_minus / mid
-            #     self.myLogger.logger.debug(
+            #     self.logger.debug(
             #         f'{original_size * mid} {symbol} would increase risk over {self.limit.delta_limit * 100}% of {self.risk_state.pv} --> trimming to {trimmed_size * mid}')
             # else:
             #     trimmed_size = original_size
             # if np.sign(trimmed_size) != np.sign(original_size):
-            #     self.myLogger.logger.debug(f'skipping (we don t flip orders)')
+            #     self.logger.debug(f'skipping (we don t flip orders)')
             #     return
             if np.abs(globalDelta / mid + original_size) > delta_limit:
                 if (globalDelta / mid + original_size) > delta_limit:
@@ -1020,10 +1026,10 @@ class myFtx(ccxtpro.ftx):
                 else:
                     raise Exception('what??')
                 if np.sign(trimmed_size) != np.sign(original_size):
-                    self.myLogger.logger.debug(f'{original_size*mid} {symbol} would increase risk over {self.risk_state.limit.delta_limit * 100}% of {self.risk_state.pv} --> skipping (we don t flip orders)')
+                    self.logger.debug(f'{original_size*mid} {symbol} would increase risk over {self.risk_state.limit.delta_limit * 100}% of {self.risk_state.pv} --> skipping (we don t flip orders)')
                     return
                 else:
-                    self.myLogger.logger.debug(f'{original_size*mid} {symbol} would increase risk over {self.risk_state.limit.delta_limit * 100}% of {self.risk_state.pv} --> trimming to {trimmed_size*mid}')
+                    self.logger.debug(f'{original_size*mid} {symbol} would increase risk over {self.risk_state.limit.delta_limit * 100}% of {self.risk_state.pv} --> trimming to {trimmed_size*mid}')
             else:
                 trimmed_size = original_size
 
@@ -1038,13 +1044,13 @@ class myFtx(ccxtpro.ftx):
                 self.peg_or_stopout(symbol, size, orderbook,
                                     edit_trigger_depth=params['edit_trigger_depth'],
                                     edit_price_depth='rush_in', stop_depth=None)
-                self.myLogger.logger.warning(f'rushing into {coin}')
+                self.logger.warning(f'rushing into {coin}')
                 return
             elif current_basket_price - 2 * np.abs(params['update_time_delta']) * params['takerVsMakerFee'] * mid > self.inventory_target[symbol]['rush_out_level']:
                 # go all in as this decreases margin
                 size = - self.risk_state[symbol]['delta'] / mid
                 if abs(size) > 0:
-                    self.myLogger.logger.warning(f'rushing out of {size} {coin}')
+                    self.logger.warning(f'rushing out of {size} {coin}')
                     self.peg_or_stopout(symbol, size, orderbook,
                                         edit_trigger_depth=params['edit_trigger_depth'],
                                         edit_price_depth='rush_out', stop_depth=None)
@@ -1098,15 +1104,15 @@ class myFtx(ccxtpro.ftx):
             for i,event_history in enumerate(self.order_lifecycle.filter_order_histories([symbol], OrderManager.cancelableStates)):
                 if i != first_pending_new:
                     asyncio.create_task(self.cancel_order(event_history[-1]['clientOrderId'],'duplicates'))
-                    self.myLogger.logger.info('canceled duplicate {} order {}'.format(symbol,event_history[-1]['clientOrderId']))
+                    self.logger.info('canceled duplicate {} order {}'.format(symbol,event_history[-1]['clientOrderId']))
 
         # skip if there is inflight on the spread
         # if self.pending_new_histories(coin) != []:#TODO: rather incorporate orders_pending_new in risk, rather than block
         #     if self.pending_new_histories(coin,symbol) != []:
-        #         self.myLogger.logger.info('orders {} should not be in flight'.format([order['clientOrderId'] for order in self.pending_new_histories(coin,symbol)[-1]]))
+        #         self.logger.info('orders {} should not be in flight'.format([order['clientOrderId'] for order in self.pending_new_histories(coin,symbol)[-1]]))
         #     else:
         #         # this happens mostly between pending_new and create_order on the other leg. not a big deal...
-        #         self.myLogger.logger.info('orders {} still in flight. holding off {}'.format(
+        #         self.logger.info('orders {} still in flight. holding off {}'.format(
         #             [order['clientOrderId'] for order in self.pending_new_histories(coin)[-1]],symbol))
         #     return
         pending_new_histories = self.order_lifecycle.filter_order_histories([_symbol
@@ -1114,7 +1120,7 @@ class myFtx(ccxtpro.ftx):
                                                              if _symbol in self.markets],
                                                             ['pending_new'])
         if pending_new_histories != []:
-            self.myLogger.logger.info('orders {} should not be in flight'.format([order[-1]['clientOrderId'] for order in pending_new_histories]))
+            self.logger.info('orders {} should not be in flight'.format([order[-1]['clientOrderId'] for order in pending_new_histories]))
             return
 
         # if no open order, create an order
@@ -1184,10 +1190,10 @@ class myFtx(ccxtpro.ftx):
                      'comment':'create/'+str(e)}
             self.order_lifecycle.cancel_or_reject(order)
             if isinstance(e,ccxt.InsufficientFunds):
-                self.myLogger.logger.info(f'{clientOrderId} too big: {amount*self.mid(symbol)}')
+                self.logger.info(f'{clientOrderId} too big: {amount*self.mid(symbol)}')
             elif isinstance(e,ccxt.RateLimitExceeded):
                 throttle = 200.0
-                self.myLogger.logger.info(f'{str(e)}: waiting {throttle} ms)')
+                self.logger.info(f'{str(e)}: waiting {throttle} ms)')
                 await asyncio.sleep(throttle / 1000)
             else:
                 raise e
@@ -1221,7 +1227,7 @@ class myFtx(ccxtpro.ftx):
                                              'comment':trigger})
             return False
         except Exception as e:
-            self.myLogger.logger.info(f'{clientOrderId} failed to cancel: {str(e)}')
+            self.logger.info(f'{clientOrderId} failed to cancel: {str(e)}')
             await asyncio.sleep(.1)
             return await self.cancel_order(clientOrderId, trigger+'+')
 
@@ -1280,14 +1286,14 @@ async def get_exec_request(*argv,subaccount):
         target_portfolio = await diff_portoflio(exchange, future_weights)
 
     else:
-        exchange.myLogger.exception(f'unknown command {argv[0]}', exc_info=True)
+        exchange.logger.exception(f'unknown command {argv[0]}', exc_info=True)
         raise Exception(f'unknown command {argv[0]}', exc_info=True)
 
     await exchange.close()
 
     return target_portfolio
 
-async def ftx_ws_spread_main_wrapper(order_name,config_name,logger,**kwargs):
+async def ftx_ws_spread_main_wrapper(order_name,config_name,**kwargs):
     try:
         # open exchange
         config = configLoader.get_executor_params(order=order_name,dirname=config_name)
@@ -1301,11 +1307,11 @@ async def ftx_ws_spread_main_wrapper(order_name,config_name,logger,**kwargs):
         exchange_name = future_weights['exchange'].unique()[0]
         subaccount = future_weights['subaccount'].unique()[0]
 
-        exchange = await myFtx.open_exec_exchange(exchange_name,subaccount,config,logger)
+        exchange = await myFtx.open_exec_exchange(exchange_name,subaccount,config)
 
         await exchange.build_state(order, config | {'comment': order})   # i
 
-        exchange.myLogger.logger.warning('cancelling orders')
+        exchange.logger.warning('cancelling orders')
         await asyncio.gather(*[exchange.cancel_all_orders(symbol) for symbol in exchange.inventory_target])
 
         coros = [exchange.monitor_fills(),exchange.monitor_risk()] + \
@@ -1316,14 +1322,15 @@ async def ftx_ws_spread_main_wrapper(order_name,config_name,logger,**kwargs):
 
         await asyncio.gather(*coros)
     except Exception as e:
-        logging.getLogger('tradeexecutor').critical(str(e), exc_info=True)
+        logger = logging.getLogger('tradeexecutor')
+        logger.critical(str(e), exc_info=True)
         try:
             await asyncio.gather(*[exchange.cancel_all_orders(symbol) for symbol in exchange.inventory_target])
-            logging.getLogger('tradeexecutor').warning(f'cancelled {exchange.inventory_target} orders')
+            logger.warning(f'cancelled {exchange.inventory_target} orders')
             # await exchange.close_dust()  # Commenting out until bug fixed
             # await exchange.close()
         except Exception:
-            logging.getLogger('tradeexecutor').critical(str(e), exc_info=True)
+            logger.critical(str(e), exc_info=True)
         await exchange.close()
         raise e
 
@@ -1344,8 +1351,8 @@ def main(*args,**kwargs):
 
     order = args[0]
     config_name = kwargs.pop('config') if 'config' in kwargs else None
-    config = configLoader.get_executor_params(order=order,dirname=config_name)
-    logger = ExecutionLogger(order,config,log_date=None,log_mapping={logging.INFO: 'exec_info.log', logging.WARNING: 'oms_warning.log', logging.CRITICAL: 'program_flow.log'})
-    logger.logger = kwargs.pop('__logger')
+    logger = kwargs.pop('__logger')
 
-    asyncio.run(ftx_ws_spread_main_wrapper(order,config_name,logger,**kwargs)) # --> I am filled or I timed out and I have flattened position
+    asyncio.run(ftx_ws_spread_main_wrapper(order,config_name,**kwargs)) # --> I am filled or I timed out and I have flattened position
+
+ 
