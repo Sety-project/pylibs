@@ -807,10 +807,10 @@ class myFtx(ccxtpro.ftx):
 
         # critical job is done, release lock and print data
         coin = self.markets[list(self.inventory_target.keys())[0]]['base']
-        coros = [self.data_logger.to_mktdata(self.trades, f'trades_{coin}.json'),
-                 self.data_logger.to_mktdata(self.orderbook_history, f'orderbook_history_{coin}.json')]
+        # coros = [self.data_logger.to_mktdata(self.trades, f'trades_{coin}.json'),
+        #          self.data_logger.to_mktdata(self.orderbook_history, f'orderbook_history_{coin}.json')]
         if self.order_lifecycle.fill_flag:
-            coros += [self.data_logger.data_to_json(self.order_lifecycle,'order_lifecycle'),
+            coros = [self.data_logger.data_to_json(self.order_lifecycle,'order_lifecycle'),
                       self.data_logger.data_to_json(self.risk_state.risk_reconciliations,'risk_reconciliations'),
                       self.data_logger.data_to_json(self.inventory_target,'inventory_target')]
             self.order_lifecycle.fill_flag = False
