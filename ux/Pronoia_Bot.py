@@ -87,10 +87,15 @@ def echo(update, context):
             update.message.reply_text(''.join([f'{key} ----->\n {value}\n' for key, value in response.items()]))
             data = None
         elif split_message[0] == 'bash:':
-            raise Exception('disabled')
-            response = bash_run(''.join(split_message[1:]))
-            update.message.reply_text(''.join([f'{key} ----->\n {value}\n' for key, value in response.items()]))
-            data = None
+            if os.path.isfile(split_message[1]):
+                with open(split_message[1], "rb") as file:
+                    update.message.bot.sendDocument(update.message['chat']['id'], document=file)
+                    data = None
+            else:
+                raise Exception('disabled')
+                response = bash_run(''.join(split_message[1:]))
+                update.message.reply_text(''.join([f'{key} ----->\n {value}\n' for key, value in response.items()]))
+                data = None
         else:
             raise Exception('unknown command, type /help')
 
