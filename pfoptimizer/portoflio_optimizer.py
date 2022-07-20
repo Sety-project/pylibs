@@ -89,20 +89,20 @@ async def perp_vs_cash(
         optional_params=[]):# verbose,warm_start
 
     # Load defaults params
+    now_time = datetime.utcnow().replace(tzinfo=timezone.utc)
     config = configLoader.get_pfoptimizer_params(dirname=config_name)
-    param_type_allowed = config['TYPE_ALLOWED']['value']
-    param_universe = config['UNIVERSE']['value']
     dir_name = configLoader.get_mktdata_folder_for_exchange(exchange.id)
 
-    futures = pd.DataFrame(await Static.fetch_futures(exchange)).set_index('name')
-    now_time = datetime.utcnow().replace(tzinfo=timezone.utc)
-
     # Qualitative filtering
+    param_type_allowed = config['TYPE_ALLOWED']['value']
+    param_universe = config['UNIVERSE']['value']
+    futures = pd.DataFrame(await Static.fetch_futures(exchange)).set_index('name')
+
     universe = await refresh_universe(exchange, param_universe)
     universe = [instrument_name for instrument_name in universe if instrument_name.split("-")[0] not in exclusion_list]
     # universe = universe[~universe['underlying'].isin(exclusion_list)]
     type_allowed = param_type_allowed
-    filtered = futures[(futures['type'].isin(type_allowed))
+    universe_filtered = futures[(futures['type'].isin(type_allowed))
                        & (futures['symbol'].isin(universe))]
 
     # Fee estimation params
@@ -116,7 +116,7 @@ async def perp_vs_cash(
     else:
         start_portfolio = await fetch_portfolio(exchange, now_time)
         previous_weights_input = -start_portfolio.loc[
-            start_portfolio['attribution'].isin(filtered.index), ['attribution', 'usdAmt']
+            start_portfolio['attribution'].isin(universe_filtered.index), ['attribution', 'usdAmt']
         ].set_index('attribution').rename(columns={'usdAmt': 'optimalWeight'})
         equity = start_portfolio.loc[start_portfolio['event_type'] == 'PV', 'usdAmt'].values[0]
 
@@ -147,7 +147,7 @@ async def perp_vs_cash(
         backtest_end = point_in_time
 
     ## ----------- enrich/carry filter, get history, populate concentration limit
-    enriched = await enricher(exchange, filtered, holding_period, equity=equity,
+    enriched = await enricher(exchange, universe_filtered, holding_period, equity=equity,
                               slippage_override=slippage_override, depth=slippage_orderbook_depth,
                               slippage_scaler=slippage_scaler,
                               params={'override_slippage': True, 'type_allowed': type_allowed, 'fee_mode': 'retail'})
@@ -167,7 +167,6 @@ async def perp_vs_cash(
     updated = update(enriched, point_in_time, hy_history, equity,
                      intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow,
                      minimum_carry=0) # Do not remove futures using minimum_carry
-    enriched = None  # safety
 
     # final filter, needs some history and good avg volumes
     filtered = updated.loc[~np.isnan(updated['E_intCarry'])]
@@ -288,19 +287,25 @@ async def perp_vs_cash(
         pfoptimizer_res_filename = os.path.join(os.sep,
                                                 pfoptimizer_path,
                                                 'ftx_optimal_cash_carry_' + datetime.utcnow().strftime("%Y%m%d_%H%M%S"))
+
+        # stdout display
+        display = optimized[['optimalWeight', 'ExpectedCarry', 'transactionCost']]
+        totals = display.loc[['USD', 'total']]
+        display = display.drop(index=['USD', 'total']).sort_values(by='optimalWeight', key=lambda f: np.abs(f),
+                                                                   ascending=False).append(totals)
+        logging.getLogger('pfoptimizer').info(display)
+
+        # print to bus
+        optimized = pd.concat([optimized, enriched],join='outer').drop(
+    index=['USD', 'total']).fillna(0.0)
+        optimized[['spot_ticker','underlying','new_symbol']] = enriched[['spot_ticker','underlying','new_symbol']]
+        #optimized['underlying'] =
         optimized['exchange'] = exchange.id
         optimized['subaccount'] = exchange.headers['FTX-SUBACCOUNT']
         optimized.to_csv(f'{pfoptimizer_res_filename}_weights.csv')
 
         updated.to_csv(f'{pfoptimizer_res_filename}_snapshot.csv')
         parameters.to_csv(f'{pfoptimizer_res_filename}_parameters.csv')
-
-        # stdout display
-        display = optimized[['optimalWeight', 'ExpectedCarry', 'transactionCost']]
-        totals = display.loc[['USD', 'total']]
-        display = display.drop(index=['USD', 'total']).sort_values(by='optimalWeight',key=lambda f: np.abs(f),ascending=False).append(totals)
-        #display= display[display['absWeight'].cumsum()>display.loc['total','absWeight']*.1]
-        logging.getLogger('pfoptimizer').info(display)
 
         return optimized
     else:
@@ -396,10 +401,10 @@ def main(*args,**kwargs):
         pfoptimizer_res_last_filename = os.path.join(pfoptimizer_path,
                                                      f"weights_{exchange_name}_{subaccount}")
         res.to_csv(f'{pfoptimizer_res_last_filename}.csv')
-        res = res.drop(index=['USD', 'total']).sort_values(by='optimalWeight', key=lambda f: np.abs(f),
+        res = res.sort_values(by='optimalWeight', key=lambda f: np.abs(f),
                                                                        ascending=False)
-        for i in range(res.shape[0]):
-            res.iloc[[i]].to_csv(f"{pfoptimizer_res_last_filename}_{i}.csv")
+        for coin in res['underlying'].unique():
+            res[res['underlying']==coin].to_csv(f"{pfoptimizer_res_last_filename}_{coin}.csv")
 
     elif run_type == 'depth':
         global UNIVERSE
