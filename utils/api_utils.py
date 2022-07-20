@@ -176,9 +176,14 @@ MyModules.register(name='riskpnl',
                                       'dirname':[lambda x: os.path.isdir(x),'not found'],
                                       'filename':[lambda x: True,'not found'],# skew it....
                                       'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(config_name=x))),'not found']})
+MyModules.register(name='ux',
+                   testbed=[""],
+                   args_validation=[],
+                   kwargs_validation={})
+
 MyModules.register(name='tradeexecutor',
-                   testbed=[#"unwind exchange=ftx subaccount=debug config=prod",
-                             "weights_ftx_debug_0.csv"],
+                   testbed=["unwind exchange=ftx subaccount=debug config=prod",
+                             "weights_ftx_debug_ETH.csv"],
                    args_validation=[
                        ['order', lambda x: x in ['unwind', 'flatten'] or isinstance(x,str),'not in {} and not a file'.format(['unwind', 'flatten'])]],
                    kwargs_validation={'exchange':[lambda x: x in ['ftx'],'not in {}'.format(['ftx'])],
@@ -186,7 +191,3 @@ MyModules.register(name='tradeexecutor',
                                       'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(config_name=x))),'not found'],
                                       'nb_runs':[lambda x: isinstance(int(x),int),'integer needed'],
                                       'listen':[lambda x: x in ["True","False"],'True or False']})
-MyModules.register(name='ux',
-                   testbed=[""],
-                   args_validation=[],
-                   kwargs_validation={})
