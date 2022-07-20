@@ -47,12 +47,6 @@ def echo(update, context):
         caller = update.effective_message.chat['username']
         logging.getLogger('ux').info(f'{caller} called {update.effective_message.text} at {datetime.datetime.utcnow()}')
 
-        dirname = os.path.join(os.sep, "tmp", "ux")
-        filename = os.path.join(os.sep,dirname,'telegram_file.csv')
-        if not os.path.exists(dirname):
-            os.umask(000)
-            os.makedirs(dirname, mode=0o777)
-
         split_message = update.effective_message.text.split()
         split_message[0] = split_message[0].lower()
         whitelist = ['daviidarr']
@@ -93,18 +87,18 @@ def echo(update, context):
             update.message.reply_text(''.join([f'{key} ----->\n {value}\n' for key, value in response.items()]))
             data = None
         elif split_message[0] == 'bash:':
-            if os.path.isfile(split_message[1]):
-                with open(split_message[1], "rb") as file:
-                    update.message.bot.sendDocument(update.message['chat']['id'], document=file)
-                data = None
-            else:
-                raise Exception('disabled')
-                response = bash_run(''.join(split_message[1:]))
-                update.message.reply_text(''.join([f'{key} ----->\n {value}\n' for key, value in response.items()]))
-                data = None
+            raise Exception('disabled')
+            response = bash_run(''.join(split_message[1:]))
+            update.message.reply_text(''.join([f'{key} ----->\n {value}\n' for key, value in response.items()]))
+            data = None
         else:
             raise Exception('unknown command, type /help')
 
+        dirname = os.path.join(os.sep, "tmp", "ux")
+        filename = os.path.join(os.sep,dirname,'telegram_file.csv')
+        if not os.path.exists(dirname):
+            os.umask(000)
+            os.makedirs(dirname, mode=0o777)
         if data is not None:
             data.to_csv(filename)
             with open(filename, "rb") as file:
