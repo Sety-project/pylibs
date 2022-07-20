@@ -35,11 +35,11 @@ async def async_read_csv(*args,**kwargs):
     return await coro(*args,**kwargs)
 
 def to_csv(*args,**kwargs):
-    return args[0].to_csv(*args,**kwargs)
+    return args[0].to_csv(args[1],**kwargs)
 
 async def async_to_csv(*args,**kwargs):
     coro = async_wrap(to_csv)
-    return await coro(*args[1:],**kwargs)
+    return await coro(*args,**kwargs)
 
 def to_parquet(df,filename,mode="w"):
     if mode == 'a' and os.path.isfile(filename):
