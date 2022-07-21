@@ -168,7 +168,7 @@ MyModules.register(name='riskpnl',
                    testbed=["risk ftx debug nb_runs=1",
                              "plex ftx debug period=2d"],
                    args_validation=[
-                       ['run_type', lambda x: x in ["risk", "plex", "batch_summarize_exec_logs", "fromoptimal"],'not in {}'.format(["risk", "plex", "batch_log_reader", "fromoptimal"])],
+                       ['run_type', lambda x: x in ["risk", "plex", "batch_summarize_exec_logs", "fromoptimal"],'not in {}'.format(["risk", "plex", "batch_summarize_exec_logs", "fromoptimal"])],
                        ['exchange', lambda x: x in ["ftx"], 'not in {}'.format(["ftx"])],
                        ['subaccount', lambda x: True, 'not in {}'.format([""])]],
                    kwargs_validation={'nb_runs':[lambda x: isinstance(int(x),int),'integer needed'],

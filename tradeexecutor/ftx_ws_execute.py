@@ -845,9 +845,9 @@ class myFtx(ccxtpro.ftx):
         # critical job is done, release lock and print data
         coin = self.markets[list(self.inventory_manager.keys())[0]]['base']
         if self.order_manager.fill_flag:
-            coros = [self.data_logger.data_to_json(self.order_manager, 'order_lifecycle'),
+            coros = [self.data_logger.data_to_json(self.order_manager, 'order_manager'),
                      self.data_logger.data_to_json(self.position_manager.risk_reconciliations, 'risk_reconciliations'),
-                     self.data_logger.data_to_json(self.inventory_manager, 'inventory_target')]
+                     self.data_logger.data_to_json(self.inventory_manager, 'inventory_manager')]
             self.order_manager.fill_flag = False
             await asyncio.gather(*coros)
 
