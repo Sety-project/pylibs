@@ -21,15 +21,6 @@ class ExecutionLogger:
             os.umask(0)
             os.makedirs(self.mktdata_dirname, mode=0o777)
 
-    async def data_to_json(self, data, suffix):
-        if len(data) > 0:
-            async with aiofiles.open(f'{self.json_filename}_{suffix}.json', mode='w') as file:
-                await file.write(json.dumps(data, cls=NpEncoder))
-
-    async def to_mktdata(self, data, filename):
-        async with aiofiles.open(f'{os.path.join(os.sep,self.mktdata_dirname,filename)}', mode='a+') as file:
-            await file.write(json.dumps(data, cls=NpEncoder))
-
     @staticmethod
     def batch_summarize_exec_logs(exchange='ftx', subaccount='',dirname=os.path.join(os.sep, 'tmp', 'prod', 'tradeexecutor'),
                                   start=datetime(1970, 1, 1),

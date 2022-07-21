@@ -13,7 +13,7 @@ from riskpnl.ftx_risk_pnl import diff_portoflio
 from riskpnl.ftx_margin import MarginCalculator
 from utils.api_utils import api,build_logging
 from utils.async_utils import *
-from utils.io_utils import async_read_csv,async_to_csv
+from utils.io_utils import async_read_csv,async_to_csv,NpEncoder
 
 import ccxtpro,collections,copy
 
@@ -101,8 +101,9 @@ class OrderManager(dict):
         self.logger = logging.getLogger('tradeexecutor')
         self.fill_flag = False
 
-    def json_encoder(self):
-        return dict(self)
+    async def to_json(self, filename):
+        async with aiofiles.open(filename, mode='w') as file:
+            await file.write(json.dumps(dict(self), cls=NpEncoder))
 
     '''various helpers'''
 
@@ -427,6 +428,10 @@ class PositionManager(dict):
         self.parameters = parameters
         self.markets = None
 
+    async def to_json(self, filename):
+        async with aiofiles.open(filename, mode='w') as file:
+            await file.write(json.dumps(self.risk_reconciliations, cls=NpEncoder))
+
     @staticmethod
     async def build(exchange,nowtime,parameters):
         result = PositionManager(nowtime, parameters)
@@ -555,8 +560,9 @@ class InventoryManager(dict):
         self.filename = filename
         self.logger = logging.getLogger('tradeexecutor')
 
-    def json_encoder(self):
-        return {'timestamp':self.timestamp} | self
+    async def to_json(self, filename):
+        async with aiofiles.open(filename, mode='w') as file:
+            await file.write(json.dumps(dict(self), cls=NpEncoder))
 
     @staticmethod
     async def build(exchange,nowtime,order):
@@ -579,7 +585,7 @@ class InventoryManager(dict):
 
         spot = weights['spot'].unique()[0]
         targets = (-weights.set_index('new_symbol')['optimalWeight'] / spot).to_dict()
-        targets[cash_symbol] = sum(targets.values())
+        targets[cash_symbol] = -sum(targets.values())
 
         for symbol,target in targets.items():
             if symbol not in self:
@@ -845,9 +851,9 @@ class myFtx(ccxtpro.ftx):
         # critical job is done, release lock and print data
         coin = self.markets[list(self.inventory_manager.keys())[0]]['base']
         if self.order_manager.fill_flag:
-            coros = [self.data_logger.data_to_json(self.order_manager, 'order_manager'),
-                     self.data_logger.data_to_json(self.position_manager.risk_reconciliations, 'risk_reconciliations'),
-                     self.data_logger.data_to_json(self.inventory_manager, 'inventory_manager')]
+            coros = [self.order_manager.to_json(f'{self.data_logger.json_filename}_order_manager.json'),
+                     self.position_manager.to_json(f'{self.data_logger.json_filename}_risk_reconciliations.json'),
+                     self.inventory_manager.to_json(f'{self.data_logger.json_filename}_inventory_manager.json')]
             self.order_manager.fill_flag = False
             await asyncio.gather(*coros)
 
@@ -1305,12 +1311,9 @@ class myFtx(ccxtpro.ftx):
         if quoteId['success']])
 
 async def get_exec_request(exchange,order_name,config_name,coin=None,cash_size=None):
-    if config_name:
-        dirname = os.path.join(os.sep, configLoader._config_folder_path, config_name, 'pfoptimizer')
-    else:
-        dirname = os.path.join(os.sep, configLoader._config_folder_path, 'pfoptimizer')
+    dirname = os.path.join(os.sep, configLoader._config_folder_path, config_name if config_name else '', 'pfoptimizer')
     exchange_name = exchange.id
-    subaccount = exchange.headers['FTX-subaccount']
+    subaccount = exchange.headers['FTX-SUBACCOUNT']
 
     if order_name == 'spread':
         coin = coin
@@ -1337,55 +1340,56 @@ async def get_exec_request(exchange,order_name,config_name,coin=None,cash_size=N
     else:
         raise Exception("unknown command")
 
+    target_portfolio['exchange'] = exchange_name
+    target_portfolio['subaccount'] = subaccount
+    target_portfolio.rename(columns={'spot_price':'spot','optimalUSD':'optimalWeight'},inplace=True)
+    target_portfolio['spot_ticker'] = target_portfolio['coin'].apply(lambda c: f'{c}/USD')
+    target_portfolio['new_symbol'] = target_portfolio['name'].apply(lambda f: exchange.market(f)['symbol'])
+
     dfs = []
     filenames = []
     for coin, df in target_portfolio.groupby(by='coin'):
-        temp_filename = os.path.join(os.sep, dirname, f'weights_{exchange_name}_{subaccount}_{coin}.csv')
+        temp_filename = os.path.join(os.sep, dirname, f'{order_name}_{exchange_name}_{subaccount}_{coin}.csv')
         filenames += [temp_filename]
         df.to_csv(temp_filename)
     return filenames
 
-async def ftx_ws_spread_main_wrapper(order_name,config_name,**kwargs):
+async def risk_reduction_routine(order_name, config_name, **kwargs):
+    config = configLoader.get_executor_params(order=order_name, dirname=config_name)
+    exchange = await myFtx.open_exec_exchange(kwargs['exchange'], config, subaccount=kwargs['subaccount'])
+    orders = await get_exec_request(exchange, order_name, config_name)
+    exchange.logger.critical(f'generated {orders}, now them all')
+    await exchange.close()
+    await asyncio.gather(*[single_coin_routine(order, config_name, **kwargs) for order in orders])
+
+async def single_coin_routine(order_name, config_name, **kwargs):
     try:
-        # open exchange
         config = configLoader.get_executor_params(order=order_name,dirname=config_name)
+        order = os.path.join(os.sep, configLoader._config_folder_path, config_name if config_name else '', 'pfoptimizer', order_name)
 
-        if config_name:
-            order = os.path.join(os.sep, configLoader._config_folder_path, config_name, 'pfoptimizer', order_name)
-        else:
-            order = os.path.join(os.sep, configLoader._config_folder_path, 'pfoptimizer', order_name)
-        if os.path.isfile(order):
-            future_weights = pd.read_csv(order)
-            exchange_name = future_weights['exchange'].unique()[0]
-            subaccount = future_weights['subaccount'].unique()[0]
+        future_weights = pd.read_csv(order)
+        exchange_name = future_weights['exchange'].unique()[0]
+        subaccount = future_weights['subaccount'].unique()[0]
 
-            exchange = await myFtx.open_exec_exchange(exchange_name, config, subaccount=subaccount)
-            await exchange.build(order, config | {'comment': order})  # i
-            exchange.logger.warning('cancelling orders')
-            await asyncio.gather(*[exchange.cancel_all_orders(symbol) for symbol in exchange.inventory_manager])
+        exchange = await myFtx.open_exec_exchange(exchange_name, config, subaccount=subaccount)
+        await exchange.build(order, config | {'comment': order})  # i
+        exchange.logger.warning('cancelling orders')
+        await asyncio.gather(*[exchange.cancel_all_orders(symbol) for symbol in exchange.inventory_manager])
 
-            coros = [exchange.monitor_fills(), exchange.monitor_risk()] + \
-                    sum([[exchange.monitor_orders(symbol),
-                          exchange.monitor_order_book(symbol),
-                          exchange.monitor_trades(symbol)]
-                         for symbol in exchange.inventory_manager], [])
+        coros = [exchange.monitor_fills(), exchange.monitor_risk()] + \
+                sum([[exchange.monitor_orders(symbol),
+                      exchange.monitor_order_book(symbol),
+                      exchange.monitor_trades(symbol)]
+                     for symbol in exchange.inventory_manager], [])
 
-            await asyncio.gather(*coros)
-        else:
-            exchange = await myFtx.open_exec_exchange(kwargs['exchange'],config,subaccount=kwargs['subaccount'])
-            orders = await get_exec_request(exchange, order_name, config_name)
-            exchange.logger.critical(f'generated {orders}, run them all pls')
+        await asyncio.gather(*coros)
 
     except Exception as e:
         logger = logging.getLogger('tradeexecutor')
         logger.critical(str(e), exc_info=True)
-        try:
-            await asyncio.gather(*[exchange.cancel_all_orders(symbol) for symbol in exchange.inventory_manager])
-            logger.warning(f'cancelled {exchange.inventory_manager} orders')
-            # await exchange.close_dust()  # Commenting out until bug fixed
-            # await exchange.close()
-        except Exception:
-            logger.critical(str(e), exc_info=True)
+        await asyncio.gather(*[exchange.cancel_all_orders(symbol) for symbol in exchange.inventory_manager])
+        logger.warning(f'cancelled {exchange.inventory_manager} orders')
+        # await exchange.close_dust()  # Commenting out until bug fixed
         await exchange.close()
         raise e
 
@@ -1426,13 +1430,15 @@ def main(*args,**kwargs):
            nb_runs = 1
    '''
 
-    order = args[0]
+    order_name = args[0]
     config_name = kwargs.pop('config') if 'config' in kwargs else None
     logger = kwargs.pop('__logger')
 
     if 'listen' in kwargs and kwargs.pop('listen') == "True":
-        asyncio.run(listen(order,config_name,**kwargs))
+        asyncio.run(listen(order_name, config_name, **kwargs))
+    elif order_name in ['unwind','flatten']:
+        asyncio.run(risk_reduction_routine(order_name, config_name, **kwargs))
     else:
-        asyncio.run(ftx_ws_spread_main_wrapper(order,config_name,**kwargs)) # --> I am filled or I timed out and I have flattened position
+        asyncio.run(single_coin_routine(order_name, config_name, **kwargs)) # --> I am filled or I timed out and I have flattened position
 
  
