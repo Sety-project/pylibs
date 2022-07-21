@@ -397,7 +397,7 @@ def main(*args,**kwargs):
             backtest_end=None))
         res = res_list[0]
         # send bus message
-        pfoptimizer_path = os.path.join(configLoader.get_config_folder_path(**kwargs), "pfoptimizer")
+        pfoptimizer_path = os.path.join(configLoader.get_config_folder_path(config_name=kwargs['config'] if 'config' in kwargs else None), "pfoptimizer")
         pfoptimizer_res_last_filename = os.path.join(pfoptimizer_path,
                                                      f"weights_{exchange_name}_{subaccount}")
         res.to_csv(f'{pfoptimizer_res_last_filename}.csv')
