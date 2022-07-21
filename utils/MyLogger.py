@@ -46,19 +46,19 @@ class ExecutionLogger:
             os.makedirs(unreadable_dirname, mode=0o777)
 
         # read already compiled logs
-        tab_list = ['inventory_target', 'parameters', 'by_coin', 'by_symbol', 'by_clientOrderId', 'data', 'risk_recon'] + (
+        tab_list = ['inventory_manager', 'parameters', 'by_coin', 'by_symbol', 'by_clientOrderId', 'data', 'risk_recon'] + (
             ['history'] if add_history_context else [])
         try:
             if rebuild: raise Exception('not an exception: just skip history on rebuild=True')
             compiled_logs = {tab: pd.read_csv(os.path.join(os.sep, dirname, f'all_{tab}.csv'), index_col='index') for
                              tab in tab_list}
-            max_compiled_date = compiled_logs['inventory_target']['log_time'].max()
+            max_compiled_date = compiled_logs['inventory_manager']['log_time'].max()
         except Exception as e:
             compiled_logs = {tab: pd.DataFrame() for tab in tab_list}
             max_compiled_date = datetime(1970,1,1)
 
         # find files not compiled yet
-        all_files = [filename for filename in os.listdir(archive_dirname) if '_events.json' in filename]
+        all_files = [filename for filename in os.listdir(archive_dirname) if 'order_manager.json' in filename]
         filenames = []
         for f in all_files:
             try:
@@ -77,7 +77,7 @@ class ExecutionLogger:
                     new_logs[key]['log_time'] = datetime.utcfromtimestamp(df.loc[df['index']=='inception_time',0].squeeze()/1000).replace(tzinfo=timezone.utc)
                     compiled_logs[key] = pd.concat([compiled_logs[key], new_logs[key]], axis=0)
             except Exception as e:
-                for suffix in ['order_lifecycle', 'inventory_target', 'risk_reconciliations']:
+                for suffix in ['order_manager', 'inventory_manager', 'risk_reconciliations']:
                     filename = f'{date}_{suffix}.json'
                     if os.path.isfile(os.path.join(os.sep, archive_dirname, filename)):
                         removed_logs.extend(filename)
@@ -93,19 +93,19 @@ class ExecutionLogger:
     @staticmethod
     def summarize_exec_logs(path_date, exchange='ftx', subaccount='',add_history_context=False):
         '''compile json logs into DataFrame summaries'''
-        with open(f'{path_date}_events.json', 'r') as file:
+        with open(f'{path_date}_order_manager.json', 'r') as file:
             d = json.load(file)
-            order_lifecycle = {clientId: pd.DataFrame(data).reset_index() for clientId, data in d.items()}
+            order_manager = {clientId: pd.DataFrame(data).reset_index() for clientId, data in d.items()}
         with open(f'{path_date}_risk_reconciliations.json', 'r') as file:
             d = json.load(file)
             risk_reconciliations = pd.DataFrame(d).reset_index()
-        with open(f'{path_date}_inventory_target.json', 'r') as file:
+        with open(f'{path_date}_inventory_manager.json', 'r') as file:
             d = json.load(file)
             parameters = pd.Series(d.pop('parameters')).reset_index()
-            inventory_target = pd.DataFrame(d).T.reset_index()
+            inventory_manager = pd.DataFrame(d).T.reset_index()
 
-        if len(order_lifecycle)>0:
-            data = pd.concat([data for clientOrderId, data in order_lifecycle.items()], axis=0)
+        if len(order_manager)>0:
+            data = pd.concat([data for clientOrderId, data in order_manager.items()], axis=0)
         else:
             raise Exception('no fill to parse')
 
@@ -159,7 +159,7 @@ class ExecutionLogger:
                 {'time_to_execute': symbol_data['last_fill_local'].max() - symbol_data['pending_local'].min(),
                  'slippage_bps': 10000 * np.sign(symbol_data['filled'].sum()) * (
                              (symbol_data['filled'] * symbol_data['price']).sum() / symbol_data['filled'].sum() /
-                             inventory_target.loc[inventory_target['index'] == symbol, 'spot'].squeeze() - 1),
+                             inventory_manager.loc[inventory_manager['index'] == symbol, 'spot'].squeeze() - 1),
                  'fee': 10000 * symbol_data['fee'].sum() / np.abs((symbol_data['filled'] * symbol_data['price']).sum()),
                  'filledUSD': (symbol_data['filled'] * symbol_data['price']).sum(),
                  'coin': symbol.split('/')[0]
@@ -227,7 +227,7 @@ class ExecutionLogger:
                             axis=0, ignore_index=True)
 
         return {
-                   'inventory_target': inventory_target,
+                   'inventory_manager': inventory_manager,
                    'parameters': parameters,
                    'by_coin': by_coin,
                    'by_symbol': by_symbol,
