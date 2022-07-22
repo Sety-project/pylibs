@@ -296,7 +296,7 @@ async def perp_vs_cash(
         logging.getLogger('pfoptimizer').info(display)
 
         # print to bus
-        optimized = pd.concat([optimized, enriched],join='outer').drop(
+        optimized = pd.concat([optimized, enriched[~enriched.index.isin(optimized.index)]],join='outer').drop(
     index=['USD', 'total']).fillna(0.0)
         optimized[['spot_ticker','underlying','new_symbol']] = enriched[['spot_ticker','underlying','new_symbol']]
         #optimized['underlying'] =
@@ -400,9 +400,9 @@ def main(*args,**kwargs):
         pfoptimizer_path = os.path.join(configLoader.get_config_folder_path(config_name=kwargs['config'] if 'config' in kwargs else None), "pfoptimizer")
         pfoptimizer_res_last_filename = os.path.join(pfoptimizer_path,
                                                      f"weights_{exchange_name}_{subaccount}")
-        res.to_csv(f'{pfoptimizer_res_last_filename}.csv')
         res = res.sort_values(by='optimalWeight', key=lambda f: np.abs(f),
                                                                        ascending=False)
+        res.to_csv(f'{pfoptimizer_res_last_filename}.csv')
         for coin in res['underlying'].unique():
             res[res['underlying']==coin].to_csv(f"{pfoptimizer_res_last_filename}_{coin}.csv")
 
