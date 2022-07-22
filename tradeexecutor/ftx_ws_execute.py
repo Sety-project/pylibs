@@ -101,9 +101,8 @@ class OrderManager(dict):
         self.logger = logging.getLogger('tradeexecutor')
         self.fill_flag = False
 
-    async def to_json(self, filename):
-        async with aiofiles.open(filename, mode='w') as file:
-            await file.write(json.dumps(dict(self), cls=NpEncoder))
+    def to_dict(self):
+        return {'parameters':self.parameters,'values':dict(self)}
 
     '''various helpers'''
 
@@ -428,9 +427,8 @@ class PositionManager(dict):
         self.parameters = parameters
         self.markets = None
 
-    async def to_json(self, filename):
-        async with aiofiles.open(filename, mode='w') as file:
-            await file.write(json.dumps(self.risk_reconciliations, cls=NpEncoder))
+    def to_dict(self):
+        return {'parameters':self.parameters,'values':self.risk_reconciliations}
 
     @staticmethod
     async def build(exchange,nowtime,parameters):
@@ -560,9 +558,8 @@ class InventoryManager(dict):
         self.filename = filename
         self.logger = logging.getLogger('tradeexecutor')
 
-    async def to_json(self, filename):
-        async with aiofiles.open(filename, mode='w') as file:
-            await file.write(json.dumps(dict(self), cls=NpEncoder))
+    def to_dict(self):
+        return {'filename':self.filename,'order_received_timestamp':self.timestamp,'values':dict(self)}
 
     @staticmethod
     async def build(exchange,nowtime,order):
@@ -598,6 +595,8 @@ class InventoryManager(dict):
                 self[symbol]['target'] = target
                 self[symbol]['spot_price'] = spot
 
+        self.timestamp = datetime.now().timestamp() * 1000
+
     async def update_quoter_params(self, exchange):
         '''scales order placement params with time'''
         await self.read_source()
@@ -618,7 +617,7 @@ class InventoryManager(dict):
             # rush_out_level = what level on basket is so bad that you go out at market on both legs
             quantiles = basket_vwap_quantile(
                 [exchange.analytics_manager.vwap_history[symbol]['vwap'] for symbol in self],
-                [data['update_time_delta'] * exchange.mid(symbol) for symbol,data in self.items()],
+                [data['update_time_delta'] for symbol,data in self.items()],
                 [exchange.parameters['entry_tolerance'],exchange.parameters['rush_in_tolerance'],exchange.parameters['rush_out_tolerance']])
 
             data['entry_level'] = quantiles[0]
@@ -729,9 +728,8 @@ class AnalyticsManager():
         self.compile_spread_vwap(timedelta(minutes=1))
         coin = list(self.spread_vwap_history.keys())[0].replace(':USD','').replace('/USD','')
         filename = os.path.join(os.sep, 'tmp', 'pfoptimizer', f'spread_vwap_{coin}.csv')
-        prev_df = pd.read_csv(filename) if os.path.isfile(filename) else pd.DataFrame()
-        for symbol,data in self.spread_vwap_history.items():
-            pd.concat([prev_df,data]).to_csv(filename)
+        prev_df = pd.read_csv(filename,index_col=0) if os.path.isfile(filename) else pd.DataFrame()
+        pd.concat([prev_df] + [data for data in self.spread_vwap_history.values()]).to_csv(filename)
 
 class myFtx(ccxtpro.ftx):
     def __init__(self, parameters, config = dict()):
@@ -751,6 +749,11 @@ class myFtx(ccxtpro.ftx):
 
         self.logger = logging.getLogger('tradeexecutor')
         self.data_logger = ExecutionLogger(exchange_name=self.id)
+
+    def to_dict(self):
+        return {'parameters':self.parameters} \
+               |{key:getattr(self,key).to_dict()
+                 for key in ['inventory_manager','order_manager','position_manager']}
 
     @staticmethod
     async def open_exec_exchange(exchange_name, config, subaccount=None):
@@ -849,13 +852,10 @@ class myFtx(ccxtpro.ftx):
                     self.analytics_manager.trades_cache[message['symbol']].append(message)
 
         # critical job is done, release lock and print data
-        coin = self.markets[list(self.inventory_manager.keys())[0]]['base']
         if self.order_manager.fill_flag:
-            coros = [self.order_manager.to_json(f'{self.data_logger.json_filename}_order_manager.json'),
-                     self.position_manager.to_json(f'{self.data_logger.json_filename}_risk_reconciliations.json'),
-                     self.inventory_manager.to_json(f'{self.data_logger.json_filename}_inventory_manager.json')]
+            async with aiofiles.open(f'{self.data_logger.json_filename}.json', mode='a') as file:
+                await file.write(json.dumps(self.to_dict(), cls=NpEncoder))
             self.order_manager.fill_flag = False
-            await asyncio.gather(*coros)
 
 
     # --------------------------------------------------------------------------------------------

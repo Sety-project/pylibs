@@ -134,8 +134,6 @@ class NpEncoder(json.JSONEncoder):
             return obj.to_json()
         if isinstance(obj, collections.deque):
             return list(obj)
-        if hasattr(obj, 'json_encoder'):
-            return obj.json_encoder
         return super(NpEncoder, self).default(obj)
 
 def parse_time_param(param):

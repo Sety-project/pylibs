@@ -22,7 +22,7 @@ class ExecutionLogger:
             os.makedirs(self.mktdata_dirname, mode=0o777)
 
     @staticmethod
-    def batch_summarize_exec_logs(exchange='ftx', subaccount='',dirname=os.path.join(os.sep, 'tmp', 'prod', 'tradeexecutor'),
+    def batch_summarize_exec_logs(exchange='ftx', subaccount='',dirname=os.path.join(os.sep, 'tmp','','tradeexecutor'),
                                   start=datetime(1970, 1, 1),
                                   end=datetime.now(),
                                   rebuild=True,
@@ -43,38 +43,33 @@ class ExecutionLogger:
             if rebuild: raise Exception('not an exception: just skip history on rebuild=True')
             compiled_logs = {tab: pd.read_csv(os.path.join(os.sep, dirname, f'all_{tab}.csv'), index_col='index') for
                              tab in tab_list}
-            max_compiled_date = compiled_logs['inventory_manager']['log_time'].max()
+            max_compiled_date = compiled_logs['inventory_manager']['timestamp'].max()
         except Exception as e:
             compiled_logs = {tab: pd.DataFrame() for tab in tab_list}
             max_compiled_date = datetime(1970,1,1)
 
         # find files not compiled yet
-        all_files = [filename for filename in os.listdir(archive_dirname) if 'order_manager.json' in filename]
         filenames = []
-        for f in all_files:
+        for f in os.listdir(archive_dirname):
             try:
                 modification_date = os.path.getmtime(os.path.join(os.sep, archive_dirname, f))
-                if max(max_compiled_date,start) <= datetime.utcfromtimestamp(modification_date) <= end:
-                    filenames += [f.replace('_order_lifecycle.json','')]
+                if max(max_compiled_date,start) <= datetime.utcfromtimestamp(modification_date) <= end and not os.path.isdir(os.path.join(os.sep, archive_dirname, f)):
+                    filenames += [f]
             except Exception as e:  # always outside (start,end)
                 continue
 
         removed_logs = []
         for filename in filenames:
             try:
-                new_logs = ExecutionLogger.summarize_exec_logs(path_date=os.path.join(os.sep, archive_dirname, filename), add_history_context=add_history_context)
+                new_logs = ExecutionLogger.summarize_exec_logs(filename=os.path.join(os.sep, archive_dirname, filename), add_history_context=add_history_context)
                 for key in tab_list:
-                    df = new_logs['parameters']
-                    new_logs[key]['log_time'] = datetime.utcfromtimestamp(df.loc[df['index']=='inception_time',0].squeeze()/1000).replace(tzinfo=timezone.utc)
+                    new_logs[key]['log_time'] = datetime.utcfromtimestamp(new_logs['inventory_manager']['order_received_timestamp']/1000).replace(tzinfo=timezone.utc)
                     compiled_logs[key] = pd.concat([compiled_logs[key], new_logs[key]], axis=0)
             except Exception as e:
-                for suffix in ['order_manager', 'inventory_manager', 'risk_reconciliations']:
-                    filename = f'{date}_{suffix}.json'
-                    if os.path.isfile(os.path.join(os.sep, archive_dirname, filename)):
-                        removed_logs.extend(filename)
-                        shutil.move(os.path.join(os.sep, archive_dirname, filename),
-                                    os.path.join(os.sep, unreadable_dirname, filename))
-
+                if os.path.isfile(os.path.join(os.sep, archive_dirname, filename)):
+                    removed_logs.extend(filename)
+                    shutil.move(os.path.join(os.sep, archive_dirname, filename),
+                                os.path.join(os.sep, unreadable_dirname, filename))
 
         for key, value in compiled_logs.items():
             value.to_csv(os.path.join(dirname, f'all_{key}.csv'))
@@ -82,18 +77,15 @@ class ExecutionLogger:
         return f'moved {len(removed_logs)} logs to unreadable'
 
     @staticmethod
-    def summarize_exec_logs(path_date, exchange='ftx', subaccount='',add_history_context=False):
+    def summarize_exec_logs(filename, exchange='ftx', subaccount='',add_history_context=False):
         '''compile json logs into DataFrame summaries'''
-        with open(f'{path_date}_order_manager.json', 'r') as file:
+        with open(filename, 'r') as file:
             d = json.load(file)
-            order_manager = {clientId: pd.DataFrame(data).reset_index() for clientId, data in d.items()}
-        with open(f'{path_date}_risk_reconciliations.json', 'r') as file:
-            d = json.load(file)
-            risk_reconciliations = pd.DataFrame(d).reset_index()
-        with open(f'{path_date}_inventory_manager.json', 'r') as file:
-            d = json.load(file)
-            parameters = pd.Series(d.pop('parameters')).reset_index()
-            inventory_manager = pd.DataFrame(d).T.reset_index()
+        parameters = d['parameters']
+        order_received_timestamp = d['inventory_manager']['order_received_timestamp']
+        inventory_manager = pd.DataFrame(d['inventory_manager']['values']).T.reset_index()
+        order_manager = {clientId: pd.DataFrame(data).reset_index() for clientId, data in d['order_manager']['values'].items()}
+        risk_reconciliations = pd.DataFrame(d['risk_reconciliations']['values']).reset_index()
 
         if len(order_manager)>0:
             data = pd.concat([data for clientOrderId, data in order_manager.items()], axis=0)
@@ -190,9 +182,8 @@ class ExecutionLogger:
 
                 return pd.concat([x['vwap'] for x in trades_history_list], axis=1, join='outer')
 
-            start_time = parameters['inception_time']
             history = pd.concat([asyncio.run(
-                build_vwap(start_time, by_clientOrderId['last_fill_local'].max()))] + fill_history).sort_index()
+                build_vwap(order_received_timestamp, by_clientOrderId['last_fill_local'].max()))] + fill_history).sort_index()
 
         by_symbol = pd.concat([by_symbol,
                                pd.DataFrame({'index': ['average'],
@@ -217,15 +208,15 @@ class ExecutionLogger:
                                                by_coin['perleg_filled_USD'].apply(np.abs).sum()]})],
                             axis=0, ignore_index=True)
 
-        return {
-                   'inventory_manager': inventory_manager,
-                   'parameters': parameters,
-                   'by_coin': by_coin,
-                   'by_symbol': by_symbol,
-                   'by_clientOrderId': by_clientOrderId,
-                   'data': data,
-                   'risk_recon': risk_reconciliations
-               } | ({'history': history} if add_history_context else {})
+        return {    'order_received_timestamp': order_received_timestamp,
+                    'inventory_manager': inventory_manager,
+                    'parameters': parameters,
+                    'by_coin': by_coin,
+                    'by_symbol': by_symbol,
+                    'by_clientOrderId': by_clientOrderId,
+                    'data': data,
+                    'risk_recon': risk_reconciliations
+                    } | ({'history': history} if add_history_context else {})
 
 if __name__ == "__main__":
     args, kwargs = extract_args_kwargs(sys.argv)
