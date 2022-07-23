@@ -296,8 +296,9 @@ async def perp_vs_cash(
         logging.getLogger('pfoptimizer').info(display)
 
         # print to bus
-        optimized = pd.concat([optimized, enriched[~enriched.index.isin(optimized.index)]],join='outer').drop(
-    index=['USD', 'total']).fillna(0.0)
+        optimized = pd.concat([optimized, enriched],axis=0,join='outer').drop(
+    index=['USD', 'total']).fillna(0.0).sort_values(by='optimalWeight', key=lambda f: np.abs(f),
+                                                                   ascending=False).head(config["NB_COINS"]["value"])
         optimized[['spot_ticker','underlying','new_symbol']] = enriched[['spot_ticker','underlying','new_symbol']]
         #optimized['underlying'] =
         optimized['exchange'] = exchange.id
