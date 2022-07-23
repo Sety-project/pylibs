@@ -69,7 +69,7 @@ def loop(func):
             except ccxt.NetworkError as e:
                 self.logger.info(str(e))
                 self.logger.info('reconciling after '+func.__name__+' dropped off')
-                await self.reconcile() # implicitement redemarre la socket, ccxt fait ca comme ca
+                await self.reconcile()
             except Exception as e:
                 self.logger.info(e, exc_info=True)
                 raise e
@@ -564,7 +564,7 @@ class InventoryManager(dict):
     @staticmethod
     async def build(exchange,nowtime,order):
         result = InventoryManager(nowtime.timestamp() * 1000, order)
-        await result.read_source()
+        await result.set_from_source()
 
         trading_fees = await exchange.fetch_trading_fees()
         for symbol in result:
@@ -576,30 +576,42 @@ class InventoryManager(dict):
 
         return result
 
-    async def read_source(self):
+    async def set_from_source(self):
         weights = await async_read_csv(self.filename)
         cash_symbol = weights['spot_ticker'].unique()[0]
 
         spot = weights['spot'].unique()[0]
         targets = (-weights.set_index('new_symbol')['optimalWeight'] / spot).to_dict()
         targets[cash_symbol] = -sum(targets.values())
+        #assert targets.keys() == self.keys(), f'{targets.keys()}!={self.keys()}'
 
-        for symbol,target in targets.items():
+        self.set_target(spot,targets)
+
+    def set_target(self, spot, targets):
+        for symbol, target in targets.items():
             if symbol not in self:
-                self[symbol] = {'target':target,'spot_price':spot}
-
-        for symbol,target in targets.items():
+                self[symbol] = {'target': target, 'spot_price': spot}
+        for symbol, target in targets.items():
             if self[symbol]['target'] != target:
                 self.logger.info('{} weight changed from {} to {}'.format(
-                    symbol,self[symbol]['target']*spot,target*spot))
+                    symbol, self[symbol]['target'] * spot, target * spot))
                 self[symbol]['target'] = target
                 self[symbol]['spot_price'] = spot
-
-        self.timestamp = datetime.now().timestamp() * 1000
+                self.timestamp = datetime.now().timestamp() * 1000
 
     async def update_quoter_params(self, exchange):
-        '''scales order placement params with time'''
-        await self.read_source()
+        '''updates quoter inputs
+        reads file if present. If not: if no risk then shutdown bot, else unwind.
+        '''
+        if os.path.isfile(self.filename):
+            await self.set_from_source()
+        elif all(abs(exchange.position_manager[symbol]['delta'])<exchange.parameters['significance_threshold'] * exchange.position_manager.pv for symbol in self):
+            raise Exception(f'no {self.keys()} delta and no {self.filename} delta --> shutting down bot')
+        else:
+            targets = {key:0 for key in self}
+            spot = exchange.mid(next(key for key in self if exchange.market(key)['type']=='spot'))
+            self.set_target(spot,targets)
+
         nowtime = datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000
         exchange.analytics_manager.compile_vwap_history(frequency=timedelta(minutes=1))
 
