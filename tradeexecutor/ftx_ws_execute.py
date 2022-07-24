@@ -552,6 +552,9 @@ class PositionManager(dict):
                 'global_delta_minus': global_delta_minus}
 
 class InventoryManager(dict):
+    class ReadyToShutdown(Exception):
+        def __init__(self, text):
+            super().__init__(text)
     def __init__(self,timestamp,filename):
         super().__init__()
         self.timestamp = timestamp
@@ -606,7 +609,7 @@ class InventoryManager(dict):
         if os.path.isfile(self.filename):
             await self.set_from_source()
         elif all(abs(exchange.position_manager[symbol]['delta'])<exchange.parameters['significance_threshold'] * exchange.position_manager.pv for symbol in self):
-            raise Exception(f'no {self.keys()} delta and no {self.filename} delta --> shutting down bot')
+            raise InventoryManager.ReadyToShutdown(f'no {self.keys()} delta and no {self.filename} order --> shutting down bot')
         else:
             targets = {key:0 for key in self}
             spot = exchange.mid(next(key for key in self if exchange.market(key)['type']=='spot'))
@@ -645,10 +648,14 @@ class InventoryManager(dict):
             data['edit_trigger_depth'] = stdev * np.sqrt(exchange.parameters['edit_trigger_tolerance']) * scaler
 
             # aggressive version understand tolerance as price increment
-            data['aggressive_edit_price_depth'] = max(1,exchange.parameters['aggressive_edit_price_tolerance']) * data['priceIncrement']
-            data['aggressive_edit_trigger_depth'] = max(1,exchange.parameters['aggressive_edit_price_tolerance']) * data['priceIncrement']
+            if isinstance(exchange.parameters['aggressive_edit_price_tolerance'],float):
+                data['aggressive_edit_price_depth'] = max(1,exchange.parameters['aggressive_edit_price_tolerance']) * data['priceIncrement']
+                data['aggressive_edit_trigger_depth'] = max(1,exchange.parameters['aggressive_edit_price_tolerance']) * data['priceIncrement']
+            else:
+                data['aggressive_edit_price_depth'] = exchange.parameters['aggressive_edit_price_tolerance']
+                data['aggressive_edit_trigger_depth'] = exchange.parameters['aggressive_edit_price_tolerance']
 
-            # stop_depth = how far to set the stop on risk reducing orders
+                # stop_depth = how far to set the stop on risk reducing orders
             data['stop_depth'] = stdev * np.sqrt(exchange.parameters['stop_tolerance']) * scaler
 
             # slice_size: cap to expected time to trade consistent with edit_price_tolerance
@@ -1403,7 +1410,8 @@ async def single_coin_routine(order_name, config_name, **kwargs):
         logger.warning(f'cancelled {exchange.inventory_manager} orders')
         # await exchange.close_dust()  # Commenting out until bug fixed
         await exchange.close()
-        raise e
+        if not isinstance(e,InventoryManager.ReadyToShutdown):
+            raise e
 
 async def listen(order_name,config_name,**kwargs):
 
