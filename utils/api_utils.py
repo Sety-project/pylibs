@@ -189,5 +189,4 @@ MyModules.register(name='tradeexecutor',
                    kwargs_validation={'exchange':[lambda x: x in ['ftx'],'not in {}'.format(['ftx'])],
                                       'subaccount':[lambda x: True,'not found'],
                                       'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(config_name=x))),'not found'],
-                                      'nb_runs':[lambda x: isinstance(int(x),int),'integer needed'],
                                       'listen':[lambda x: x in ["True","False"],'True or False']})
