@@ -1,7 +1,6 @@
 import os
 import docker
 import datetime
-from tabulate import tabulate
 import prettytable as pt
 
 # SPECS/What we want to achieve as for controls

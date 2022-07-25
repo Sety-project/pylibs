@@ -278,7 +278,7 @@ async def perp_vs_cash(
 
     # for live, send last optimized, and also shard them by coin.
     if backtest_start == backtest_end:
-        pfoptimizer_path = os.path.join(configLoader.get_config_folder_path(config_name=config_name), "pfoptimizer")
+        pfoptimizer_path = os.path.join(os.sep, configLoader.get_config_folder_path(config_name=config_name), "pfoptimizer")
 
         # write logs
         if not os.path.exists(pfoptimizer_path):
@@ -398,8 +398,8 @@ def main(*args,**kwargs):
             backtest_end=None))
         res = res_list[0]
         # send bus message
-        pfoptimizer_path = os.path.join(configLoader.get_config_folder_path(config_name=kwargs['config'] if 'config' in kwargs else None), "pfoptimizer")
-        pfoptimizer_res_last_filename = os.path.join(pfoptimizer_path,
+        pfoptimizer_path = os.path.join(os.sep,configLoader.get_config_folder_path(config_name=kwargs['config'] if 'config' in kwargs else None), "pfoptimizer")
+        pfoptimizer_res_last_filename = os.path.join(os.sep,pfoptimizer_path,
                                                      f"weights_{exchange_name}_{subaccount}")
         res = res.sort_values(by='optimalWeight', key=lambda f: np.abs(f),
                                                                        ascending=False)

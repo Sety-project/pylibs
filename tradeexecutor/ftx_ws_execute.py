@@ -1329,20 +1329,20 @@ class myFtx(ccxtpro.ftx):
         for quoteId in quoteId_list
         if quoteId['success']])
 
-async def get_exec_request(exchange,order_name,config_name,coin=None,cash_size=None):
-    dirname = os.path.join(os.sep, configLoader._config_folder_path, config_name if config_name else '', 'pfoptimizer')
+async def get_exec_request(exchange,order_name,**kwargs):
+    dirname = os.path.join(os.sep, configLoader.get_config_folder_path(config_name=kwargs['config']), "pfoptimizer")
     exchange_name = exchange.id
     subaccount = exchange.headers['FTX-SUBACCOUNT']
 
     if order_name == 'spread':
-        coin = coin
+        coin = kwargs['coin']
         cash_name = coin + '/USD'
         future_name = coin + '-PERP'
         cash_price = float(exchange.market(cash_name)['info']['price'])
         future_price = float(exchange.market(future_name)['info']['price'])
         target_portfolio = pd.DataFrame(columns=['coin', 'name', 'optimalCoin', 'currentCoin', 'spot_price'], data=[
-            [coin, cash_name, float(cash_size) / cash_price, 0, cash_price],
-            [coin, future_name, -float(cash_size) / future_price, 0, future_price]])
+            [coin, cash_name, float(kwargs['cash_size']) / cash_price, 0, cash_price],
+            [coin, future_name, -float(kwargs['cash_size']) / future_price, 0, future_price]])
 
     elif order_name == 'flatten':  # only works for basket with 2 symbols
         future_weights = pd.DataFrame(columns=['name', 'optimalWeight'])
@@ -1373,18 +1373,18 @@ async def get_exec_request(exchange,order_name,config_name,coin=None,cash_size=N
         df.to_csv(temp_filename)
     return filenames
 
-async def risk_reduction_routine(order_name, config_name, **kwargs):
-    config = configLoader.get_executor_params(order=order_name, dirname=config_name)
+async def risk_reduction_routine(order_name, **kwargs):
+    config = configLoader.get_executor_params(order=order_name, dirname=kwargs['config'])
     exchange = await myFtx.open_exec_exchange(kwargs['exchange'], config, subaccount=kwargs['subaccount'])
-    orders = await get_exec_request(exchange, order_name, config_name)
+    orders = await get_exec_request(exchange, order_name, kwargs['config'])
     exchange.logger.critical(f'generated {orders}, now them all')
     await exchange.close()
-    await asyncio.gather(*[single_coin_routine(order, config_name, **kwargs) for order in orders])
+    await asyncio.gather(*[single_coin_routine(order, kwargs['config'], **kwargs) for order in orders])
 
-async def single_coin_routine(order_name, config_name, **kwargs):
+async def single_coin_routine(order_name, **kwargs):
     try:
-        config = configLoader.get_executor_params(order=order_name,dirname=config_name)
-        order = os.path.join(os.sep, configLoader._config_folder_path, config_name if config_name else '', 'pfoptimizer', order_name)
+        config = configLoader.get_executor_params(order=order_name,dirname=kwargs['config'])
+        order = os.path.join(os.sep, configLoader.get_config_folder_path(config_name=kwargs['config']), "pfoptimizer", order_name)
 
         future_weights = pd.read_csv(order)
         exchange_name = future_weights['exchange'].unique()[0]
@@ -1413,13 +1413,11 @@ async def single_coin_routine(order_name, config_name, **kwargs):
         if not isinstance(e,InventoryManager.ReadyToShutdown):
             raise e
 
-async def listen(order_name,config_name,**kwargs):
+async def listen(order_name,**kwargs):
 
-    config = configLoader.get_executor_params(order=order_name, dirname=config_name)
-    if config_name:
-        order = os.path.join(os.sep, configLoader._config_folder_path, config_name, 'pfoptimizer', order_name)
-    else:
-        order = os.path.join(os.sep, configLoader._config_folder_path, 'pfoptimizer', order_name)
+    config = configLoader.get_executor_params(order=order_name, dirname=kwargs['config'])
+    order = os.path.join(os.sep, configLoader.get_config_folder_path(config_name=kwargs['config']), "pfoptimizer",
+                         order_name)
 
     future_weights = pd.read_csv(order)
     exchange_name = future_weights['exchange'].unique()[0]
@@ -1451,14 +1449,14 @@ def main(*args,**kwargs):
    '''
 
     order_name = args[0]
-    config_name = kwargs.pop('config') if 'config' in kwargs else None
+    #config_name = kwargs.pop('config') if 'config' in kwargs else None
     logger = kwargs.pop('__logger')
 
     if 'listen' in kwargs and kwargs.pop('listen') == "True":
-        asyncio.run(listen(order_name, config_name, **kwargs))
+        asyncio.run(listen(order_name, **kwargs))
     elif order_name in ['unwind','flatten']:
-        asyncio.run(risk_reduction_routine(order_name, config_name, **kwargs))
+        asyncio.run(risk_reduction_routine(order_name, **kwargs))
     else:
-        asyncio.run(single_coin_routine(order_name, config_name, **kwargs)) # --> I am filled or I timed out and I have flattened position
+        asyncio.run(single_coin_routine(order_name, **kwargs)) # --> I am filled or I timed out and I have flattened position
 
  
