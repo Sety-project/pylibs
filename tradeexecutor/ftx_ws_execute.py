@@ -1415,8 +1415,8 @@ async def single_coin_routine(order_name, **kwargs):
 
 async def listen(order_name,**kwargs):
 
-    config = configLoader.get_executor_params(order=order_name, dirname=kwargs['config'] if 'config' in kwargs else None)
-    order = os.path.join(os.sep, configLoader.get_config_folder_path(config_name=kwargs['config'] if 'config' in kwargs else None), "pfoptimizer",
+    config = configLoader.get_executor_params(order=order_name, dirname=kwargs['config'])
+    order = os.path.join(os.sep, configLoader.get_config_folder_path(config_name=kwargs['config']), "pfoptimizer",
                          order_name)
 
     future_weights = pd.read_csv(order)
@@ -1451,6 +1451,8 @@ def main(*args,**kwargs):
     order_name = args[0]
     #config_name = kwargs.pop('config') if 'config' in kwargs else None
     logger = kwargs.pop('__logger')
+    if 'config' not in kwargs:
+        kwargs['config'] = None
 
     if 'listen' in kwargs and kwargs.pop('listen') == "True":
         asyncio.run(listen(order_name, **kwargs))
