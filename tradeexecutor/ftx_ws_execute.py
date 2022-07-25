@@ -746,7 +746,7 @@ class AnalyticsManager():
     async def broadcast_analytics(self):
         self.compile_spread_vwap(timedelta(minutes=1))
         coin = list(self.spread_vwap_history.keys())[0].replace(':USD','').replace('/USD','')
-        filename = os.path.join(os.sep, 'tmp', 'pfoptimizer', f'spread_vwap_{coin}.csv')
+        filename = os.path.join(os.sep, configLoader.get_mktdata_folder_for_exchange('ftx_tickdata'),f'spread_vwap_{coin}.csv')
         prev_df = pd.read_csv(filename,index_col=0) if os.path.isfile(filename) else pd.DataFrame()
         pd.concat([prev_df] + [data for data in self.spread_vwap_history.values()]).to_csv(filename)
 
@@ -1415,8 +1415,8 @@ async def single_coin_routine(order_name, **kwargs):
 
 async def listen(order_name,**kwargs):
 
-    config = configLoader.get_executor_params(order=order_name, dirname=kwargs['config'])
-    order = os.path.join(os.sep, configLoader.get_config_folder_path(config_name=kwargs['config']), "pfoptimizer",
+    config = configLoader.get_executor_params(order=order_name, dirname=kwargs['config'] if 'config' in kwargs else None)
+    order = os.path.join(os.sep, configLoader.get_config_folder_path(config_name=kwargs['config'] if 'config' in kwargs else None), "pfoptimizer",
                          order_name)
 
     future_weights = pd.read_csv(order)
