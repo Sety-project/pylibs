@@ -1,4 +1,7 @@
 from datetime import *
+
+import pandas as pd
+
 from histfeed.ftx_history import fetch_trades_history
 from utils.ccxt_utilities import open_exchange
 from utils.io_utils import *
@@ -63,7 +66,7 @@ class ExecutionLogger:
             try:
                 new_logs = ExecutionLogger.summarize_exec_logs(filename=os.path.join(os.sep, archive_dirname, filename), add_history_context=add_history_context)
                 for key in tab_list:
-                    new_logs[key]['log_time'] = datetime.utcfromtimestamp(new_logs['inventory_manager']['order_received_timestamp']/1000).replace(tzinfo=timezone.utc)
+                    new_logs[key]['log_time'] = datetime.utcfromtimestamp(new_logs['order_received_timestamp']/1000).replace(tzinfo=timezone.utc)
                     compiled_logs[key] = pd.concat([compiled_logs[key], new_logs[key]], axis=0)
             except Exception as e:
                 if os.path.isfile(os.path.join(os.sep, archive_dirname, filename)):
@@ -81,28 +84,28 @@ class ExecutionLogger:
         '''compile json logs into DataFrame summaries'''
         with open(filename, 'r') as file:
             d = json.load(file)
-        parameters = d['parameters']
+        parameters = pd.DataFrame({'parameters':d['parameters']})
         order_received_timestamp = d['inventory_manager']['order_received_timestamp']
         inventory_manager = pd.DataFrame(d['inventory_manager']['values']).T.reset_index()
-        order_manager = {clientId: pd.DataFrame(data).reset_index() for clientId, data in d['order_manager']['values'].items()}
-        risk_reconciliations = pd.DataFrame(d['risk_reconciliations']['values']).reset_index()
+        order_manager = {clientId: pd.DataFrame(data) for clientId, data in d['order_manager']['values'].items()}
+        risk_reconciliations = pd.DataFrame(d['position_manager']['values'])
 
         if len(order_manager)>0:
             data = pd.concat([data for clientOrderId, data in order_manager.items()], axis=0)
         else:
             raise Exception('no fill to parse')
 
-        data.loc[data['lifecycle_state'] == 'filled', 'filled'] = data.loc[
-            data['lifecycle_state'] == 'filled', 'amount']
+        data.loc[data['state'] == 'filled', 'filled'] = data.loc[
+            data['state'] == 'filled', 'amount']
         if data[data['filled'] > 0].empty:
             raise Exception('no fill to parse')
 
         # pick biggest 'filled' for each clientOrderId
         temp_events = {clientOrderId:
                            {'inception_event':
-                                clientOrderId_data[clientOrderId_data['lifecycle_state'] == 'pending_new'].iloc[0],
+                                clientOrderId_data[clientOrderId_data['state'] == 'pending_new'].iloc[0],
                             'ack_event': clientOrderId_data[
-                                (clientOrderId_data['lifecycle_state'] == 'acknowledged') & (
+                                (clientOrderId_data['state'] == 'acknowledged') & (
                                             clientOrderId_data['comment'] == 'websocket_acknowledgment')].iloc[0],
                             'last_fill_event': clientOrderId_data[clientOrderId_data['filled'] > 0].iloc[-1],
                             'filled': clientOrderId_data['filled'].max()}
@@ -142,7 +145,7 @@ class ExecutionLogger:
                 {'time_to_execute': symbol_data['last_fill_local'].max() - symbol_data['pending_local'].min(),
                  'slippage_bps': 10000 * np.sign(symbol_data['filled'].sum()) * (
                              (symbol_data['filled'] * symbol_data['price']).sum() / symbol_data['filled'].sum() /
-                             inventory_manager.loc[inventory_manager['index'] == symbol, 'spot'].squeeze() - 1),
+                             inventory_manager.loc[inventory_manager['index'] == symbol, 'spot_price'].squeeze() - 1),
                  'fee': 10000 * symbol_data['fee'].sum() / np.abs((symbol_data['filled'] * symbol_data['price']).sum()),
                  'filledUSD': (symbol_data['filled'] * symbol_data['price']).sum(),
                  'coin': symbol.split('/')[0]
