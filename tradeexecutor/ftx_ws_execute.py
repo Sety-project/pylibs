@@ -2,6 +2,7 @@ import logging
 import os.path
 import time as t
 
+import numpy as np
 import pandas as pd
 
 from utils.MyLogger import ExecutionLogger
@@ -13,7 +14,7 @@ from riskpnl.ftx_risk_pnl import diff_portoflio
 from riskpnl.ftx_margin import MarginCalculator
 from utils.api_utils import api,build_logging
 from utils.async_utils import *
-from utils.io_utils import async_read_csv,async_to_csv,NpEncoder
+from utils.io_utils import async_read_csv,async_to_csv,NpEncoder,append_to_json
 
 import ccxtpro,collections,copy
 
@@ -69,7 +70,8 @@ def loop(func):
             except ccxt.NetworkError as e:
                 self.logger.info(str(e))
                 self.logger.info('reconciling after '+func.__name__+' dropped off')
-                await self.reconcile()
+                if self.position_manager and self. order_manager:
+                    await self.reconcile()
             except Exception as e:
                 self.logger.info(e, exc_info=True)
                 raise e
@@ -88,6 +90,9 @@ def intercept_message_during_reconciliation(wrapped):
     return _wrapper
 
 class OrderManager(dict):
+    '''manages and records lifecycle of orders.
+    structure is {clientOrderId:[{...state dictionnary...},...]}
+    able to reconcile to an exchange'''
     allStates = set(['pending_new', 'pending_cancel', 'sent', 'cancel_sent', 'pending_replace', 'acknowledged', 'partially_filled', 'filled', 'canceled', 'rejected'])
     openStates = set(['pending_new', 'sent', 'pending_cancel', 'pending_replace', 'acknowledged', 'partially_filled'])
     acknowledgedStates = set(['acknowledged', 'partially_filled'])
@@ -410,6 +415,10 @@ class OrderManager(dict):
                 self.logger.warning('{} was a {} zombie'.format(clientOrderId,internal_order_internal_status[clientOrderId]['state']))
 
 class PositionManager(dict):
+    '''manages all aspects of pv,risk,margin. Even underlyings not being executed (but only one exchange)
+    Records historical risks.
+    structure is {symbol:[{'delta','delta_timestamp','delta_id',some static data},...]}
+    able to reconcile to an exchange'''
     class LimitBreached(Exception):
         def __init__(self,check_frequency,limit):
             super().__init__()
@@ -497,6 +506,17 @@ class PositionManager(dict):
                                        'pv_error': self.pv - (previous_pv or 0),
                                        'total_delta_error': sum(delta_error.values())}
                                       for symbol_ in self]
+    def check_limit(self):
+        absolute_risk = dict()
+        for symbol in self:
+            coin = self.markets[symbol]['base']
+            if coin not in absolute_risk:
+                absolute_risk[coin] = abs(self.coin_delta(symbol))
+        if sum(absolute_risk.values()) > self.pv * self.limit.delta_limit:
+            self.logger.info(
+                f'absolute_risk {absolute_risk} > {self.pv * self.limit.delta_limit}')
+        if self.margin.actual_IM < self.pv / 100:
+            self.logger.info(f'IM {self.margin.actual_IM}  < 1%')
 
     def trim_to_margin(self, mid, size, symbol):
         '''trim size to margin allocation (equal for all running symbols)'''
@@ -555,8 +575,9 @@ class InventoryManager(dict):
     class ReadyToShutdown(Exception):
         def __init__(self, text):
             super().__init__(text)
-    def __init__(self,timestamp,filename):
+    def __init__(self,timestamp,filename,parameters):
         super().__init__()
+        self.parameters = parameters
         self.timestamp = timestamp
         self.filename = filename
         self.logger = logging.getLogger('tradeexecutor')
@@ -565,8 +586,8 @@ class InventoryManager(dict):
         return {'filename':self.filename,'order_received_timestamp':self.timestamp,'values':dict(self)}
 
     @staticmethod
-    async def build(exchange,nowtime,order):
-        result = InventoryManager(nowtime.timestamp() * 1000, order)
+    async def build(exchange,nowtime,order,parameters):
+        result = InventoryManager(nowtime.timestamp() * 1000, order,parameters)
         await result.set_from_source()
 
         trading_fees = await exchange.fetch_trading_fees()
@@ -580,13 +601,18 @@ class InventoryManager(dict):
         return result
 
     async def set_from_source(self):
-        weights = await async_read_csv(self.filename)
-        cash_symbol = weights['spot_ticker'].unique()[0]
+        if self.parameters['signal'] == 'vwap':
+            weights = await async_read_csv(self.filename,index_col=0)
+            cash_symbol = weights['spot_ticker'].unique()[0]
 
-        spot = weights['spot'].unique()[0]
-        targets = (-weights.set_index('new_symbol')['optimalWeight'] / spot).to_dict()
-        targets[cash_symbol] = -sum(targets.values())
-        #assert targets.keys() == self.keys(), f'{targets.keys()}!={self.keys()}'
+            spot = weights['spot'].unique()[0]
+            targets = (-weights.set_index('new_symbol')['optimalWeight'] / spot).to_dict()
+            targets[cash_symbol] = -sum(targets.values())
+        elif self.parameters['signal'] == 'spread_distribution':
+            with aiofiles.open(self.filename,'r') as fp:
+                filecontent = await fp.read()
+                quantiles_history = json.loads(filecontent)
+                quantiles = quantiles_history[-1]
 
         self.set_target(spot,targets)
 
@@ -600,7 +626,7 @@ class InventoryManager(dict):
                     symbol, self[symbol]['target'] * spot, target * spot))
                 self[symbol]['target'] = target
                 self[symbol]['spot_price'] = spot
-                self.timestamp = datetime.now().timestamp() * 1000
+                self.timestamp = datetime.utcnow().timestamp() * 1000
 
     async def update_quoter_params(self, exchange):
         '''updates quoter inputs
@@ -615,74 +641,129 @@ class InventoryManager(dict):
             spot = exchange.mid(next(key for key in self if exchange.market(key)['type']=='spot'))
             self.set_target(spot,targets)
 
-        nowtime = datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000
-        exchange.analytics_manager.compile_vwap_history(frequency=timedelta(minutes=1))
+        if self.parameters['signal'] == 'vwap':
+            nowtime = datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000
+            exchange.analytics_manager.compile_vwap(frequency=timedelta(minutes=1))
 
-        def basket_vwap_quantile(series_list, diff_list, quantiles):
-            series = pd.concat([serie * coef for serie, coef in zip(series_list, diff_list)], join='inner', axis=1)
-            return [-1e18 if quantile<=0 else 1e18 if quantile>=1 else series.sum(axis=1).quantile(quantile) for quantile in quantiles]
+            def basket_vwap_quantile(series_list, diff_list, quantiles):
+                series = pd.concat([serie * coef for serie, coef in zip(series_list, diff_list)], join='inner', axis=1)
+                return [-1e18 if quantile<=0 else 1e18 if quantile>=1 else series.sum(axis=1).quantile(quantile) for quantile in quantiles]
 
-        scaler = 1 # max(0,(time_limit-nowtime)/(time_limit-self.inventory_target.timestamp))
-        for symbol, data in self.items():
-            data['update_time_delta'] = data['target'] - exchange.position_manager[symbol]['delta'] / exchange.mid(symbol)
+            scaler = 1 # max(0,(time_limit-nowtime)/(time_limit-self.inventory_target.timestamp))
+            for symbol, data in self.items():
+                data['update_time_delta'] = data['target'] - exchange.position_manager[symbol]['delta'] / exchange.mid(symbol)
 
-        for symbol, data in self.items():
-            # entry_level = what level on basket is too bad to even place orders
-            # rush_in_level = what level on basket is so good that you go in at market on both legs
-            # rush_out_level = what level on basket is so bad that you go out at market on both legs
-            quantiles = basket_vwap_quantile(
-                [exchange.analytics_manager.vwap_history[symbol]['vwap'] for symbol in self],
-                [data['update_time_delta'] for symbol,data in self.items()],
-                [exchange.parameters['entry_tolerance'],exchange.parameters['rush_in_tolerance'],exchange.parameters['rush_out_tolerance']])
+            for symbol, data in self.items():
+                # entry_level = what level on basket is too bad to even place orders
+                # rush_in_level = what level on basket is so good that you go in at market on both legs
+                # rush_out_level = what level on basket is so bad that you go out at market on both legs
+                quantiles = basket_vwap_quantile(
+                    [exchange.analytics_manager.vwap[symbol]['vwap'] for symbol in self],
+                    [data['update_time_delta'] for symbol,data in self.items()],
+                    [exchange.parameters['entry_tolerance'],exchange.parameters['rush_in_tolerance'],exchange.parameters['rush_out_tolerance']])
 
-            data['entry_level'] = quantiles[0]
-            data['rush_in_level'] = quantiles[1]
-            data['rush_out_level'] = quantiles[2]
+                data['entry_level'] = quantiles[0]
+                data['rush_in_level'] = quantiles[1]
+                data['rush_out_level'] = quantiles[2]
 
-            stdev = exchange.analytics_manager.vwap_history[symbol]['vwap'].std().squeeze()
-            if not (stdev>0): stdev = 1e-16
+                stdev = exchange.analytics_manager.vwap[symbol]['vwap'].std().squeeze()
+                if not (stdev>0): stdev = 1e-16
 
-            # edit_price_depth = how far to put limit on risk increasing orders
-            data['edit_price_depth'] = stdev * np.sqrt(exchange.parameters['edit_price_tolerance']) * scaler
-            # edit_trigger_depth = how far to let the mkt go before re-pegging limit orders
-            data['edit_trigger_depth'] = stdev * np.sqrt(exchange.parameters['edit_trigger_tolerance']) * scaler
+                # edit_price_depth = how far to put limit on risk increasing orders
+                data['edit_price_depth'] = stdev * np.sqrt(exchange.parameters['edit_price_tolerance']) * scaler
+                # edit_trigger_depth = how far to let the mkt go before re-pegging limit orders
+                data['edit_trigger_depth'] = stdev * np.sqrt(exchange.parameters['edit_trigger_tolerance']) * scaler
 
-            # aggressive version understand tolerance as price increment
-            if isinstance(exchange.parameters['aggressive_edit_price_tolerance'],float):
-                data['aggressive_edit_price_depth'] = max(1,exchange.parameters['aggressive_edit_price_tolerance']) * data['priceIncrement']
-                data['aggressive_edit_trigger_depth'] = max(1,exchange.parameters['aggressive_edit_price_tolerance']) * data['priceIncrement']
-            else:
-                data['aggressive_edit_price_depth'] = exchange.parameters['aggressive_edit_price_tolerance']
-                data['aggressive_edit_trigger_depth'] = exchange.parameters['aggressive_edit_price_tolerance']
+                # aggressive version understand tolerance as price increment
+                if isinstance(exchange.parameters['aggressive_edit_price_tolerance'],float):
+                    data['aggressive_edit_price_depth'] = max(1,exchange.parameters['aggressive_edit_price_tolerance']) * data['priceIncrement']
+                    data['aggressive_edit_trigger_depth'] = max(1,exchange.parameters['aggressive_edit_price_tolerance']) * data['priceIncrement']
+                else:
+                    data['aggressive_edit_price_depth'] = exchange.parameters['aggressive_edit_price_tolerance']
+                    data['aggressive_edit_trigger_depth'] = None # takers don't peg
 
-                # stop_depth = how far to set the stop on risk reducing orders
-            data['stop_depth'] = stdev * np.sqrt(exchange.parameters['stop_tolerance']) * scaler
+                    # stop_depth = how far to set the stop on risk reducing orders
+                data['stop_depth'] = stdev * np.sqrt(exchange.parameters['stop_tolerance']) * scaler
 
-            # slice_size: cap to expected time to trade consistent with edit_price_tolerance
-            volume_share = exchange.parameters['volume_share'] * exchange.parameters['edit_price_tolerance'] * \
-                           exchange.analytics_manager.vwap_history[symbol]['volume'].mean()
-            data['slice_size'] = volume_share
+                # slice_size: cap to expected time to trade consistent with edit_price_tolerance
+                volume_share = exchange.parameters['volume_share'] * exchange.parameters['edit_price_tolerance'] * \
+                               exchange.analytics_manager.vwap[symbol]['volume'].mean()
+                data['slice_size'] = volume_share
+        elif self.parameters['signal'] == 'spread_distribution':
+            nowtime = datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000
+            quantiles = exchange.analytics_manager.compile_spread_distribution()
+            exchange.analytics_manager.compile_vwap(frequency=timedelta(minutes=1))
+
+            for symbol, data in self.items():
+                # entry_level = what level on basket is too bad to even place orders
+                # rush_in_level = what level on basket is so good that you go in at market on both legs
+                # rush_out_level = what level on basket is so bad that you go out at market on both legs
+                is_long_carry = data['target'] * (-1 if ':USD' in symbol else 1) > 0
+                data['rush_in_level'] = quantiles[1 if is_long_carry else 0] * exchange.mid(symbol)/365.25
+                data['rush_out_level'] = quantiles[0 if is_long_carry else 1] * exchange.mid(symbol)/365.25
+
+                stdev = exchange.analytics_manager.vwap[symbol]['vwap'].std().squeeze()
+                if not (stdev>0): stdev = 1e-16
+
+                # edit_price_depth = how far to put limit on risk increasing orders
+                data['edit_price_depth'] = stdev * np.sqrt(exchange.parameters['edit_price_tolerance'])
+                # edit_trigger_depth = how far to let the mkt go before re-pegging limit orders
+                data['edit_trigger_depth'] = stdev * np.sqrt(exchange.parameters['edit_trigger_tolerance'])
+
+                # aggressive version understand tolerance as price increment
+                if isinstance(exchange.parameters['aggressive_edit_price_tolerance'],float):
+                    data['aggressive_edit_price_depth'] = max(1,exchange.parameters['aggressive_edit_price_tolerance']) * data['priceIncrement']
+                    data['aggressive_edit_trigger_depth'] = max(1,exchange.parameters['aggressive_edit_price_tolerance']) * data['priceIncrement']
+                else:
+                    data['aggressive_edit_price_depth'] = exchange.parameters['aggressive_edit_price_tolerance']
+                    data['aggressive_edit_trigger_depth'] = None # takers don't peg
+
+                    # stop_depth = how far to set the stop on risk reducing orders
+                data['stop_depth'] = stdev * np.sqrt(exchange.parameters['stop_tolerance'])
+
+                # slice_size: cap to expected time to trade consistent with edit_price_tolerance
+                volume_share = exchange.parameters['volume_share'] * exchange.parameters['edit_price_tolerance'] * \
+                               exchange.analytics_manager.vwap[symbol]['volume'].mean()
+                data['slice_size'] = volume_share
 
         self.timestamp = nowtime
-        self.logger.info(f'scaled params by {scaler} at {nowtime}')
 
 class AnalyticsManager():
+    quantiles = [0.2,0.8] # [0.01, 0.05, 0.1, .2, .35, .5, .65, .75, .9, .95, .99]
+
+    class Metric(list):
+        def __init__(self,exchange,parameters):
+            self.online = False
+            self.filename = None
+        def compile(self,**kwargs):
+            pass
+        def to_json(self,file_prefix):
+            pass
+
     def __init__(self,parameters):
         self.parameters = parameters
+        if 'spread_distribution' in parameters['record_set'] and 'spread_trades' not in parameters['record_set']:
+            raise Exception('spread_trades not in record_set')
+
+        self.orderbook = dict()
+
         self.trades_cache = dict()
-        self.vwap_history = dict()
-        self.orderbook_history = dict()
-        self.spread_vwap_history = dict()
+        self.vwap = dict()
+
+        self.spread_trades = []
+        self.spread_vwap = []
+        self.spread_distribution = []
 
     @staticmethod
     async def build(exchange,parameters):
         # get times series of target baskets, compute quantile of increments and add to last price
         initialized = AnalyticsManager(parameters)
-        initialized.orderbook_history = {symbol: collections.deque(maxlen=initialized.parameters['cache_size'])
-                                         for symbol in exchange.inventory_manager}
-        initialized.trades_cache = {symbol: collections.deque(maxlen=initialized.parameters['cache_size'])
-                                         for symbol in exchange.inventory_manager}
+        intial_deques = {symbol: collections.deque(maxlen=initialized.parameters['cache_size'])
+                                 for symbol in exchange.inventory_manager}
 
+        initialized.orderbook = copy.deepcopy(intial_deques)
+        initialized.trades_cache = copy.deepcopy(intial_deques)
+        
         # initialize vwap_history
         nowtime = datetime.utcnow().replace(tzinfo=timezone.utc)
         frequency = timedelta(minutes=1)
@@ -690,17 +771,17 @@ class AnalyticsManager():
         vwap_history_list = await safe_gather([fetch_trades_history(
             exchange.market(symbol)['id'], exchange, start, nowtime, frequency=frequency)
             for symbol in exchange.inventory_manager], semaphore=exchange.rest_semaphor)
-        initialized.vwap_history = {exchange.market(symbol)['symbol']: pd.DataFrame(data=data) for symbol, data in
-                                    zip(exchange.inventory_manager.keys(), vwap_history_list)}
+        initialized.vwap = {exchange.market(symbol)['symbol']: data for symbol, data in
+                            zip(exchange.inventory_manager.keys(), vwap_history_list)}
 
         return initialized
 
-    def compile_vwap_history(self, frequency):
+    def compile_vwap(self, frequency, purge=True):
         # get times series of target baskets, compute quantile of increments and add to last price
         for symbol in self.trades_cache:
             if len(self.trades_cache[symbol]) == 0: continue
             data = pd.DataFrame(self.trades_cache[symbol])
-            data = data[(data['timestamp'] > self.vwap_history[symbol]['vwap'].index.max().timestamp() * 1000)]
+            data = data[(data['timestamp'] > self.vwap[symbol]['vwap'].index.max().timestamp() * 1000)]
             if data.empty: continue
 
             # compute vwaps
@@ -710,45 +791,75 @@ class AnalyticsManager():
             data = data[['size', 'price', 'liquidation', 'time']]
             vwap = vwap_from_list(frequency=frequency, trades=data)
             # append vwaps
-            extended = pd.concat([self.vwap_history[symbol], vwap])
-            self.vwap_history[symbol] = extended[~extended.index.duplicated()].sort_index().ffill()
+            for key in self.vwap[symbol]:
+                updated_data = pd.concat([self.vwap[symbol][key],vwap[key]],axis=0)
+                self.vwap[symbol][key] = updated_data[~updated_data.index.duplicated()].sort_index().ffill()
 
-            if 'spread_vwap' in self.parameters['options']:
-                self.compile_spread_vwap(frequency)
+            if purge:
+                self.trades_cache[symbol].clear()
 
-            self.trades_cache[symbol].clear()
-
-    def compile_spread_vwap(self, frequency):
-        # compute maker/taker spread trades and vwap
+    def compile_spread_trades(self, purge=True):
+        '''compute maker/taker spread trades and vwap'''
         for symbol in self.trades_cache:
-            spread_trades = []
             other_leg = symbol.replace(':USD', '') if ':USD' in symbol else f'{symbol}:USD'
             for trade in self.trades_cache[symbol]:
-                if len(self.orderbook_history[other_leg]) == 0: continue
-                curent_orderbook = min(self.orderbook_history[other_leg],
+                if len(self.orderbook[other_leg]) == 0: continue
+                current_orderbook = min(self.orderbook[other_leg],
                                        key=lambda orderbook: abs(orderbook['timestamp'] - trade['timestamp']))
-                side = (1 if trade['side'] == 'buy' else -1)
-                if ':USD' in symbol: side = -side
-                opposite_side_px = sweep_price_atomic(curent_orderbook,
-                                                      trade['amount'] * (-1 if trade['side'] == 'buy' else 1))
-                price = opposite_side_px - trade['price']
+                side = (-1 if trade['side'] == 'buy' else 1) # if taker bought spot -> we sold the carry
+                if ':USD' in symbol: side = -side # opposite if he bought future
+                opposite_side_px = sweep_price_atomic(current_orderbook,
+                                                      trade['amount'] * (1 if trade['side'] == 'buy' else -1)) # if taker bought, we hedge on the ask of the other leg
+                price = (opposite_side_px/trade['price']-1)*365.25 # it's actually an annualized rate
                 if ':USD' in symbol: price = -price
-                spread_trades += [{'time': trade['datetime'], 'size': trade['amount'] * side, 'price': price,
-                                   'liquidation': trade['info']['liquidation']}]
-            if len(spread_trades) == 0: continue
-            vwap = vwap_from_list(frequency=frequency, trades=pd.DataFrame(spread_trades))
-            # append vwaps
-            if symbol not in self.spread_vwap_history:
-                self.spread_vwap_history[symbol] = pd.DataFrame()
-            extended = pd.concat([self.spread_vwap_history[symbol], vwap])
-            self.spread_vwap_history[symbol] = extended[~extended.index.duplicated()].sort_index().ffill()
+                self.spread_trades.append({'time': trade['datetime'], 'size': trade['amount'] * side, 'price': price,
+                                   'liquidation': trade['info']['liquidation'],'taker_symbol':symbol})
+            if purge:
+                self.orderbook[symbol].clear()
+                self.trades_cache[symbol].clear()
 
-    async def broadcast_analytics(self):
-        self.compile_spread_vwap(timedelta(minutes=1))
-        coin = list(self.spread_vwap_history.keys())[0].replace(':USD','').replace('/USD','')
-        filename = os.path.join(os.sep, configLoader.get_mktdata_folder_for_exchange('ftx_tickdata'),f'spread_vwap_{coin}.csv')
-        prev_df = pd.read_csv(filename,index_col=0) if os.path.isfile(filename) else pd.DataFrame()
-        pd.concat([prev_df] + [data for data in self.spread_vwap_history.values()]).to_csv(filename)
+    def compile_spread_vwap(self, frequency, purge=True):
+        vwap = vwap_from_list(frequency=frequency, trades=pd.DataFrame(self.spread_trades))
+        for key in self.spread_vwap:
+            updated_data = pd.concat([self.spread_vwap[key], vwap[key]], axis=0)
+            self.spread_vwap[key] = updated_data[~updated_data.index.duplicated()].sort_index().ffill()
+
+        if purge:
+            self.spread_trades.clear()
+
+    def compile_spread_distribution(self, purge=True):
+        avg_prices= []
+        sizes = np.array([trade['size'] for trade in self.spread_trades])
+        costs = np.array([trade['size']*trade['price'] for trade in self.spread_trades])
+        random_mktshare = np.random.rand(self.parameters['n_paths']*len(sizes),len(sizes))
+        avg_prices.append(np.dot(random_mktshare, costs)/np.dot(random_mktshare, sizes))
+
+        if len(avg_prices) == 0: return
+
+        quantiles = np.quantile(avg_prices, q=AnalyticsManager.quantiles, method='normal_unbiased')
+        self.spread_distribution.append({datetime.utcnow().replace(tzinfo=timezone.utc): quantiles})
+        if purge:
+            self.spread_trades.clear()
+
+        return quantiles
+
+    async def record(self):
+        coin = list(self.orderbook.keys())[0].replace(':USD', '').replace('/USD', '')
+
+        for member_data in self.parameters['record_set']:
+            if hasattr(self,member_data):
+                if hasattr(self,f'compile_{member_data}'):
+                    getattr(self,f'compile_{member_data}')()
+
+                filename = os.path.join(os.sep, configLoader.get_mktdata_folder_for_exchange('ftx_tickdata'),
+                                        f'{member_data}_{coin}.json')
+
+                async with aiofiles.open(filename,'w+') as fp:
+                    if isinstance(getattr(self, member_data), list):
+                        await fp.write(json.dumps(getattr(self, member_data), cls=NpEncoder))
+                    elif isinstance(getattr(self, member_data), dict):
+                        for data in getattr(self, member_data).values():
+                            await fp.write(json.dumps(data, cls=NpEncoder))
 
 class myFtx(ccxtpro.ftx):
     def __init__(self, parameters, config = dict()):
@@ -806,7 +917,7 @@ class myFtx(ccxtpro.ftx):
             return np.floor(amount/sizeIncrement) * sizeIncrement
         else:
             return -np.floor(-amount / sizeIncrement) * sizeIncrement
-                    
+
     # ---------------------------------------------------------------------------------------------
     # ---------------------------------- PMS -----------------------------------------
     # ---------------------------------------------------------------------------------------------
@@ -817,13 +928,22 @@ class myFtx(ccxtpro.ftx):
             symbol1:{'spot_price','diff','target'}]}]'''
         nowtime = datetime.utcnow().replace(tzinfo=timezone.utc)
 
-        self.inventory_manager = await InventoryManager.build(self, nowtime, order)
+        self.inventory_manager = await InventoryManager.build(self, nowtime, order, parameters['inventory_manager'])
         self.position_manager = await PositionManager.build(self, nowtime, parameters['position_manager'])
         self.order_manager = OrderManager(self.inventory_manager.timestamp, parameters['order_manager'])
         self.analytics_manager = await AnalyticsManager.build(self, parameters['analytics_manager'])
 
         self.lock |= {symbol: CustomRLock() for symbol in self.inventory_manager}
         await self.reconcile()
+
+    async def build_listener(self, order, parameters):
+        '''initialize all state and does some filtering (weeds out slow underlyings; should be in strategy)
+            target_sub_portfolios = {coin:{rush_level_increment,
+            symbol1:{'spot_price','diff','target'}]}]'''
+        nowtime = datetime.utcnow().replace(tzinfo=timezone.utc)
+
+        self.inventory_manager = await InventoryManager.build(self, nowtime, order, parameters['inventory_manager'])
+        self.analytics_manager = await AnalyticsManager.build(self, parameters['analytics_manager'])
 
     async def reconcile(self):
         '''update risk using rest
@@ -850,11 +970,11 @@ class myFtx(ccxtpro.ftx):
             await self.inventory_manager.update_quoter_params(self)
 
             # replay missed _messages.
-            self.logger.warning(f'replaying {len(self.message_missed)} messages after recon')
             while self.message_missed:
                 message = self.message_missed.popleft()
                 data = self.safe_value(message, 'data')
                 channel = message['channel']
+                self.logger.warning(f'replaying {channel} after recon')
                 if channel == 'fills':
                     fill = self.parse_trade(data)
                     self.process_fill(fill | {'orderTrigger':'replayed'})
@@ -872,8 +992,7 @@ class myFtx(ccxtpro.ftx):
 
         # critical job is done, release lock and print data
         if self.order_manager.fill_flag:
-            async with aiofiles.open(f'{self.data_logger.json_filename}.json', mode='a') as file:
-                await file.write(json.dumps(self.to_dict(), cls=NpEncoder))
+            append_to_json(self.to_dict(),f'{self.data_logger.json_filename}')
             self.order_manager.fill_flag = False
 
 
@@ -890,7 +1009,7 @@ class myFtx(ccxtpro.ftx):
         populates event_records, maintains pending_new
         no lock is done, so we keep collecting mktdata'''
         orderbook = await self.watch_order_book(symbol)
-        if not self.lock['reconciling'].locked():
+        if not self.lock['reconciling'].locked() and self.order_manager is not None:
             self.process_order_book(symbol, orderbook)
 
     def populate_ticker(self,symbol,orderbook):
@@ -986,19 +1105,7 @@ class myFtx(ccxtpro.ftx):
         '''redundant minutely risk check'''#TODO: would be cool if this could interupt other threads and restart it when margin is ok.
         await asyncio.sleep(self.position_manager.limit.check_frequency)
         await self.reconcile()
-        await self.check_limit()
-
-    async def check_limit(self):
-        absolute_risk = dict()
-        for symbol in self.position_manager:
-            coin = self.markets[symbol]['base']
-            if coin not in absolute_risk:
-                absolute_risk[coin] = abs(self.position_manager.coin_delta(symbol))
-        if sum(absolute_risk.values()) > self.position_manager.pv * self.position_manager.limit.delta_limit:
-            self.logger.info(
-                f'absolute_risk {absolute_risk} > {self.position_manager.pv * self.position_manager.limit.delta_limit}')
-        if self.position_manager.margin.actual_IM < self.position_manager.pv / 100:
-            self.logger.info(f'IM {self.position_manager.margin.actual_IM}  < 1%')
+        self.position_manager.check_limit()
 
     async def watch_ticker(self, symbol, params={}):
         '''watch_order_book is faster than watch_tickers so we DON'T LISTEN TO TICKERS. Dirty...'''
@@ -1015,9 +1122,9 @@ class myFtx(ccxtpro.ftx):
     @loop
     async def broadcast_analytics(self):
         '''redundant minutely risk check'''#TODO: would be cool if this could interupt other threads and restart it when margin is ok.
-        await asyncio.sleep(self.position_manager.limit.check_frequency)
-        await self.analytics_manager.broadcast_analytics()
-        
+        await asyncio.sleep(self.analytics_manager.parameters['compile_frequency'])
+        await self.analytics_manager.record()
+
     # ---------------------------------- just to record messages while reconciling
     @intercept_message_during_reconciliation
     def handle_my_trade(self, client, message):
@@ -1040,17 +1147,17 @@ class myFtx(ccxtpro.ftx):
         if marketId in self.markets_by_id:
             symbol = self.markets_by_id[marketId]['symbol']
             item = {'timestamp':self.orderbooks[symbol]['timestamp']}
-            if 'mid' in self.analytics_manager.parameters['options']:
+            if 'mid' in self.analytics_manager.parameters['orderbook_granularity']:
                 item |= {'mid':0.5*(self.orderbooks[symbol]['bids'][0][0]+self.orderbooks[symbol]['asks'][0][0])}
-            if 'full' in self.analytics_manager.parameters['options']:
+            if 'full' in self.analytics_manager.parameters['orderbook_granularity']:
                 item |= {key:self.orderbooks[symbol][key] for key in ['timestamp','bids','asks']}
-            if 'depth' in self.analytics_manager.parameters['options']:
+            if 'depth' in self.analytics_manager.parameters['orderbook_granularity']:
                 depth = (self.inventory_manager[symbol]['target'] - self.position_manager[symbol]['delta'] / self.mid(
                     symbol)) * self.mid(symbol)
                 side_px = sweep_price_atomic(self.orderbooks[symbol], depth)
                 opposite_side_px = sweep_price_atomic(self.orderbooks[symbol], -depth)
                 item |= {'depth':depth,'bid_at_depth':min(side_px,opposite_side_px),'ask_at_depth':max(side_px,opposite_side_px)}
-            self.analytics_manager.orderbook_history[symbol].append(item)
+            self.analytics_manager.orderbook[symbol].append(item)
 
     # --------------------------------------------------------------------------------------------
     # ---------------------------------- order placement -----------------------------------------
@@ -1070,16 +1177,18 @@ class myFtx(ccxtpro.ftx):
 
         # size to do:
         original_size = params['target'] - self.position_manager[symbol]['delta'] / mid
-        if np.abs(original_size * mid) < self.parameters['significance_threshold'] * self.position_manager.pv: #self.inventory_target[symbol]['sizeIncrement']:
+        if np.abs(original_size * mid) < self.parameters['significance_threshold'] * self.position_manager.pv \
+                or abs(original_size)<self.inventory_manager[symbol]['sizeIncrement']: #self.inventory_target[symbol]['sizeIncrement']:
             return
 
         #risk
         globalDelta = self.position_manager.delta_bounds(symbol)['global_delta']
+
         marginal_risk = np.abs(globalDelta/mid + original_size)-np.abs(globalDelta/mid)
         delta_limit = self.position_manager.limit.delta_limit * self.position_manager.pv
 
         # if increases risk but not out of limit, trim and go passive.
-        if marginal_risk>0:
+        if np.sign(original_size) == np.sign(globalDelta):
             # if (global_delta_plus / mid + original_size) > delta_limit:
             #     trimmed_size = delta_limit - global_delta_plus / mid
             #     self.logger.debug(
@@ -1111,7 +1220,7 @@ class myFtx(ccxtpro.ftx):
             size = np.clip(trimmed_size, a_min=-params['slice_size'],a_max=params['slice_size'])
 
             current_basket_price = sum(self.mid(_symbol) * self.inventory_manager[_symbol]['update_time_delta']
-                                       for _symbol in self.inventory_manager.keys() if _symbol in self.markets)
+                                       for _symbol in self.inventory_manager.keys())
             # mkt order if target reached.
             # TODO: pray for the other coin to hit the same condition...
             if current_basket_price + 2 * np.abs(params['update_time_delta']) * params['takerVsMakerFee'] * mid < self.inventory_manager[symbol]['rush_in_level']:
@@ -1138,9 +1247,9 @@ class myFtx(ccxtpro.ftx):
             # hold off to save margin, if level is bad-ish
             else:
                 return
-        # if decrease risk, go aggressive
+        # if decrease risk, go aggressive without flipping delta
         else:
-            size = original_size
+            size = np.sign(original_size) * min(abs(- globalDelta/mid),abs(original_size))
             edit_trigger_depth = params['aggressive_edit_trigger_depth']
             edit_price_depth = params['aggressive_edit_price_depth']
             stop_depth = params['stop_depth']
@@ -1153,6 +1262,7 @@ class myFtx(ccxtpro.ftx):
         size in coin, already filtered
         skips if any pending_new, cancels duplicates
         '''
+        size = self.round_to_increment(self.inventory_manager[symbol]['sizeIncrement'], size)
         if abs(size) == 0:
             return
 
@@ -1165,12 +1275,15 @@ class myFtx(ccxtpro.ftx):
 
         if stop_depth is not None:
             stop_trigger = float(self.price_to_precision(symbol,stop_depth))
-        edit_trigger = float(self.price_to_precision(symbol,edit_trigger_depth))
+
         #TODO: use orderbook to place before cliff; volume matters too.
-        if edit_price_depth not in ['rush_in', 'rush_out']:
+        isTaker = edit_price_depth in ['rush_in', 'rush_out', 'taker_hedge']
+        if not isTaker:
             edit_price = float(self.price_to_precision(symbol, opposite_side - (1 if size > 0 else -1) * edit_price_depth))
+            edit_trigger = float(self.price_to_precision(symbol, edit_trigger_depth))
         else:
             edit_price = sweep_price_atomic(orderbook, size * mid)
+            edit_trigger = None
 
         # remove open order dupes is any (shouldn't happen)
         event_histories = self.order_manager.filter_order_histories([symbol], OrderManager.openStates)
@@ -1203,9 +1316,9 @@ class myFtx(ccxtpro.ftx):
         if len(event_histories)==0:
             trimmed_size = self.position_manager.trim_to_margin(mid, size, symbol)
             asyncio.create_task(self.create_order(symbol, 'limit', order_side, abs(trimmed_size), price=edit_price,
-                                                  params={'postOnly': edit_price_depth not in ['rush_in', 'rush_out'],
-                                                          'ioc': edit_price_depth in ['rush_in', 'rush_out'],
-                                                          'comment':edit_price_depth if edit_price_depth in ['rush_in','rush_out'] else 'new'}))
+                                                  params={'postOnly': not isTaker,
+                                                          'ioc': isTaker,
+                                                          'comment':edit_price_depth if isTaker else 'new'}))
         # if only one and it's editable, stopout or peg or wait
         elif len(event_histories)==1 \
                 and (self.order_manager.latest_value(event_histories[0][-1]['clientOrderId'], 'remaining') >= sizeIncrement) \
@@ -1216,14 +1329,14 @@ class myFtx(ccxtpro.ftx):
 
             # panic stop. we could rather place a trailing stop: more robust to latency, but less generic.
             if (stop_depth and order_distance > stop_trigger) \
-                    or edit_price_depth in ['rush_in','rush_out']:
+                    or isTaker:
                 size = self.order_manager.latest_value(order['clientOrderId'], 'remaining')
                 price = sweep_price_atomic(orderbook, size * mid)
                 asyncio.create_task(self.edit_order(symbol, 'limit', order_side, abs(size),
                                                      price = price,
                                                      params={'postOnly':False,
                                                              'ioc':True,
-                                                             'comment':edit_price_depth if edit_price_depth in ['rush_in','rush_out'] else 'stop'},
+                                                             'comment':edit_price_depth if isTaker else 'stop'},
                                                      previous_clientOrderId = order['clientOrderId']))
             # peg limit order
             elif order_distance > edit_trigger and repeg_gap >= priceIncrement:
@@ -1243,9 +1356,6 @@ class myFtx(ccxtpro.ftx):
     async def create_order(self, symbol, type, side, amount, price=None, params={}):
         '''if acknowledged, place order. otherwise just reconcile
         orders_pending_new is blocking'''
-        amount = self.round_to_increment(self.inventory_manager[symbol]['sizeIncrement'], amount)
-        if amount == 0:
-            return
         # set pending_new -> send rest -> if success, leave pending_new and give id. Pls note it may have been caught by handle_order by then.
         clientOrderId = self.order_manager.pending_new({'symbol': symbol,
                                                     'type': type,
@@ -1329,24 +1439,24 @@ class myFtx(ccxtpro.ftx):
         for quoteId in quoteId_list
         if quoteId['success']])
 
-async def get_exec_request(exchange,order_name,**kwargs):
+async def get_exec_request(exchange_obj, order_name, **kwargs):
     dirname = os.path.join(os.sep, configLoader.get_config_folder_path(config_name=kwargs['config']), "pfoptimizer")
-    exchange_name = exchange.id
-    subaccount = exchange.headers['FTX-SUBACCOUNT']
+    exchange_name = exchange_obj.id
+    subaccount = exchange_obj.headers['FTX-SUBACCOUNT']
 
     if order_name == 'spread':
         coin = kwargs['coin']
         cash_name = coin + '/USD'
         future_name = coin + '-PERP'
-        cash_price = float(exchange.market(cash_name)['info']['price'])
-        future_price = float(exchange.market(future_name)['info']['price'])
+        cash_price = float(exchange_obj.market(cash_name)['info']['price'])
+        future_price = float(exchange_obj.market(future_name)['info']['price'])
         target_portfolio = pd.DataFrame(columns=['coin', 'name', 'optimalCoin', 'currentCoin', 'spot_price'], data=[
             [coin, cash_name, float(kwargs['cash_size']) / cash_price, 0, cash_price],
             [coin, future_name, -float(kwargs['cash_size']) / future_price, 0, future_price]])
 
     elif order_name == 'flatten':  # only works for basket with 2 symbols
         future_weights = pd.DataFrame(columns=['name', 'optimalWeight'])
-        diff = await diff_portoflio(exchange, future_weights)
+        diff = await diff_portoflio(exchange_obj, future_weights)
         smallest_risk = diff.groupby(by='coin')['currentCoin'].agg(
             lambda series: series.apply(np.abs).min() if series.shape[0] > 1 else 0)
         target_portfolio = diff
@@ -1355,7 +1465,7 @@ async def get_exec_request(exchange,order_name,**kwargs):
 
     elif order_name == 'unwind':
         future_weights = pd.DataFrame(columns=['name', 'optimalWeight'])
-        target_portfolio = await diff_portoflio(exchange, future_weights)
+        target_portfolio = await diff_portoflio(exchange_obj, future_weights)
     else:
         raise Exception("unknown command")
 
@@ -1363,7 +1473,7 @@ async def get_exec_request(exchange,order_name,**kwargs):
     target_portfolio['subaccount'] = subaccount
     target_portfolio.rename(columns={'spot_price':'spot','optimalUSD':'optimalWeight'},inplace=True)
     target_portfolio['spot_ticker'] = target_portfolio['coin'].apply(lambda c: f'{c}/USD')
-    target_portfolio['new_symbol'] = target_portfolio['name'].apply(lambda f: exchange.market(f)['symbol'])
+    target_portfolio['new_symbol'] = target_portfolio['name'].apply(lambda f: exchange_obj.market(f)['symbol'])
 
     dfs = []
     filenames = []
@@ -1376,10 +1486,10 @@ async def get_exec_request(exchange,order_name,**kwargs):
 async def risk_reduction_routine(order_name, **kwargs):
     config = configLoader.get_executor_params(order=order_name, dirname=kwargs['config'])
     exchange = await myFtx.open_exec_exchange(kwargs['exchange'], config, subaccount=kwargs['subaccount'])
-    orders = await get_exec_request(exchange, order_name, kwargs['config'])
+    orders = await get_exec_request(exchange_obj=exchange, order_name=order_name, **kwargs)
     exchange.logger.critical(f'generated {orders}, now them all')
     await exchange.close()
-    await asyncio.gather(*[single_coin_routine(order, kwargs['config'], **kwargs) for order in orders])
+    await asyncio.gather(*[single_coin_routine(order, **kwargs) for order in orders])
 
 async def single_coin_routine(order_name, **kwargs):
     try:
@@ -1416,16 +1526,18 @@ async def single_coin_routine(order_name, **kwargs):
 async def listen(order_name,**kwargs):
 
     config = configLoader.get_executor_params(order=order_name, dirname=kwargs['config'])
-    order = os.path.join(os.sep, configLoader.get_config_folder_path(config_name=kwargs['config']), "pfoptimizer",
-                         order_name)
 
-    future_weights = pd.read_csv(order)
-    exchange_name = future_weights['exchange'].unique()[0]
-    subaccount = future_weights['subaccount'].unique()[0]
+    exchange = await myFtx.open_exec_exchange(kwargs['exchange'], config, subaccount='')
 
-    exchange = await myFtx.open_exec_exchange(exchange_name, config, subaccount=subaccount)
-    config['analytics_manager']['options'] = ["full","spread_vwap"]
-    await exchange.build(order, config | {'comment': order})
+    coin = order_name.split('listen_')[1]
+    temp_order = pd.DataFrame()
+    temp_order['new_symbol'] = [symbol for symbol,data in exchange.markets.items() if data['base'] == coin and data['quote'] == 'USD']
+    temp_order['spot'] = 1
+    temp_order['spot_ticker'] = f'{coin}/USD'
+    temp_order['optimalWeight'] = 0
+    temp_order.to_csv(order_name)
+
+    await exchange.build_listener(order_name, config | {'comment': order_name})
 
     coros = [exchange.broadcast_analytics()] + \
             sum([[exchange.monitor_order_book(symbol),
@@ -1454,7 +1566,7 @@ def main(*args,**kwargs):
     if 'config' not in kwargs:
         kwargs['config'] = None
 
-    if 'listen' in kwargs and kwargs.pop('listen') == "True":
+    if 'listen' in order_name:
         asyncio.run(listen(order_name, **kwargs))
     elif order_name in ['unwind','flatten']:
         asyncio.run(risk_reduction_routine(order_name, **kwargs))

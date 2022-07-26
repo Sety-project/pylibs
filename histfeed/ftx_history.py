@@ -356,7 +356,6 @@ async def fetch_trades_history(symbol,
             'volume':vwap[symbol.split('/USD')[0] + '_trades_volume'],
             'liquidation_intensity':vwap[symbol.split('/USD')[0] + '_trades_liquidation_intensity']}
 
-
 def vwap_from_list(frequency, trades):
     '''needs ['size', 'price', 'liquidation', 'time' as isostring]'''
     data = pd.DataFrame(data=trades)
@@ -371,7 +370,7 @@ def vwap_from_list(frequency, trades):
     vwap['vwap'] = vwap['volume'] / vwap['size']
     vwap['vwvol'] = (vwap['square'] / vwap['size'] - vwap['vwap'] * vwap['vwap']).apply(np.sqrt)
     vwap['liquidation_intensity'] = vwap['liquidation_volume'] / vwap['volume']
-    return vwap
+    return vwap[~vwap.index.duplicated()].sort_index().ffill()
 
 
 async def ftx_history_main_wrapper(run_type, exchange_name, universe_name, nb_days=1):

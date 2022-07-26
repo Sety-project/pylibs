@@ -16,7 +16,9 @@ class ExecutionLogger:
             os.umask(0)
             os.makedirs(log_path, mode=0o777)
         self.json_filename = os.path.join(os.sep, 'tmp', 'tradeexecutor', 'archive',
-                                          f'{log_date.strftime("%Y%m%d_%H%M%S")}')
+                                          f'{log_date.strftime("%Y%m%d_%H%M%S")}.json')
+        with open(self.json_filename, 'w') as file:
+            json.dump([], file)
 
         #hash_id = hash(json.dumps(config|{'order_name':order_name}|({'timestamp': log_date.timestamp()} if log_date else {}),sort_keys=True))
         self.mktdata_dirname = configLoader.get_mktdata_folder_for_exchange(f'{exchange_name}_tickdata')

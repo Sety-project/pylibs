@@ -182,11 +182,9 @@ MyModules.register(name='ux',
                    kwargs_validation={})
 
 MyModules.register(name='tradeexecutor',
-                   testbed=["unwind exchange=ftx subaccount=debug config=prod",
-                             "weights_ftx_debug_ETH.csv"],
+                   testbed=["weights_ftx_debug_ETH.csv"], # ,"unwind exchange=ftx subaccount=debug config=prod"
                    args_validation=[
-                       ['order', lambda x: x in ['unwind', 'flatten'] or isinstance(x,str),'not in {} and not a file'.format(['unwind', 'flatten'])]],
+                       ['order', lambda x: isinstance(x,str),'not a str']],
                    kwargs_validation={'exchange':[lambda x: x in ['ftx'],'not in {}'.format(['ftx'])],
                                       'subaccount':[lambda x: True,'not found'],
-                                      'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(config_name=x))),'not found'],
-                                      'listen':[lambda x: x in ["True","False"],'True or False']})
+                                      'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(config_name=x))),'not found']})
