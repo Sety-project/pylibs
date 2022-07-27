@@ -14,7 +14,7 @@ from riskpnl.ftx_risk_pnl import diff_portoflio
 from riskpnl.ftx_margin import MarginCalculator
 from utils.api_utils import api,build_logging
 from utils.async_utils import *
-from utils.io_utils import async_read_csv,async_to_csv,NpEncoder,append_to_json
+from utils.io_utils import async_read_csv,async_to_csv,NpEncoder
 
 import ccxtpro,collections,copy
 
@@ -107,7 +107,7 @@ class OrderManager(dict):
         self.fill_flag = False
 
     def to_dict(self):
-        return {'parameters':self.parameters,'values':dict(self)}
+        return dict(self)
 
     '''various helpers'''
 
@@ -382,10 +382,10 @@ class OrderManager(dict):
                                      for block in self[fill['clientOrderId']]
                                      if 'fillId' in block]:
                 self.fill(fill)
-        self.latest_fill_reconcile_timestamp = datetime.now(timezone.utc).timestamp()*1000
+        self.latest_fill_reconcile_timestamp = datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000
 
     async def reconcile_orders(self,exchange):
-        self.latest_order_reconcile_timestamp = datetime.now(timezone.utc).timestamp() * 1000
+        self.latest_order_reconcile_timestamp = datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000
 
         # list internal orders
         internal_order_internal_status = {clientOrderId:data[-1] for clientOrderId,data in self.items()
@@ -437,7 +437,7 @@ class PositionManager(dict):
         self.markets = None
 
     def to_dict(self):
-        return {'parameters':self.parameters,'values':self.risk_reconciliations}
+        return self.risk_reconciliations
 
     @staticmethod
     async def build(exchange,nowtime,parameters):
@@ -495,8 +495,7 @@ class PositionManager(dict):
 
         delta_error = {symbol: self[symbol]['delta'] - (previous_delta[symbol]['delta'] if symbol in previous_delta else 0)
                        for symbol in self}
-        self.risk_reconciliations += [{'state': 'remote_risk',
-                                       'symbol': symbol_,
+        self.risk_reconciliations += [{'symbol': symbol_,
                                        'delta_timestamp': self[symbol_]['delta_timestamp'],
                                        'delta': self[symbol_]['delta'],
                                        'netDelta': self.coin_delta(symbol_),
@@ -548,6 +547,7 @@ class PositionManager(dict):
                        if self.markets[symbol_]['base'] == coin)
 
     def delta_bounds(self, symbol):
+        ''''''
         coinDelta = self.coin_delta(symbol)
         coin = self.markets[symbol]['base']
         coin_delta_plus = coinDelta + sum(self.margin.open_orders[symbol_]['longs']
@@ -581,9 +581,10 @@ class InventoryManager(dict):
         self.timestamp = timestamp
         self.filename = filename
         self.logger = logging.getLogger('tradeexecutor')
+        self.history = []
 
     def to_dict(self):
-        return {'filename':self.filename,'order_received_timestamp':self.timestamp,'values':dict(self)}
+        return self.history
 
     @staticmethod
     async def build(exchange,nowtime,order,parameters):
@@ -613,20 +614,24 @@ class InventoryManager(dict):
                 filecontent = await fp.read()
                 quantiles_history = json.loads(filecontent)
                 quantiles = quantiles_history[-1]
+                raise Exception('not implemented')
 
-        self.set_target(spot,targets)
+        self.set_target(spot,targets,datetime.utcnow().timestamp() * 1000)
 
-    def set_target(self, spot, targets):
+    def set_target(self, spot, targets,timestamp):
         for symbol, target in targets.items():
             if symbol not in self:
-                self[symbol] = {'target': target, 'spot_price': spot}
+                self[symbol] = {'symbol':symbol, 'target': target, 'spot_price': spot}
         for symbol, target in targets.items():
             if self[symbol]['target'] != target:
                 self.logger.info('{} weight changed from {} to {}'.format(
                     symbol, self[symbol]['target'] * spot, target * spot))
+                self[symbol]['symbol'] = symbol
                 self[symbol]['target'] = target
                 self[symbol]['spot_price'] = spot
-                self.timestamp = datetime.utcnow().timestamp() * 1000
+                self[symbol]['timestamp'] = timestamp
+
+        self.history += [dict(self)]
 
     async def update_quoter_params(self, exchange):
         '''updates quoter inputs
@@ -639,7 +644,7 @@ class InventoryManager(dict):
         else:
             targets = {key:0 for key in self}
             spot = exchange.mid(next(key for key in self if exchange.market(key)['type']=='spot'))
-            self.set_target(spot,targets)
+            self.set_target(spot,targets,datetime.utcnow().timestamp() * 1000)
 
         if self.parameters['signal'] == 'vwap':
             nowtime = datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000
@@ -809,7 +814,7 @@ class AnalyticsManager():
                 side = (-1 if trade['side'] == 'buy' else 1) # if taker bought spot -> we sold the carry
                 if ':USD' in symbol: side = -side # opposite if he bought future
                 opposite_side_px = sweep_price_atomic(current_orderbook,
-                                                      trade['amount'] * (1 if trade['side'] == 'buy' else -1)) # if taker bought, we hedge on the ask of the other leg
+                                                      trade['amount'] * trade['price'] * (1 if trade['side'] == 'buy' else -1)) # if taker bought, we hedge on the ask of the other leg
                 price = (opposite_side_px/trade['price']-1)*365.25 # it's actually an annualized rate
                 if ':USD' in symbol: price = -price
                 self.spread_trades.append({'time': trade['datetime'], 'size': trade['amount'] * side, 'price': price,
@@ -864,7 +869,7 @@ class AnalyticsManager():
 class myFtx(ccxtpro.ftx):
     def __init__(self, parameters, config = dict()):
         super().__init__(config=config)
-        self.parameters = parameters
+        self.parameters = {'timestamp':datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000}|parameters
 
         self.lock = {'reconciling':threading.Lock()}
         self.rest_semaphor = asyncio.Semaphore(safe_gather_limit)
@@ -992,9 +997,8 @@ class myFtx(ccxtpro.ftx):
 
         # critical job is done, release lock and print data
         if self.order_manager.fill_flag:
-            append_to_json(self.to_dict(),f'{self.data_logger.json_filename}')
+            await self.data_logger.write_data(self.to_dict())
             self.order_manager.fill_flag = False
-
 
     # --------------------------------------------------------------------------------------------
     # ---------------------------------- WS loops, processors and message handlers ---------------
@@ -1028,8 +1032,15 @@ class myFtx(ccxtpro.ftx):
             previous_mid = self.mid(symbol)  # based on ticker, in general
             self.populate_ticker(symbol, orderbook)
 
-            # don't waste time on deep updates
-            if self.mid(symbol) != previous_mid:
+            # don't waste time on deep updates or nothing to do
+            # size to do:
+            mid = self.mid(symbol)
+            original_size = self.inventory_manager[symbol]['target'] - self.position_manager[symbol]['delta'] / mid
+            if abs(original_size) < self.parameters['significance_threshold'] * self.position_manager.pv / mid \
+                    or abs(original_size) < self.inventory_manager[symbol]['sizeIncrement'] \
+                    or self.mid(symbol) == previous_mid:
+                return
+            else:
                 self.quoter(symbol, orderbook)
 
     # ---------------------------------- fills
@@ -1171,21 +1182,16 @@ class myFtx(ccxtpro.ftx):
             Critical loop, needs to go quick
             all executes in one go, no async
         '''
-        coin = self.markets[symbol]['base']
         mid = self.tickers[symbol]['mid']
         params = self.inventory_manager[symbol]
 
         # size to do:
         original_size = params['target'] - self.position_manager[symbol]['delta'] / mid
-        if np.abs(original_size * mid) < self.parameters['significance_threshold'] * self.position_manager.pv \
-                or abs(original_size)<self.inventory_manager[symbol]['sizeIncrement']: #self.inventory_target[symbol]['sizeIncrement']:
-            return
 
         #risk
         globalDelta = self.position_manager.delta_bounds(symbol)['global_delta']
-
-        marginal_risk = np.abs(globalDelta/mid + original_size)-np.abs(globalDelta/mid)
         delta_limit = self.position_manager.limit.delta_limit * self.position_manager.pv
+        marginal_risk = np.abs(globalDelta / mid + original_size) - np.abs(globalDelta / mid)
 
         # if increases risk but not out of limit, trim and go passive.
         if np.sign(original_size) == np.sign(globalDelta):
@@ -1202,7 +1208,7 @@ class myFtx(ccxtpro.ftx):
             # if np.sign(trimmed_size) != np.sign(original_size):
             #     self.logger.debug(f'skipping (we don t flip orders)')
             #     return
-            if np.abs(globalDelta / mid + original_size) > delta_limit:
+            if abs(globalDelta / mid + original_size) > delta_limit:
                 if (globalDelta / mid + original_size) > delta_limit:
                     trimmed_size = delta_limit - globalDelta / mid
                 elif (globalDelta / mid + original_size) < -delta_limit:
@@ -1223,18 +1229,16 @@ class myFtx(ccxtpro.ftx):
                                        for _symbol in self.inventory_manager.keys())
             # mkt order if target reached.
             # TODO: pray for the other coin to hit the same condition...
-            if current_basket_price + 2 * np.abs(params['update_time_delta']) * params['takerVsMakerFee'] * mid < self.inventory_manager[symbol]['rush_in_level']:
+            if current_basket_price + 2 * abs(params['update_time_delta']) * params['takerVsMakerFee'] * mid < self.inventory_manager[symbol]['rush_in_level']:
                 # TODO: could replace current_basket_price by two way sweep after if
                 self.peg_or_stopout(symbol, size, orderbook,
                                     edit_trigger_depth=params['edit_trigger_depth'],
                                     edit_price_depth='rush_in', stop_depth=None)
-                self.logger.warning(f'rushing into {coin}')
                 return
-            elif current_basket_price - 2 * np.abs(params['update_time_delta']) * params['takerVsMakerFee'] * mid > self.inventory_manager[symbol]['rush_out_level']:
+            elif current_basket_price - 2 * abs(params['update_time_delta']) * params['takerVsMakerFee'] * mid > self.inventory_manager[symbol]['rush_out_level']:
                 # go all in as this decreases margin
                 size = - self.position_manager[symbol]['delta'] / mid
                 if abs(size) > 0:
-                    self.logger.warning(f'rushing out of {size} {coin}')
                     self.peg_or_stopout(symbol, size, orderbook,
                                         edit_trigger_depth=params['edit_trigger_depth'],
                                         edit_price_depth='rush_out', stop_depth=None)
@@ -1284,6 +1288,7 @@ class myFtx(ccxtpro.ftx):
         else:
             edit_price = sweep_price_atomic(orderbook, size * mid)
             edit_trigger = None
+            self.logger.warning(f'{edit_price_depth} {size} {symbol}')
 
         # remove open order dupes is any (shouldn't happen)
         event_histories = self.order_manager.filter_order_histories([symbol], OrderManager.openStates)
@@ -1356,6 +1361,9 @@ class myFtx(ccxtpro.ftx):
     async def create_order(self, symbol, type, side, amount, price=None, params={}):
         '''if acknowledged, place order. otherwise just reconcile
         orders_pending_new is blocking'''
+        amount = self.round_to_increment(self.inventory_manager[symbol]['sizeIncrement'], amount)
+        if amount == 0:
+            return
         # set pending_new -> send rest -> if success, leave pending_new and give id. Pls note it may have been caught by handle_order by then.
         clientOrderId = self.order_manager.pending_new({'symbol': symbol,
                                                     'type': type,
@@ -1425,13 +1433,13 @@ class myFtx(ccxtpro.ftx):
             if coin in self.currencies.keys() \
                     and coin != 'USD' \
                     and balance['total'] != 0.0 \
-                    and np.abs(balance['total']) < float(self.markets[coin+'/USD']['info']['sizeIncrement']):
+                    and abs(balance['total']) < float(self.markets[coin+'/USD']['info']['sizeIncrement']):
                 size = balance['total']
                 mid = float(self.markets[coin+'/USD']['info']['last'])
                 if size > 0:
-                    request = {'fromCoin':coin,'toCoin':'USD','size':np.abs(size)}
+                    request = {'fromCoin':coin,'toCoin':'USD','size':abs(size)}
                 else:
-                    request = {'fromCoin':'USD','toCoin':coin,'size':np.abs(size)*self.mid(f'{coin}/USD')}
+                    request = {'fromCoin':'USD','toCoin':coin,'size':abs(size)*self.mid(f'{coin}/USD')}
                 coros += [self.privatePostOtcQuotes(request)]
 
         quoteId_list = await asyncio.gather(*coros)
@@ -1458,7 +1466,7 @@ async def get_exec_request(exchange_obj, order_name, **kwargs):
         future_weights = pd.DataFrame(columns=['name', 'optimalWeight'])
         diff = await diff_portoflio(exchange_obj, future_weights)
         smallest_risk = diff.groupby(by='coin')['currentCoin'].agg(
-            lambda series: series.apply(np.abs).min() if series.shape[0] > 1 else 0)
+            lambda series: series.apply(abs).min() if series.shape[0] > 1 else 0)
         target_portfolio = diff
         target_portfolio['optimalCoin'] = diff.apply(lambda f: smallest_risk[f['coin']] * np.sign(f['currentCoin']),
                                                      axis=1)
