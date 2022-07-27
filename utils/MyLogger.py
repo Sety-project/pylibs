@@ -17,14 +17,16 @@ class ExecutionLogger:
             os.makedirs(log_path, mode=0o777)
         self.json_filename = os.path.join(os.sep, 'tmp', 'tradeexecutor', 'archive',
                                           f'{log_date.strftime("%Y%m%d_%H%M%S")}.json')
-        with open(self.json_filename, 'w') as file:
-            json.dump([], file)
 
         #hash_id = hash(json.dumps(config|{'order_name':order_name}|({'timestamp': log_date.timestamp()} if log_date else {}),sort_keys=True))
         self.mktdata_dirname = configLoader.get_mktdata_folder_for_exchange(f'{exchange_name}_tickdata')
         if not os.path.exists(self.mktdata_dirname):
             os.umask(0)
             os.makedirs(self.mktdata_dirname, mode=0o777)
+
+    async def write_data(self, data):
+        async with aiofiles.open(self.json_filename, 'w') as file:
+            await file.write(json.dumps(data))
 
     @staticmethod
     def batch_summarize_exec_logs(exchange='ftx', subaccount='',dirname=os.path.join(os.sep, 'tmp','','tradeexecutor'),
@@ -42,15 +44,15 @@ class ExecutionLogger:
             os.makedirs(unreadable_dirname, mode=0o777)
 
         # read already compiled logs
-        tab_list = ['inventory_manager', 'parameters', 'by_coin', 'by_symbol', 'by_clientOrderId', 'data', 'risk_recon'] + (
+        tab_list = ['inventory_manager', 'parameters', 'by_coin', 'by_symbol', 'by_clientOrderId', 'order_manager', 'risk_recon'] + (
             ['history'] if add_history_context else [])
         try:
             if rebuild: raise Exception('not an exception: just skip history on rebuild=True')
-            compiled_logs = {tab: pd.read_csv(os.path.join(os.sep, dirname, f'all_{tab}.csv'), index_col='index') for
+            concatenated_logs = {tab: pd.read_csv(os.path.join(os.sep, dirname, f'all_{tab}.csv'), index_col='index') for
                              tab in tab_list}
-            max_compiled_date = compiled_logs['inventory_manager']['timestamp'].max()
+            max_compiled_date = concatenated_logs['inventory_manager']['timestamp'].max()
         except Exception as e:
-            compiled_logs = {tab: pd.DataFrame() for tab in tab_list}
+            concatenated_logs = {tab: pd.DataFrame() for tab in tab_list}
             max_compiled_date = datetime(1970,1,1)
 
         # find files not compiled yet
@@ -63,60 +65,77 @@ class ExecutionLogger:
             except Exception as e:  # always outside (start,end)
                 continue
 
-        removed_logs = []
-        for filename in filenames:
-            try:
-                new_logs = ExecutionLogger.summarize_exec_logs(filename=os.path.join(os.sep, archive_dirname, filename), add_history_context=add_history_context)
-                for key in tab_list:
-                    new_logs[key]['log_time'] = datetime.utcfromtimestamp(new_logs['order_received_timestamp']/1000).replace(tzinfo=timezone.utc)
-                    compiled_logs[key] = pd.concat([compiled_logs[key], new_logs[key]], axis=0)
-            except Exception as e:
-                if os.path.isfile(os.path.join(os.sep, archive_dirname, filename)):
-                    removed_logs.extend(filename)
-                    shutil.move(os.path.join(os.sep, archive_dirname, filename),
-                                os.path.join(os.sep, unreadable_dirname, filename))
+        concatenated_logs,removed_filenames = ExecutionLogger.concatenate_logs(filenames, archive_dirname)
 
+        compiled_logs = ExecutionLogger.summarize_exec_logs(concatenated_logs,start=start,end=end,add_history_context=add_history_context)
         for key, value in compiled_logs.items():
             value.to_csv(os.path.join(dirname, f'all_{key}.csv'))
 
-        return f'moved {len(removed_logs)} logs to unreadable'
+        return f'moved {len(removed_filenames)} logs to unreadable'
 
     @staticmethod
-    def summarize_exec_logs(filename, exchange='ftx', subaccount='',add_history_context=False):
-        '''compile json logs into DataFrame summaries'''
-        with open(filename, 'r') as file:
-            d = json.load(file)
-        parameters = pd.DataFrame({'parameters':d['parameters']})
-        order_received_timestamp = d['inventory_manager']['order_received_timestamp']
-        inventory_manager = pd.DataFrame(d['inventory_manager']['values']).T.reset_index()
-        order_manager = {clientId: pd.DataFrame(data) for clientId, data in d['order_manager']['values'].items()}
-        risk_reconciliations = pd.DataFrame(d['position_manager']['values'])
+    def concatenate_logs(filenames,archive_dirname):
+        result = None
+        removed_filenames = []
+        for filename in filenames:
+            try:
+                with open(os.path.join(os.sep, archive_dirname, filename), 'r') as file:
+                    d = json.load(file)
+                new_log = {'parameters': pd.DataFrame(pd.Series(d['parameters'])).T,
+                           'inventory_manager': pd.DataFrame(
+                               sum([list(row.values()) for row in d['inventory_manager']], [])),
+                           'order_manager': pd.DataFrame(sum(list(d['order_manager'].values()), [])),
+                           'position_manager': pd.DataFrame(d['position_manager'])}
+            except Exception as e:
+                if os.path.isfile(os.path.join(os.sep, archive_dirname, filename)):
+                    removed_filenames.extend(filename)
+                    shutil.move(os.path.join(os.sep, archive_dirname, filename),
+                                os.path.join(os.sep, os.path.join(os.sep, archive_dirname, 'unreadable'), filename))
+            else:
+                if not result:
+                    result = new_log
+                else:
+                    for key, value in new_log.items():
+                        result[key] = pd.concat([result[key], value], axis=0)
 
-        if len(order_manager)>0:
-            data = pd.concat([data for clientOrderId, data in order_manager.items()], axis=0)
-        else:
+        return result,removed_filenames
+
+    @staticmethod
+    def summarize_exec_logs(df,start,end,add_history_context=False):
+        '''summarize DataFrame'''
+        parameters = df['parameters']
+        inventory_manager = df['inventory_manager']
+        order_manager = df['order_manager']
+        position_manager = df['position_manager'].rename(columns={'delta_timestamp':'timestamp'})
+
+        for df in [parameters,inventory_manager,order_manager,position_manager]:
+            df = df[(df['timestamp']>start.timestamp()*1000)&(df['timestamp']<end.timestamp()*1000)]
+
+        if order_manager.empty:
             raise Exception('no fill to parse')
 
-        data.loc[data['state'] == 'filled', 'filled'] = data.loc[
-            data['state'] == 'filled', 'amount']
-        if data[data['filled'] > 0].empty:
+        order_manager.loc[order_manager['state'] == 'filled', 'filled'] = order_manager.loc[
+            order_manager['state'] == 'filled', 'amount']
+        if order_manager[order_manager['filled'] > 0].empty:
             raise Exception('no fill to parse')
 
         # pick biggest 'filled' for each clientOrderId
-        temp_events = {clientOrderId:
-                           {'inception_event':
-                                clientOrderId_data[clientOrderId_data['state'] == 'pending_new'].iloc[0],
-                            'ack_event': clientOrderId_data[
-                                (clientOrderId_data['state'] == 'acknowledged') & (
-                                            clientOrderId_data['comment'] == 'websocket_acknowledgment')].iloc[0],
-                            'last_fill_event': clientOrderId_data[clientOrderId_data['filled'] > 0].iloc[-1],
-                            'filled': clientOrderId_data['filled'].max()}
-                       for clientOrderId, clientOrderId_data in data.groupby(by='clientOrderId') if
-                       clientOrderId_data['filled'].max() > 0}
+        temp_events = dict()
+        for clientOrderId, clientOrderId_data in order_manager.groupby(by='clientOrderId'):
+            if clientOrderId_data['filled'].max() > 0:
+                temp_events[clientOrderId] = dict()
+                temp_events[clientOrderId]['inception_event'] = clientOrderId_data[clientOrderId_data['state'] == 'pending_new'].iloc[0]
+                order_timestamp = inventory_manager.loc[inventory_manager['timestamp']<temp_events[clientOrderId]['inception_event']['timestamp'],'timestamp'].max()
+                temp_events[clientOrderId]['order_ref'] = inventory_manager.loc[(inventory_manager['timestamp']==order_timestamp)&(inventory_manager['symbol']==clientOrderId_data['symbol'].unique()[0]),'spot_price'].unique()[0]
+                temp_events[clientOrderId]['ack_event'] = clientOrderId_data[clientOrderId_data['state'].isin(['acknowledged', 'partially_filled', 'filled'])].iloc[0]
+                temp_events[clientOrderId]['last_fill_event'] = clientOrderId_data[clientOrderId_data['filled'] > 0].iloc[-1]
+                temp_events[clientOrderId]['filled'] = clientOrderId_data['filled'].max()
+
         by_clientOrderId = pd.DataFrame({
             clientOrderId:
                 {'symbol': clientOrderId_data['inception_event']['symbol'],
                  'coin': clientOrderId_data['inception_event']['symbol'].split('/')[0],
+                 'order_ref': clientOrderId_data['order_ref'],
                  'pending_local': clientOrderId_data['inception_event']['timestamp'],
                  'pending_to_ack_local': clientOrderId_data['ack_event']['timestamp'] -
                                         clientOrderId_data['inception_event']['timestamp'],
@@ -139,20 +158,21 @@ class ExecutionLogger:
             for clientOrderId, clientOrderId_data in temp_events.items()}).T.reset_index()
 
         if __debug__:
-            partially = data[(data['amount'] != data['filled']) & (data['filled'] > 0)]
+            #partially = data[(data['amount'] != data['filled']) & (data['filled'] > 0)]
             pass
 
-        by_symbol = pd.DataFrame({
-            symbol:
-                {'time_to_execute': symbol_data['last_fill_local'].max() - symbol_data['pending_local'].min(),
-                 'slippage_bps': 10000 * np.sign(symbol_data['filled'].sum()) * (
-                             (symbol_data['filled'] * symbol_data['price']).sum() / symbol_data['filled'].sum() /
-                             inventory_manager.loc[inventory_manager['index'] == symbol, 'spot_price'].squeeze() - 1),
-                 'fee': 10000 * symbol_data['fee'].sum() / np.abs((symbol_data['filled'] * symbol_data['price']).sum()),
-                 'filledUSD': (symbol_data['filled'] * symbol_data['price']).sum(),
-                 'coin': symbol.split('/')[0]
-                 }
-            for symbol, symbol_data in by_clientOrderId.groupby(by='symbol')}).T.reset_index()
+        temp = dict()
+        for symbol, symbol_data in by_clientOrderId.groupby(by='symbol'):
+            temp[symbol] = dict()
+            temp[symbol]['time_to_execute'] = symbol_data['last_fill_local'].max() - symbol_data['pending_local'].min()
+            temp[symbol]['slippage_bps'] = 10000 * np.sign(symbol_data['filled'].sum()) * (
+                             (symbol_data['filled'] * (symbol_data['price'] / symbol_data['order_ref'] - 1)).sum() / symbol_data['filled'].sum())
+
+            temp[symbol]['fee'] = 10000 * symbol_data['fee'].sum() / np.abs((symbol_data['filled'] * symbol_data['price']).sum())
+            temp[symbol]['filledUSD'] = (symbol_data['filled'] * symbol_data['price']).sum()
+            temp[symbol]['coin'] = symbol.split('/')[0]
+
+        by_symbol = pd.DataFrame(temp).T.reset_index()
 
         by_coin = pd.DataFrame({
             coin:
@@ -213,14 +233,13 @@ class ExecutionLogger:
                                                by_coin['perleg_filled_USD'].apply(np.abs).sum()]})],
                             axis=0, ignore_index=True)
 
-        return {    'order_received_timestamp': order_received_timestamp,
-                    'inventory_manager': inventory_manager,
+        return {    'inventory_manager': inventory_manager,
                     'parameters': parameters,
                     'by_coin': by_coin,
                     'by_symbol': by_symbol,
                     'by_clientOrderId': by_clientOrderId,
-                    'data': data,
-                    'risk_recon': risk_reconciliations
+                    'order_manager': order_manager,
+                    'position_manager': position_manager
                     } | ({'history': history} if add_history_context else {})
 
 if __name__ == "__main__":

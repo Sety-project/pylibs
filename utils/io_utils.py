@@ -29,21 +29,6 @@ import pyarrow, pyarrow.parquet,s3fs
 '''
 I/O helpers
 '''
-async def append_to_json(data,filename,**kwargs):
-    if os.path.isfile(filename):
-        # File exists
-        async with aiofiles.open(filename, mode='a+') as file:
-            file.seek(-1, os.SEEK_END)
-            file.truncate()
-            await file.write(',')
-            json.dump(data, file,**kwargs)
-            file.write(']')
-    else:
-        # Create file
-        async with aiofiles.open(filename, mode='w') as file:
-            array = []
-            array.append(data)
-            json.dump(array, file,**kwargs)
 
 async def async_read_csv(*args,**kwargs):
     coro = async_wrap(pd.read_csv)
