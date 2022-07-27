@@ -14,7 +14,7 @@ from riskpnl.ftx_risk_pnl import diff_portoflio
 from riskpnl.ftx_margin import MarginCalculator
 from utils.api_utils import api,build_logging
 from utils.async_utils import *
-from utils.io_utils import async_read_csv,async_to_csv,NpEncoder
+from utils.io_utils import async_read_csv,async_to_csv,NpEncoder,myUtcNow
 
 import ccxtpro,collections,copy
 
@@ -98,14 +98,20 @@ class OrderManager(dict):
     acknowledgedStates = set(['acknowledged', 'partially_filled'])
     cancelableStates = set(['sent', 'acknowledged', 'partially_filled'])
 
-    def __init__(self,timestamp,parameters):
+    def __init__(self,parameters):
         super().__init__()
         self.parameters = parameters
-        self.latest_order_reconcile_timestamp = timestamp
-        self.latest_fill_reconcile_timestamp = timestamp
+        self.latest_order_reconcile_timestamp = parameters['timestamp']
+        self.latest_fill_reconcile_timestamp = parameters['timestamp']
         self.logger = logging.getLogger('tradeexecutor')
         self.fill_flag = False
-
+    @staticmethod
+    def build(parameters):
+        if not parameters:
+            return None
+        else:
+            return OrderManager({'timestamp': myUtcNow()} | parameters['order_manager'])
+        
     def to_dict(self):
         return dict(self)
 
@@ -153,7 +159,7 @@ class OrderManager(dict):
         '''self = {clientId:[{key:data}]}
         order_event:trigger,symbol'''
         #1) resolve clientID
-        nowtime = datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000
+        nowtime = myUtcNow()
         clientOrderId = order_event['comment'] + '_' + order_event['symbol'] + '_' + str(int(nowtime))
 
         #2) validate block
@@ -210,7 +216,7 @@ class OrderManager(dict):
             return
 
         # 3) new block
-        nowtime = datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000
+        nowtime = myUtcNow()
         eventID = clientOrderId + '_' + str(int(nowtime))
         current = order_event | {'eventID':eventID,
                                  'state':'sent',
@@ -242,7 +248,7 @@ class OrderManager(dict):
             return
 
         # 3) new block
-        nowtime = datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000
+        nowtime = myUtcNow()
         eventID = clientOrderId + '_' + str(int(nowtime))
         current = order_event | {'eventID': eventID,
                                  'remote_timestamp': None,
@@ -266,7 +272,7 @@ class OrderManager(dict):
             return
 
         # 3) new block
-        nowtime = datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000
+        nowtime = myUtcNow()
         eventID = clientOrderId + '_' + str(int(nowtime))
         current = order_event | {'eventID': eventID,
                                  'state': 'cancel_sent',
@@ -359,7 +365,7 @@ class OrderManager(dict):
         #     nowtime = order_event['timestamp']
         # else:
         #     nowtime = order_event['timestamp'][0]
-        nowtime = datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000
+        nowtime = myUtcNow()
         eventID = clientOrderId + '_' + str(int(nowtime))
         current = order_event | {'eventID':eventID,
                                  'state': order_event['state'],
@@ -382,10 +388,10 @@ class OrderManager(dict):
                                      for block in self[fill['clientOrderId']]
                                      if 'fillId' in block]:
                 self.fill(fill)
-        self.latest_fill_reconcile_timestamp = datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000
+        self.latest_fill_reconcile_timestamp = myUtcNow()
 
     async def reconcile_orders(self,exchange):
-        self.latest_order_reconcile_timestamp = datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000
+        self.latest_order_reconcile_timestamp = myUtcNow()
 
         # list internal orders
         internal_order_internal_status = {clientOrderId:data[-1] for clientOrderId,data in self.items()
@@ -425,37 +431,39 @@ class PositionManager(dict):
             self.delta_limit = limit
             self.check_frequency = check_frequency
 
-    def __init__(self,timestamp,parameters):
+    def __init__(self,parameters):
         super().__init__()
+        self.parameters = parameters
         self.pv = None
         self.margin = None
         self.limit = None
-        self.timestamp = timestamp
         self.logger = logging.getLogger('tradeexecutor')
         self.risk_reconciliations = []
-        self.parameters = parameters
         self.markets = None
 
     def to_dict(self):
         return self.risk_reconciliations
 
     @staticmethod
-    async def build(exchange,nowtime,parameters):
-        result = PositionManager(nowtime, parameters)
-        result.limit = PositionManager.LimitBreached(parameters['check_frequency'], parameters['delta_limit'])
-
-        for symbol, data in exchange.inventory_manager.items():
-            result[symbol] = {'delta': 0,
-                              'delta_timestamp':nowtime.timestamp()*1000,
-                              'delta_id': 0}
-
-        # Initializes a margin calculator that can understand the margin of an order
-        # reconcile the margin of an exchange with the margin we calculate
-        # pls note it needs the exchange pv, which is known after reconcile
-        result.margin = await MarginCalculator.margin_calculator_factory(exchange)
-        result.markets = exchange.markets
-        
-        return result
+    async def build(exchange,parameters):
+        if not parameters:
+            return None
+        else:
+            result = PositionManager({'timestamp': myUtcNow()} | parameters['position_manager'])
+            result.limit = PositionManager.LimitBreached(parameters['position_manager']['check_frequency'], parameters['position_manager']['delta_limit'])
+    
+            for symbol, data in exchange.inventory_manager.items():
+                result[symbol] = {'delta': 0,
+                                  'delta_timestamp': myUtcNow(),
+                                  'delta_id': 0}
+    
+            # Initializes a margin calculator that can understand the margin of an order
+            # reconcile the margin of an exchange with the margin we calculate
+            # pls note it needs the exchange pv, which is known after reconcile
+            result.margin = await MarginCalculator.margin_calculator_factory(exchange)
+            result.markets = exchange.markets
+            
+            return result
 
     async def reconcile(self,exchange):
         # recompute risks, margins
@@ -463,7 +471,7 @@ class PositionManager(dict):
         previous_pv = self.pv
 
         state = await syncronized_state(exchange)
-        risk_timestamp = datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000
+        risk_timestamp = await exchange.myUtcNow()
 
         # delta is noisy for perps, so override to delta 1.
         self.pv = 0
@@ -572,51 +580,17 @@ class PositionManager(dict):
                 'global_delta_minus': global_delta_minus}
 
 class InventoryManager(dict):
+    '''InventoryManager leverages other managers to implement quoter (and update_quoter)'''
     class ReadyToShutdown(Exception):
         def __init__(self, text):
             super().__init__(text)
-    def __init__(self,timestamp,filename,parameters):
+    def __init__(self,parameters,mkt_feed,execution_engine,order_feed):
         super().__init__()
         self.parameters = parameters
-        self.timestamp = timestamp
-        self.filename = filename
+        self.mkt_feed = mkt_feed
+        self.execution_engine = execution_engine
+        self.order_feed = order_feed
         self.logger = logging.getLogger('tradeexecutor')
-        self.history = []
-
-    def to_dict(self):
-        return self.history
-
-    @staticmethod
-    async def build(exchange,nowtime,order,parameters):
-        result = InventoryManager(nowtime.timestamp() * 1000, order,parameters)
-        await result.set_from_source()
-
-        trading_fees = await exchange.fetch_trading_fees()
-        for symbol in result:
-            result[symbol] |= {'priceIncrement': float(exchange.markets[symbol]['info']['priceIncrement']),
-                               'sizeIncrement': float(
-                                   exchange.markets[symbol]['info']['minProvideSize']),
-                               'takerVsMakerFee': trading_fees[symbol]['taker'] - trading_fees[symbol]['maker']
-                               }
-
-        return result
-
-    async def set_from_source(self):
-        if self.parameters['signal'] == 'vwap':
-            weights = await async_read_csv(self.filename,index_col=0)
-            cash_symbol = weights['spot_ticker'].unique()[0]
-
-            spot = weights['spot'].unique()[0]
-            targets = (-weights.set_index('new_symbol')['optimalWeight'] / spot).to_dict()
-            targets[cash_symbol] = -sum(targets.values())
-        elif self.parameters['signal'] == 'spread_distribution':
-            with aiofiles.open(self.filename,'r') as fp:
-                filecontent = await fp.read()
-                quantiles_history = json.loads(filecontent)
-                quantiles = quantiles_history[-1]
-                raise Exception('not implemented')
-
-        self.set_target(spot,targets,datetime.utcnow().timestamp() * 1000)
 
     def set_target(self, spot, targets,timestamp):
         for symbol, target in targets.items():
@@ -631,109 +605,513 @@ class InventoryManager(dict):
                 self[symbol]['spot_price'] = spot
                 self[symbol]['timestamp'] = timestamp
 
-        self.history += [dict(self)]
+        self.logger.history += [dict(self)]
+        
+    @staticmethod
+    async def build(parameters,mkt_feed,execution_engine,order_feed):
+        if parameters['signal'] == 'vwap':
+            result = PfoptimizerInventoryManager({'timestamp':myUtcNow()} | parameters['order_manager'],
+                                      mkt_feed,
+                                      execution_engine,
+                                      order_feed)
+        elif parameters['signal'] == 'spread_distribution':
+            result = SpreadDistributionInventoryManager({'timestamp': myUtcNow()} | parameters['order_manager'],
+                                      mkt_feed,
+                                      execution_engine,
+                                      order_feed)
+        (spot, targets, timestamp) = await result.order_feed.update_order()
+        result.set_target(spot, targets, timestamp)
 
+        trading_fees = await mkt_feed.fetch_trading_fees()
+        for symbol in result:
+            result[symbol] |= {'priceIncrement': float(mkt_feed.markets[symbol]['info']['priceIncrement']),
+                               'sizeIncrement': float(
+                                   mkt_feed.markets[symbol]['info']['minProvideSize']),
+                               'takerVsMakerFee': trading_fees[symbol]['taker'] - trading_fees[symbol]['maker']
+                               }
+
+        return result
+
+class PfoptimizerInventoryManager(InventoryManager):
     async def update_quoter_params(self, exchange):
         '''updates quoter inputs
         reads file if present. If not: if no risk then shutdown bot, else unwind.
         '''
-        if os.path.isfile(self.filename):
-            await self.set_from_source()
+        if os.path.isfile(self.order_feed):
+            (spot, targets, timestamp) = await self.order_feed.update_order()
+            self.set_target(spot, targets, myUtcNow())
         elif all(abs(exchange.position_manager[symbol]['delta'])<exchange.parameters['significance_threshold'] * exchange.position_manager.pv for symbol in self):
-            raise InventoryManager.ReadyToShutdown(f'no {self.keys()} delta and no {self.filename} order --> shutting down bot')
+            raise InventoryManager.ReadyToShutdown(f'no {self.keys()} delta and no {self.order_feed} order --> shutting down bot')
         else:
             targets = {key:0 for key in self}
             spot = exchange.mid(next(key for key in self if exchange.market(key)['type']=='spot'))
-            self.set_target(spot,targets,datetime.utcnow().timestamp() * 1000)
+            self.set_target(spot, targets, myUtcNow())
 
-        if self.parameters['signal'] == 'vwap':
-            nowtime = datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000
-            exchange.analytics_manager.compile_vwap(frequency=timedelta(minutes=1))
+        nowtime = myUtcNow()
+        exchange.analytics_manager.compile_vwap(frequency=timedelta(minutes=1))
 
-            def basket_vwap_quantile(series_list, diff_list, quantiles):
-                series = pd.concat([serie * coef for serie, coef in zip(series_list, diff_list)], join='inner', axis=1)
-                return [-1e18 if quantile<=0 else 1e18 if quantile>=1 else series.sum(axis=1).quantile(quantile) for quantile in quantiles]
+        def basket_vwap_quantile(series_list, diff_list, quantiles):
+            series = pd.concat([serie * coef for serie, coef in zip(series_list, diff_list)], join='inner', axis=1)
+            return [-1e18 if quantile<=0 else 1e18 if quantile>=1 else series.sum(axis=1).quantile(quantile) for quantile in quantiles]
 
-            scaler = 1 # max(0,(time_limit-nowtime)/(time_limit-self.inventory_target.timestamp))
-            for symbol, data in self.items():
-                data['update_time_delta'] = data['target'] - exchange.position_manager[symbol]['delta'] / exchange.mid(symbol)
+        scaler = 1 # max(0,(time_limit-nowtime)/(time_limit-self.inventory_target.timestamp))
+        for symbol, data in self.items():
+            data['update_time_delta'] = data['target'] - exchange.position_manager[symbol]['delta'] / exchange.mid(symbol)
 
-            for symbol, data in self.items():
-                # entry_level = what level on basket is too bad to even place orders
-                # rush_in_level = what level on basket is so good that you go in at market on both legs
-                # rush_out_level = what level on basket is so bad that you go out at market on both legs
-                quantiles = basket_vwap_quantile(
-                    [exchange.analytics_manager.vwap[symbol]['vwap'] for symbol in self],
-                    [data['update_time_delta'] for symbol,data in self.items()],
-                    [exchange.parameters['entry_tolerance'],exchange.parameters['rush_in_tolerance'],exchange.parameters['rush_out_tolerance']])
+        for symbol, data in self.items():
+            # entry_level = what level on basket is too bad to even place orders
+            # rush_in_level = what level on basket is so good that you go in at market on both legs
+            # rush_out_level = what level on basket is so bad that you go out at market on both legs
+            quantiles = basket_vwap_quantile(
+                [exchange.analytics_manager.vwap[symbol]['vwap'] for symbol in self],
+                [data['update_time_delta'] for symbol,data in self.items()],
+                [exchange.parameters['entry_tolerance'],exchange.parameters['rush_in_tolerance'],exchange.parameters['rush_out_tolerance']])
 
-                data['entry_level'] = quantiles[0]
-                data['rush_in_level'] = quantiles[1]
-                data['rush_out_level'] = quantiles[2]
+            data['entry_level'] = quantiles[0]
+            data['rush_in_level'] = quantiles[1]
+            data['rush_out_level'] = quantiles[2]
 
-                stdev = exchange.analytics_manager.vwap[symbol]['vwap'].std().squeeze()
-                if not (stdev>0): stdev = 1e-16
+            stdev = exchange.analytics_manager.vwap[symbol]['vwap'].std().squeeze()
+            if not (stdev>0): stdev = 1e-16
 
-                # edit_price_depth = how far to put limit on risk increasing orders
-                data['edit_price_depth'] = stdev * np.sqrt(exchange.parameters['edit_price_tolerance']) * scaler
-                # edit_trigger_depth = how far to let the mkt go before re-pegging limit orders
-                data['edit_trigger_depth'] = stdev * np.sqrt(exchange.parameters['edit_trigger_tolerance']) * scaler
+            # edit_price_depth = how far to put limit on risk increasing orders
+            data['edit_price_depth'] = stdev * np.sqrt(exchange.parameters['edit_price_tolerance']) * scaler
+            # edit_trigger_depth = how far to let the mkt go before re-pegging limit orders
+            data['edit_trigger_depth'] = stdev * np.sqrt(exchange.parameters['edit_trigger_tolerance']) * scaler
 
-                # aggressive version understand tolerance as price increment
-                if isinstance(exchange.parameters['aggressive_edit_price_tolerance'],float):
-                    data['aggressive_edit_price_depth'] = max(1,exchange.parameters['aggressive_edit_price_tolerance']) * data['priceIncrement']
-                    data['aggressive_edit_trigger_depth'] = max(1,exchange.parameters['aggressive_edit_price_tolerance']) * data['priceIncrement']
+            # aggressive version understand tolerance as price increment
+            if isinstance(exchange.parameters['aggressive_edit_price_tolerance'],float):
+                data['aggressive_edit_price_depth'] = max(1,exchange.parameters['aggressive_edit_price_tolerance']) * data['priceIncrement']
+                data['aggressive_edit_trigger_depth'] = max(1,exchange.parameters['aggressive_edit_price_tolerance']) * data['priceIncrement']
+            else:
+                data['aggressive_edit_price_depth'] = exchange.parameters['aggressive_edit_price_tolerance']
+                data['aggressive_edit_trigger_depth'] = None # takers don't peg
+
+                # stop_depth = how far to set the stop on risk reducing orders
+            data['stop_depth'] = stdev * np.sqrt(exchange.parameters['stop_tolerance']) * scaler
+
+            # slice_size: cap to expected time to trade consistent with edit_price_tolerance
+            volume_share = exchange.parameters['volume_share'] * exchange.parameters['edit_price_tolerance'] * \
+                           exchange.analytics_manager.vwap[symbol]['volume'].mean()
+            data['slice_size'] = volume_share
+
+    def quoter(self, symbol):
+        '''
+            leverages orderbook and risk to issue an order
+            Critical loop, needs to go quick
+            all executes in one go, no async
+        '''
+        mid = self.mkt_feed.tickers[symbol]['mid']
+        params = self[symbol]
+
+        # size to do:
+        original_size = params['target'] - self.strategy.position_manager[symbol]['delta'] / mid
+
+        # risk
+        globalDelta = self.strategy.position_manager.delta_bounds(symbol)['global_delta']
+        delta_limit = self.strategy.position_manager.limit.delta_limit * self.strategy.position_manager.pv
+        marginal_risk = np.abs(globalDelta / mid + original_size) - np.abs(globalDelta / mid)
+
+        # if increases risk but not out of limit, trim and go passive.
+        if np.sign(original_size) == np.sign(globalDelta):
+            # if (global_delta_plus / mid + original_size) > delta_limit:
+            #     trimmed_size = delta_limit - global_delta_plus / mid
+            #     self.strategy.logger.debug(
+            #         f'{original_size * mid} {symbol} would increase risk over {self.strategy.limit.delta_limit * 100}% of {self.strategy.risk_state.pv} --> trimming to {trimmed_size * mid}')
+            # elif (global_delta_minus / mid + original_size) < -delta_limit:
+            #     trimmed_size = -delta_limit - global_delta_minus / mid
+            #     self.strategy.logger.debug(
+            #         f'{original_size * mid} {symbol} would increase risk over {self.strategy.limit.delta_limit * 100}% of {self.strategy.risk_state.pv} --> trimming to {trimmed_size * mid}')
+            # else:
+            #     trimmed_size = original_size
+            # if np.sign(trimmed_size) != np.sign(original_size):
+            #     self.strategy.logger.debug(f'skipping (we don t flip orders)')
+            #     return
+            if abs(globalDelta / mid + original_size) > delta_limit:
+                if (globalDelta / mid + original_size) > delta_limit:
+                    trimmed_size = delta_limit - globalDelta / mid
+                elif (globalDelta / mid + original_size) < -delta_limit:
+                    trimmed_size = -delta_limit - globalDelta / mid
                 else:
-                    data['aggressive_edit_price_depth'] = exchange.parameters['aggressive_edit_price_tolerance']
-                    data['aggressive_edit_trigger_depth'] = None # takers don't peg
-
-                    # stop_depth = how far to set the stop on risk reducing orders
-                data['stop_depth'] = stdev * np.sqrt(exchange.parameters['stop_tolerance']) * scaler
-
-                # slice_size: cap to expected time to trade consistent with edit_price_tolerance
-                volume_share = exchange.parameters['volume_share'] * exchange.parameters['edit_price_tolerance'] * \
-                               exchange.analytics_manager.vwap[symbol]['volume'].mean()
-                data['slice_size'] = volume_share
-        elif self.parameters['signal'] == 'spread_distribution':
-            nowtime = datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000
-            quantiles = exchange.analytics_manager.compile_spread_distribution()
-            exchange.analytics_manager.compile_vwap(frequency=timedelta(minutes=1))
-
-            for symbol, data in self.items():
-                # entry_level = what level on basket is too bad to even place orders
-                # rush_in_level = what level on basket is so good that you go in at market on both legs
-                # rush_out_level = what level on basket is so bad that you go out at market on both legs
-                is_long_carry = data['target'] * (-1 if ':USD' in symbol else 1) > 0
-                data['rush_in_level'] = quantiles[1 if is_long_carry else 0] * exchange.mid(symbol)/365.25
-                data['rush_out_level'] = quantiles[0 if is_long_carry else 1] * exchange.mid(symbol)/365.25
-
-                stdev = exchange.analytics_manager.vwap[symbol]['vwap'].std().squeeze()
-                if not (stdev>0): stdev = 1e-16
-
-                # edit_price_depth = how far to put limit on risk increasing orders
-                data['edit_price_depth'] = stdev * np.sqrt(exchange.parameters['edit_price_tolerance'])
-                # edit_trigger_depth = how far to let the mkt go before re-pegging limit orders
-                data['edit_trigger_depth'] = stdev * np.sqrt(exchange.parameters['edit_trigger_tolerance'])
-
-                # aggressive version understand tolerance as price increment
-                if isinstance(exchange.parameters['aggressive_edit_price_tolerance'],float):
-                    data['aggressive_edit_price_depth'] = max(1,exchange.parameters['aggressive_edit_price_tolerance']) * data['priceIncrement']
-                    data['aggressive_edit_trigger_depth'] = max(1,exchange.parameters['aggressive_edit_price_tolerance']) * data['priceIncrement']
+                    raise Exception('what??')
+                if np.sign(trimmed_size) != np.sign(original_size):
+                    self.strategy.logger.debug(
+                        f'{original_size * mid} {symbol} would increase risk over {self.strategy.position_manager.limit.delta_limit * 100}% of {self.strategy.position_manager.pv} --> skipping (we don t flip orders)')
+                    return
                 else:
-                    data['aggressive_edit_price_depth'] = exchange.parameters['aggressive_edit_price_tolerance']
-                    data['aggressive_edit_trigger_depth'] = None # takers don't peg
+                    self.strategy.logger.debug(
+                        f'{original_size * mid} {symbol} would increase risk over {self.strategy.position_manager.limit.delta_limit * 100}% of {self.strategy.position_manager.pv} --> trimming to {trimmed_size * mid}')
+            else:
+                trimmed_size = original_size
 
-                    # stop_depth = how far to set the stop on risk reducing orders
-                data['stop_depth'] = stdev * np.sqrt(exchange.parameters['stop_tolerance'])
+            size = np.clip(trimmed_size, a_min=-params['slice_size'], a_max=params['slice_size'])
 
-                # slice_size: cap to expected time to trade consistent with edit_price_tolerance
-                volume_share = exchange.parameters['volume_share'] * exchange.parameters['edit_price_tolerance'] * \
-                               exchange.analytics_manager.vwap[symbol]['volume'].mean()
-                data['slice_size'] = volume_share
+            current_basket_price = sum(self.mkt_feed.mid(_symbol) * self[_symbol]['update_time_delta']
+                                       for _symbol in self.keys())
+            # mkt order if target reached.
+            # TODO: pray for the other coin to hit the same condition...
+            if current_basket_price + 2 * abs(params['update_time_delta']) * params['takerVsMakerFee'] * mid < \
+                    self[symbol]['rush_in_level']:
+                # TODO: could replace current_basket_price by two way sweep after if
+                self.execution_manager.peg_or_stopout(symbol, size, self.mkt_feed.orderbook,
+                                    edit_trigger_depth=params['edit_trigger_depth'],
+                                    edit_price_depth='rush_in', stop_depth=None)
+                return
+            elif current_basket_price - 2 * abs(params['update_time_delta']) * params['takerVsMakerFee'] * mid > \
+                    self[symbol]['rush_out_level']:
+                # go all in as this decreases margin
+                size = - self.strategy.position_manager[symbol]['delta'] / mid
+                if abs(size) > 0:
+                    self.execution_manager.peg_or_stopout(symbol, size, self.mkt_feed.orderbook,
+                                        edit_trigger_depth=params['edit_trigger_depth'],
+                                        edit_price_depth='rush_out', stop_depth=None)
+                return
+            # limit order if level is acceptable (saves margin compared to faraway order)
+            elif current_basket_price < self[symbol]['entry_level']:
+                edit_trigger_depth = params['edit_trigger_depth']
+                edit_price_depth = params['edit_price_depth']
+                stop_depth = None
+            # hold off to save margin, if level is bad-ish
+            else:
+                return
+        # if decrease risk, go aggressive without flipping delta
+        else:
+            size = np.sign(original_size) * min(abs(- globalDelta / mid), abs(original_size))
+            edit_trigger_depth = params['aggressive_edit_trigger_depth']
+            edit_price_depth = params['aggressive_edit_price_depth']
+            stop_depth = params['stop_depth']
+        self.execution_manager.peg_or_stopout(symbol, size, self.mkt_feed.orderbook, edit_trigger_depth=edit_trigger_depth,
+                            edit_price_depth=edit_price_depth, stop_depth=stop_depth)
+
+class PfoptimizerInventoryManager(InventoryManager):
+    async def update_quoter_params(self, exchange):
+        '''updates quoter inputs
+        reads file if present. If not: if no risk then shutdown bot, else unwind.
+        '''
+        if all(abs(exchange.position_manager[symbol]['delta']) < exchange.parameters[
+            'significance_threshold'] * exchange.position_manager.pv for symbol in self):
+            raise InventoryManager.ReadyToShutdown(
+                f'no {self.keys()} delta and no {self.order_feed} order --> shutting down bot')
+        if os.path.isfile(self.order_feed):
+            (spot, targets, timestamp) = await self.order_feed.update_order()
+            self.set_target(spot, targets, myUtcNow())
+        else:
+            targets = {key: 0 for key in self}
+            spot = exchange.mid(next(key for key in self if exchange.market(key)['type'] == 'spot'))
+            self.set_target(spot, targets, myUtcNow())
+
+        self.analytics_manager.compile_vwap(frequency=timedelta(minutes=1))
+
+        def basket_vwap_quantile(series_list, diff_list, quantiles):
+            series = pd.concat([serie * coef for serie, coef in zip(series_list, diff_list)], join='inner', axis=1)
+            return [-1e18 if quantile<=0 else 1e18 if quantile>=1 else series.sum(axis=1).quantile(quantile) for quantile in quantiles]
+
+        scaler = 1 # max(0,(time_limit-nowtime)/(time_limit-self.inventory_target.timestamp))
+        for symbol, data in self.items():
+            data['update_time_delta'] = data['target'] - exchange.position_manager[symbol]['delta'] / exchange.mid(symbol)
+
+        for symbol, data in self.items():
+            # entry_level = what level on basket is too bad to even place orders
+            # rush_in_level = what level on basket is so good that you go in at market on both legs
+            # rush_out_level = what level on basket is so bad that you go out at market on both legs
+            quantiles = basket_vwap_quantile(
+                [exchange.analytics_manager.vwap[symbol]['vwap'] for symbol in self],
+                [data['update_time_delta'] for symbol,data in self.items()],
+                [exchange.parameters['entry_tolerance'],exchange.parameters['rush_in_tolerance'],exchange.parameters['rush_out_tolerance']])
+
+            data['entry_level'] = quantiles[0]
+            data['rush_in_level'] = quantiles[1]
+            data['rush_out_level'] = quantiles[2]
+
+            stdev = exchange.analytics_manager.vwap[symbol]['vwap'].std().squeeze()
+            if not (stdev>0): stdev = 1e-16
+
+            # edit_price_depth = how far to put limit on risk increasing orders
+            data['edit_price_depth'] = stdev * np.sqrt(exchange.parameters['edit_price_tolerance']) * scaler
+            # edit_trigger_depth = how far to let the mkt go before re-pegging limit orders
+            data['edit_trigger_depth'] = stdev * np.sqrt(exchange.parameters['edit_trigger_tolerance']) * scaler
+
+            # aggressive version understand tolerance as price increment
+            if isinstance(exchange.parameters['aggressive_edit_price_tolerance'],float):
+                data['aggressive_edit_price_depth'] = max(1,exchange.parameters['aggressive_edit_price_tolerance']) * data['priceIncrement']
+                data['aggressive_edit_trigger_depth'] = max(1,exchange.parameters['aggressive_edit_price_tolerance']) * data['priceIncrement']
+            else:
+                data['aggressive_edit_price_depth'] = exchange.parameters['aggressive_edit_price_tolerance']
+                data['aggressive_edit_trigger_depth'] = None # takers don't peg
+
+                # stop_depth = how far to set the stop on risk reducing orders
+            data['stop_depth'] = stdev * np.sqrt(exchange.parameters['stop_tolerance']) * scaler
+
+            # slice_size: cap to expected time to trade consistent with edit_price_tolerance
+            volume_share = exchange.parameters['volume_share'] * exchange.parameters['edit_price_tolerance'] * \
+                           exchange.analytics_manager.vwap[symbol]['volume'].mean()
+            data['slice_size'] = volume_share
+
+    def quoter(self, symbol):
+        '''
+            leverages orderbook and risk to issue an order
+            Critical loop, needs to go quick
+            all executes in one go, no async
+        '''
+        mid = self.mkt_feed.tickers[symbol]['mid']
+        params = self[symbol]
+
+        # size to do:
+        original_size = params['target'] - self.strategy.position_manager[symbol]['delta'] / mid
+
+        # risk
+        globalDelta = self.strategy.position_manager.delta_bounds(symbol)['global_delta']
+        delta_limit = self.strategy.position_manager.limit.delta_limit * self.strategy.position_manager.pv
+        marginal_risk = np.abs(globalDelta / mid + original_size) - np.abs(globalDelta / mid)
+
+        # if increases risk but not out of limit, trim and go passive.
+        if np.sign(original_size) == np.sign(globalDelta):
+            # if (global_delta_plus / mid + original_size) > delta_limit:
+            #     trimmed_size = delta_limit - global_delta_plus / mid
+            #     self.strategy.logger.debug(
+            #         f'{original_size * mid} {symbol} would increase risk over {self.strategy.limit.delta_limit * 100}% of {self.strategy.risk_state.pv} --> trimming to {trimmed_size * mid}')
+            # elif (global_delta_minus / mid + original_size) < -delta_limit:
+            #     trimmed_size = -delta_limit - global_delta_minus / mid
+            #     self.strategy.logger.debug(
+            #         f'{original_size * mid} {symbol} would increase risk over {self.strategy.limit.delta_limit * 100}% of {self.strategy.risk_state.pv} --> trimming to {trimmed_size * mid}')
+            # else:
+            #     trimmed_size = original_size
+            # if np.sign(trimmed_size) != np.sign(original_size):
+            #     self.strategy.logger.debug(f'skipping (we don t flip orders)')
+            #     return
+            if abs(globalDelta / mid + original_size) > delta_limit:
+                if (globalDelta / mid + original_size) > delta_limit:
+                    trimmed_size = delta_limit - globalDelta / mid
+                elif (globalDelta / mid + original_size) < -delta_limit:
+                    trimmed_size = -delta_limit - globalDelta / mid
+                else:
+                    raise Exception('what??')
+                if np.sign(trimmed_size) != np.sign(original_size):
+                    self.strategy.logger.debug(
+                        f'{original_size * mid} {symbol} would increase risk over {self.strategy.position_manager.limit.delta_limit * 100}% of {self.strategy.position_manager.pv} --> skipping (we don t flip orders)')
+                    return
+                else:
+                    self.strategy.logger.debug(
+                        f'{original_size * mid} {symbol} would increase risk over {self.strategy.position_manager.limit.delta_limit * 100}% of {self.strategy.position_manager.pv} --> trimming to {trimmed_size * mid}')
+            else:
+                trimmed_size = original_size
+
+            size = np.clip(trimmed_size, a_min=-params['slice_size'], a_max=params['slice_size'])
+
+            current_basket_price = sum(self.mkt_feed.mid(_symbol) * self[_symbol]['update_time_delta']
+                                       for _symbol in self.keys())
+            # mkt order if target reached.
+            # TODO: pray for the other coin to hit the same condition...
+            if current_basket_price + 2 * abs(params['update_time_delta']) * params['takerVsMakerFee'] * mid < \
+                    self[symbol]['rush_in_level']:
+                # TODO: could replace current_basket_price by two way sweep after if
+                self.execution_manager.peg_or_stopout(symbol, size, self.mkt_feed.orderbook,
+                                    edit_trigger_depth=params['edit_trigger_depth'],
+                                    edit_price_depth='rush_in', stop_depth=None)
+                return
+            elif current_basket_price - 2 * abs(params['update_time_delta']) * params['takerVsMakerFee'] * mid > \
+                    self[symbol]['rush_out_level']:
+                # go all in as this decreases margin
+                size = - self.strategy.position_manager[symbol]['delta'] / mid
+                if abs(size) > 0:
+                    self.execution_manager.peg_or_stopout(symbol, size, self.mkt_feed.orderbook,
+                                        edit_trigger_depth=params['edit_trigger_depth'],
+                                        edit_price_depth='rush_out', stop_depth=None)
+                return
+            # limit order if level is acceptable (saves margin compared to faraway order)
+            elif current_basket_price < self[symbol]['entry_level']:
+                edit_trigger_depth = params['edit_trigger_depth']
+                edit_price_depth = params['edit_price_depth']
+                stop_depth = None
+            # hold off to save margin, if level is bad-ish
+            else:
+                return
+        # if decrease risk, go aggressive without flipping delta
+        else:
+            size = np.sign(original_size) * min(abs(- globalDelta / mid), abs(original_size))
+            edit_trigger_depth = params['aggressive_edit_trigger_depth']
+            edit_price_depth = params['aggressive_edit_price_depth']
+            stop_depth = params['stop_depth']
+        self.execution_manager.peg_or_stopout(symbol, size, self.mkt_feed.orderbook, edit_trigger_depth=edit_trigger_depth,
+                            edit_price_depth=edit_price_depth, stop_depth=stop_depth)
+
+class SpreadDistributionInventoryManager(InventoryManager):
+    async def update_quoter_params(self, exchange):
+        '''updates quoter inputs
+        reads file if present. If not: if no risk then shutdown bot, else unwind.
+        '''
+        if all(abs(exchange.position_manager[symbol]['delta']) < exchange.parameters[
+            'significance_threshold'] * exchange.position_manager.pv for symbol in self):
+            raise InventoryManager.ReadyToShutdown(
+                f'no {self.keys()} delta and no {self.order_feed} order --> shutting down bot')
+        if os.path.isfile(self.order_feed):
+            (spot, targets, timestamp) = await self.order_feed.update_order()
+            self.set_target(spot, targets, myUtcNow())
+        else:
+            targets = {key: 0 for key in self}
+            spot = exchange.mid(next(key for key in self if exchange.market(key)['type'] == 'spot'))
+            self.set_target(spot, targets, myUtcNow())
+
+        nowtime = myUtcNow()
+        quantiles = exchange.analytics_manager.compile_spread_distribution()
+
+        for symbol, data in self.items():
+            # entry_level = what level on basket is too bad to even place orders
+            # rush_in_level = what level on basket is so good that you go in at market on both legs
+            # rush_out_level = what level on basket is so bad that you go out at market on both legs
+            is_long_carry = data['target'] * (-1 if ':USD' in symbol else 1) > 0
+            data['rush_in_level'] = quantiles[1 if is_long_carry else 0] * exchange.mid(symbol) / 365.25
+            data['rush_out_level'] = quantiles[0 if is_long_carry else 1] * exchange.mid(symbol) / 365.25
+
+            stdev = exchange.analytics_manager.vwap[symbol]['vwap'].std().squeeze()
+            if not (stdev > 0): stdev = 1e-16
+
+            # edit_price_depth = how far to put limit on risk increasing orders
+            data['edit_price_depth'] = stdev * np.sqrt(exchange.parameters['edit_price_tolerance'])
+            # edit_trigger_depth = how far to let the mkt go before re-pegging limit orders
+            data['edit_trigger_depth'] = stdev * np.sqrt(exchange.parameters['edit_trigger_tolerance'])
+
+            # aggressive version understand tolerance as price increment
+            if isinstance(exchange.parameters['aggressive_edit_price_tolerance'], float):
+                data['aggressive_edit_price_depth'] = max(1, exchange.parameters[
+                    'aggressive_edit_price_tolerance']) * data['priceIncrement']
+                data['aggressive_edit_trigger_depth'] = max(1, exchange.parameters[
+                    'aggressive_edit_price_tolerance']) * data['priceIncrement']
+            else:
+                data['aggressive_edit_price_depth'] = exchange.parameters['aggressive_edit_price_tolerance']
+                data['aggressive_edit_trigger_depth'] = None  # takers don't peg
+
+                # stop_depth = how far to set the stop on risk reducing orders
+            data['stop_depth'] = stdev * np.sqrt(exchange.parameters['stop_tolerance'])
+
+            # slice_size: cap to expected time to trade consistent with edit_price_tolerance
+            volume_share = exchange.parameters['volume_share'] * exchange.parameters[
+                'edit_price_tolerance'] * \
+                           exchange.analytics_manager.vwap[symbol]['volume'].mean()
+            data['slice_size'] = volume_share
 
         self.timestamp = nowtime
 
+    def quoter(self, symbol):
+        '''
+            leverages orderbook and risk to issue an order
+            Critical loop, needs to go quick
+            all executes in one go, no async
+        '''
+        mid = self.mkt_feed.tickers[symbol]['mid']
+        params = self[symbol]
+
+        # size to do:
+        original_size = params['target'] - self.strategy.position_manager[symbol]['delta'] / mid
+
+        # risk
+        globalDelta = self.strategy.position_manager.delta_bounds(symbol)['global_delta']
+        delta_limit = self.strategy.position_manager.limit.delta_limit * self.strategy.position_manager.pv
+        marginal_risk = np.abs(globalDelta / mid + original_size) - np.abs(globalDelta / mid)
+
+        # if increases risk but not out of limit, trim and go passive.
+        if np.sign(original_size) == np.sign(globalDelta):
+            # if (global_delta_plus / mid + original_size) > delta_limit:
+            #     trimmed_size = delta_limit - global_delta_plus / mid
+            #     self.strategy.logger.debug(
+            #         f'{original_size * mid} {symbol} would increase risk over {self.strategy.limit.delta_limit * 100}% of {self.strategy.risk_state.pv} --> trimming to {trimmed_size * mid}')
+            # elif (global_delta_minus / mid + original_size) < -delta_limit:
+            #     trimmed_size = -delta_limit - global_delta_minus / mid
+            #     self.strategy.logger.debug(
+            #         f'{original_size * mid} {symbol} would increase risk over {self.strategy.limit.delta_limit * 100}% of {self.strategy.risk_state.pv} --> trimming to {trimmed_size * mid}')
+            # else:
+            #     trimmed_size = original_size
+            # if np.sign(trimmed_size) != np.sign(original_size):
+            #     self.strategy.logger.debug(f'skipping (we don t flip orders)')
+            #     return
+            if abs(globalDelta / mid + original_size) > delta_limit:
+                if (globalDelta / mid + original_size) > delta_limit:
+                    trimmed_size = delta_limit - globalDelta / mid
+                elif (globalDelta / mid + original_size) < -delta_limit:
+                    trimmed_size = -delta_limit - globalDelta / mid
+                else:
+                    raise Exception('what??')
+                if np.sign(trimmed_size) != np.sign(original_size):
+                    self.strategy.logger.debug(
+                        f'{original_size * mid} {symbol} would increase risk over {self.strategy.position_manager.limit.delta_limit * 100}% of {self.strategy.position_manager.pv} --> skipping (we don t flip orders)')
+                    return
+                else:
+                    self.strategy.logger.debug(
+                        f'{original_size * mid} {symbol} would increase risk over {self.strategy.position_manager.limit.delta_limit * 100}% of {self.strategy.position_manager.pv} --> trimming to {trimmed_size * mid}')
+            else:
+                trimmed_size = original_size
+
+            size = np.clip(trimmed_size, a_min=-params['slice_size'], a_max=params['slice_size'])
+
+            current_basket_price = sum(self.mkt_feed.mid(_symbol) * self[_symbol]['update_time_delta']
+                                       for _symbol in self.keys())
+            # mkt order if target reached.
+            # TODO: pray for the other coin to hit the same condition...
+            if current_basket_price + 2 * abs(params['update_time_delta']) * params['takerVsMakerFee'] * mid < \
+                    self[symbol]['rush_in_level']:
+                # TODO: could replace current_basket_price by two way sweep after if
+                self.execution_manager.peg_or_stopout(symbol, size, self.mkt_feed.orderbook,
+                                                      edit_trigger_depth=params['edit_trigger_depth'],
+                                                      edit_price_depth='rush_in', stop_depth=None)
+                return
+            elif current_basket_price - 2 * abs(params['update_time_delta']) * params['takerVsMakerFee'] * mid > \
+                    self[symbol]['rush_out_level']:
+                # go all in as this decreases margin
+                size = - self.strategy.position_manager[symbol]['delta'] / mid
+                if abs(size) > 0:
+                    self.execution_manager.peg_or_stopout(symbol, size, self.mkt_feed.orderbook,
+                                                          edit_trigger_depth=params['edit_trigger_depth'],
+                                                          edit_price_depth='rush_out', stop_depth=None)
+                return
+            # limit order if level is acceptable (saves margin compared to faraway order)
+            elif current_basket_price < self[symbol]['entry_level']:
+                edit_trigger_depth = params['edit_trigger_depth']
+                edit_price_depth = params['edit_price_depth']
+                stop_depth = None
+            # hold off to save margin, if level is bad-ish
+            else:
+                return
+        # if decrease risk, go aggressive without flipping delta
+        else:
+            size = np.sign(original_size) * min(abs(- globalDelta / mid), abs(original_size))
+            edit_trigger_depth = params['aggressive_edit_trigger_depth']
+            edit_price_depth = params['aggressive_edit_price_depth']
+            stop_depth = params['stop_depth']
+        self.execution_manager.peg_or_stopout(symbol, size, self.mkt_feed.orderbook,
+                                              edit_trigger_depth=edit_trigger_depth,
+                                              edit_price_depth=edit_price_depth, stop_depth=stop_depth)
+
+class OrderFeed():
+    '''OrderFeed just reads a source and updates the targets of inventory manager'''
+    def __init__(self, parameters):
+        self.parameters = parameters
+    
+    async def update_order(self):
+        raise Exception("abstract method")
+        #return (spot, targets, datetime.utcnow().timestamp() * 1000)
+        
+class PfoptimizerOrderFeed(OrderFeed):
+    async def update_order(self):
+        weights = await async_read_csv(self.parameters['filename'], index_col=0)
+        cash_symbol = weights['spot_ticker'].unique()[0]
+
+        spot = weights['spot'].unique()[0]
+        targets = (-weights.set_index('new_symbol')['optimalWeight'] / spot).to_dict()
+        targets[cash_symbol] = -sum(targets.values())
+        return (spot, targets, datetime.utcnow().timestamp() * 1000)
+
+class SpreaDistributionOrderFeed(OrderFeed):
+    async def update_order(self):
+        with aiofiles.open(self.parameters['filename'], 'r') as fp:
+            filecontent = await fp.read()
+            quantiles_history = json.loads(filecontent)
+            quantiles = quantiles_history[-1]
+            raise Exception('not implemented')
+        return (spot, targets, datetime.utcnow().timestamp() * 1000)
+
+
 class AnalyticsManager():
+    '''AnalyticsManager computes derived data from mkt_feed and holds cache'''
     quantiles = [0.2,0.8] # [0.01, 0.05, 0.1, .2, .35, .5, .65, .75, .9, .95, .99]
 
     class Metric(list):
@@ -745,7 +1123,7 @@ class AnalyticsManager():
         def to_json(self,file_prefix):
             pass
 
-    def __init__(self,parameters):
+    def __init__(self,timestamp, parameters):
         self.parameters = parameters
         if 'spread_distribution' in parameters['record_set'] and 'spread_trades' not in parameters['record_set']:
             raise Exception('spread_trades not in record_set')
@@ -762,24 +1140,27 @@ class AnalyticsManager():
     @staticmethod
     async def build(exchange,parameters):
         # get times series of target baskets, compute quantile of increments and add to last price
-        initialized = AnalyticsManager(parameters)
-        intial_deques = {symbol: collections.deque(maxlen=initialized.parameters['cache_size'])
+        if not parameters:
+            return None
+        else:
+            result = PositionManager({'timestamp': myUtcNow()} | parameters['analytics_manager'])
+        intial_deques = {symbol: collections.deque(maxlen=result.parameters['cache_size'])
                                  for symbol in exchange.inventory_manager}
 
-        initialized.orderbook = copy.deepcopy(intial_deques)
-        initialized.trades_cache = copy.deepcopy(intial_deques)
+        result.orderbook = copy.deepcopy(intial_deques)
+        result.trades_cache = copy.deepcopy(intial_deques)
         
         # initialize vwap_history
         nowtime = datetime.utcnow().replace(tzinfo=timezone.utc)
         frequency = timedelta(minutes=1)
-        start = nowtime - timedelta(seconds=initialized.parameters['stdev_window'])
+        start = nowtime - timedelta(seconds=result.parameters['stdev_window'])
         vwap_history_list = await safe_gather([fetch_trades_history(
             exchange.market(symbol)['id'], exchange, start, nowtime, frequency=frequency)
             for symbol in exchange.inventory_manager], semaphore=exchange.rest_semaphor)
-        initialized.vwap = {exchange.market(symbol)['symbol']: data for symbol, data in
+        result.vwap = {exchange.market(symbol)['symbol']: data for symbol, data in
                             zip(exchange.inventory_manager.keys(), vwap_history_list)}
 
-        return initialized
+        return result
 
     def compile_vwap(self, frequency, purge=True):
         # get times series of target baskets, compute quantile of increments and add to last price
@@ -848,7 +1229,7 @@ class AnalyticsManager():
 
         return quantiles
 
-    async def record(self):
+    async def to_json(self):
         coin = list(self.orderbook.keys())[0].replace(':USD', '').replace('/USD', '')
 
         for member_data in self.parameters['record_set']:
@@ -869,7 +1250,7 @@ class AnalyticsManager():
 class myFtx(ccxtpro.ftx):
     def __init__(self, parameters, config = dict()):
         super().__init__(config=config)
-        self.parameters = {'timestamp':datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000}|parameters
+        self.parameters = {'timestamp':myUtcNow()}|parameters
 
         self.lock = {'reconciling':threading.Lock()}
         self.rest_semaphor = asyncio.Semaphore(safe_gather_limit)
@@ -922,10 +1303,6 @@ class myFtx(ccxtpro.ftx):
             return np.floor(amount/sizeIncrement) * sizeIncrement
         else:
             return -np.floor(-amount / sizeIncrement) * sizeIncrement
-
-    # ---------------------------------------------------------------------------------------------
-    # ---------------------------------- PMS -----------------------------------------
-    # ---------------------------------------------------------------------------------------------
 
     async def build(self, order, parameters):
         '''initialize all state and does some filtering (weeds out slow underlyings; should be in strategy)
@@ -997,7 +1374,7 @@ class myFtx(ccxtpro.ftx):
 
         # critical job is done, release lock and print data
         if self.order_manager.fill_flag:
-            await self.data_logger.write_data(self.to_dict())
+            await self.data_logger.write_history()
             self.order_manager.fill_flag = False
 
     # --------------------------------------------------------------------------------------------
@@ -1041,7 +1418,7 @@ class myFtx(ccxtpro.ftx):
                     or self.mid(symbol) == previous_mid:
                 return
             else:
-                self.quoter(symbol, orderbook)
+                self.inventory_manager.quoter(symbol, orderbook)
 
     # ---------------------------------- fills
 
@@ -1134,7 +1511,7 @@ class myFtx(ccxtpro.ftx):
     async def broadcast_analytics(self):
         '''redundant minutely risk check'''#TODO: would be cool if this could interupt other threads and restart it when margin is ok.
         await asyncio.sleep(self.analytics_manager.parameters['compile_frequency'])
-        await self.analytics_manager.record()
+        await self.analytics_manager.to_json()
 
     # ---------------------------------- just to record messages while reconciling
     @intercept_message_during_reconciliation
@@ -1174,90 +1551,13 @@ class myFtx(ccxtpro.ftx):
     # ---------------------------------- order placement -----------------------------------------
     # --------------------------------------------------------------------------------------------
 
-    # ---------------------------------- high level
-
-    def quoter(self, symbol, orderbook):
-        '''
-            leverages orderbook and risk to issue an order
-            Critical loop, needs to go quick
-            all executes in one go, no async
-        '''
-        mid = self.tickers[symbol]['mid']
-        params = self.inventory_manager[symbol]
-
-        # size to do:
-        original_size = params['target'] - self.position_manager[symbol]['delta'] / mid
-
-        #risk
-        globalDelta = self.position_manager.delta_bounds(symbol)['global_delta']
-        delta_limit = self.position_manager.limit.delta_limit * self.position_manager.pv
-        marginal_risk = np.abs(globalDelta / mid + original_size) - np.abs(globalDelta / mid)
-
-        # if increases risk but not out of limit, trim and go passive.
-        if np.sign(original_size) == np.sign(globalDelta):
-            # if (global_delta_plus / mid + original_size) > delta_limit:
-            #     trimmed_size = delta_limit - global_delta_plus / mid
-            #     self.logger.debug(
-            #         f'{original_size * mid} {symbol} would increase risk over {self.limit.delta_limit * 100}% of {self.risk_state.pv} --> trimming to {trimmed_size * mid}')
-            # elif (global_delta_minus / mid + original_size) < -delta_limit:
-            #     trimmed_size = -delta_limit - global_delta_minus / mid
-            #     self.logger.debug(
-            #         f'{original_size * mid} {symbol} would increase risk over {self.limit.delta_limit * 100}% of {self.risk_state.pv} --> trimming to {trimmed_size * mid}')
-            # else:
-            #     trimmed_size = original_size
-            # if np.sign(trimmed_size) != np.sign(original_size):
-            #     self.logger.debug(f'skipping (we don t flip orders)')
-            #     return
-            if abs(globalDelta / mid + original_size) > delta_limit:
-                if (globalDelta / mid + original_size) > delta_limit:
-                    trimmed_size = delta_limit - globalDelta / mid
-                elif (globalDelta / mid + original_size) < -delta_limit:
-                    trimmed_size = -delta_limit - globalDelta / mid
-                else:
-                    raise Exception('what??')
-                if np.sign(trimmed_size) != np.sign(original_size):
-                    self.logger.debug(f'{original_size*mid} {symbol} would increase risk over {self.position_manager.limit.delta_limit * 100}% of {self.position_manager.pv} --> skipping (we don t flip orders)')
-                    return
-                else:
-                    self.logger.debug(f'{original_size*mid} {symbol} would increase risk over {self.position_manager.limit.delta_limit * 100}% of {self.position_manager.pv} --> trimming to {trimmed_size * mid}')
-            else:
-                trimmed_size = original_size
-
-            size = np.clip(trimmed_size, a_min=-params['slice_size'],a_max=params['slice_size'])
-
-            current_basket_price = sum(self.mid(_symbol) * self.inventory_manager[_symbol]['update_time_delta']
-                                       for _symbol in self.inventory_manager.keys())
-            # mkt order if target reached.
-            # TODO: pray for the other coin to hit the same condition...
-            if current_basket_price + 2 * abs(params['update_time_delta']) * params['takerVsMakerFee'] * mid < self.inventory_manager[symbol]['rush_in_level']:
-                # TODO: could replace current_basket_price by two way sweep after if
-                self.peg_or_stopout(symbol, size, orderbook,
-                                    edit_trigger_depth=params['edit_trigger_depth'],
-                                    edit_price_depth='rush_in', stop_depth=None)
-                return
-            elif current_basket_price - 2 * abs(params['update_time_delta']) * params['takerVsMakerFee'] * mid > self.inventory_manager[symbol]['rush_out_level']:
-                # go all in as this decreases margin
-                size = - self.position_manager[symbol]['delta'] / mid
-                if abs(size) > 0:
-                    self.peg_or_stopout(symbol, size, orderbook,
-                                        edit_trigger_depth=params['edit_trigger_depth'],
-                                        edit_price_depth='rush_out', stop_depth=None)
-                return
-            # limit order if level is acceptable (saves margin compared to faraway order)
-            elif current_basket_price < self.inventory_manager[symbol]['entry_level']:
-                edit_trigger_depth=params['edit_trigger_depth']
-                edit_price_depth = params['edit_price_depth']
-                stop_depth = None
-            # hold off to save margin, if level is bad-ish
-            else:
-                return
-        # if decrease risk, go aggressive without flipping delta
-        else:
-            size = np.sign(original_size) * min(abs(- globalDelta/mid),abs(original_size))
-            edit_trigger_depth = params['aggressive_edit_trigger_depth']
-            edit_price_depth = params['aggressive_edit_price_depth']
-            stop_depth = params['stop_depth']
-        self.peg_or_stopout(symbol,size,orderbook,edit_trigger_depth=edit_trigger_depth,edit_price_depth=edit_price_depth,stop_depth=stop_depth)
+class ExecutionManager():
+    def __init__(self,parameters,mkt_feed,order_manager,position_manager):
+        self.parameters = parameters
+        self.mkt_feed = mkt_feed
+        self.order_manager = order_manager
+        self.position_manager = position_manager
+        self.logger = logging.getLogger('tradeexecutor')
 
     def peg_or_stopout(self,symbol,size,orderbook,edit_trigger_depth,edit_price_depth,stop_depth=None):
         '''places an order after checking OMS + margin
@@ -1266,25 +1566,25 @@ class myFtx(ccxtpro.ftx):
         size in coin, already filtered
         skips if any pending_new, cancels duplicates
         '''
-        size = self.round_to_increment(self.inventory_manager[symbol]['sizeIncrement'], size)
+        size = self.mkt_feed.round_to_increment(self.parameters[symbol]['sizeIncrement'], size)
         if abs(size) == 0:
             return
 
         #TODO: https://help.ftx.com/hc/en-us/articles/360052595091-Ratelimits-on-FTX
-        opposite_side = self.tickers[symbol]['ask' if size>0 else 'bid']
-        mid = self.tickers[symbol]['mid']
+        opposite_side = self.mkt_feed.tickers[symbol]['ask' if size>0 else 'bid']
+        mid = self.mkt_feed.tickers[symbol]['mid']
 
-        priceIncrement = self.inventory_manager[symbol]['priceIncrement']
-        sizeIncrement = self.inventory_manager[symbol]['sizeIncrement']
+        priceIncrement = self.parameters[symbol]['priceIncrement']
+        sizeIncrement = self.parameters[symbol]['sizeIncrement']
 
         if stop_depth is not None:
-            stop_trigger = float(self.price_to_precision(symbol,stop_depth))
+            stop_trigger = float(self.mkt_feed.price_to_precision(symbol,stop_depth))
 
         #TODO: use orderbook to place before cliff; volume matters too.
         isTaker = edit_price_depth in ['rush_in', 'rush_out', 'taker_hedge']
         if not isTaker:
-            edit_price = float(self.price_to_precision(symbol, opposite_side - (1 if size > 0 else -1) * edit_price_depth))
-            edit_trigger = float(self.price_to_precision(symbol, edit_trigger_depth))
+            edit_price = float(self.mkt_feed.price_to_precision(symbol, opposite_side - (1 if size > 0 else -1) * edit_price_depth))
+            edit_trigger = float(self.mkt_feed.price_to_precision(symbol, edit_trigger_depth))
         else:
             edit_price = sweep_price_atomic(orderbook, size * mid)
             edit_trigger = None
@@ -1308,9 +1608,7 @@ class myFtx(ccxtpro.ftx):
         #         self.logger.info('orders {} still in flight. holding off {}'.format(
         #             [order['clientOrderId'] for order in self.pending_new_histories(coin)[-1]],symbol))
         #     return
-        pending_new_histories = self.order_manager.filter_order_histories([_symbol
-                                                                           for _symbol in self.inventory_manager
-                                                                           if _symbol in self.markets],
+        pending_new_histories = self.order_manager.filter_order_histories(self.parameters['symbols'],
                                                                           ['pending_new'])
         if pending_new_histories != []:
             self.logger.info('orders {} should not be in flight'.format([order[-1]['clientOrderId'] for order in pending_new_histories]))
@@ -1320,7 +1618,7 @@ class myFtx(ccxtpro.ftx):
         order_side = 'buy' if size>0 else 'sell'
         if len(event_histories)==0:
             trimmed_size = self.position_manager.trim_to_margin(mid, size, symbol)
-            asyncio.create_task(self.create_order(symbol, 'limit', order_side, abs(trimmed_size), price=edit_price,
+            asyncio.create_task(self.mkt_feed.create_order(symbol, 'limit', order_side, abs(trimmed_size), price=edit_price,
                                                   params={'postOnly': not isTaker,
                                                           'ioc': isTaker,
                                                           'comment':edit_price_depth if isTaker else 'new'}))
@@ -1337,7 +1635,7 @@ class myFtx(ccxtpro.ftx):
                     or isTaker:
                 size = self.order_manager.latest_value(order['clientOrderId'], 'remaining')
                 price = sweep_price_atomic(orderbook, size * mid)
-                asyncio.create_task(self.edit_order(symbol, 'limit', order_side, abs(size),
+                asyncio.create_task(self.mkt_feed.edit_order(symbol, 'limit', order_side, abs(size),
                                                      price = price,
                                                      params={'postOnly':False,
                                                              'ioc':True,
@@ -1345,7 +1643,7 @@ class myFtx(ccxtpro.ftx):
                                                      previous_clientOrderId = order['clientOrderId']))
             # peg limit order
             elif order_distance > edit_trigger and repeg_gap >= priceIncrement:
-                asyncio.create_task(self.edit_order(symbol, 'limit', order_side, abs(size),
+                asyncio.create_task(self.mkt_feed.edit_order(symbol, 'limit', order_side, abs(size),
                                                     price=edit_price,
                                                     params={'postOnly': True,
                                                             'ioc':False,
@@ -1361,7 +1659,7 @@ class myFtx(ccxtpro.ftx):
     async def create_order(self, symbol, type, side, amount, price=None, params={}):
         '''if acknowledged, place order. otherwise just reconcile
         orders_pending_new is blocking'''
-        amount = self.round_to_increment(self.inventory_manager[symbol]['sizeIncrement'], amount)
+        amount = self.mkt_feed.round_to_increment(self.parameters[symbol]['sizeIncrement'], amount)
         if amount == 0:
             return
         # set pending_new -> send rest -> if success, leave pending_new and give id. Pls note it may have been caught by handle_order by then.
@@ -1375,10 +1673,10 @@ class myFtx(ccxtpro.ftx):
                                                        self)
         try:
             # REST request
-            order = await super().create_order(symbol, type, side, amount, price, params | {'clientOrderId':clientOrderId})
+            order = await self.mkt_feed.create_order(symbol, type, side, amount, price, params | {'clientOrderId':clientOrderId})
         except Exception as e:
             order = {'clientOrderId':clientOrderId,
-                     'timestamp':datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000,
+                     'timestamp':myUtcNow(),
                      'state':'rejected',
                      'comment':'create/'+str(e)}
             self.order_manager.cancel_or_reject(order)
@@ -1401,7 +1699,7 @@ class myFtx(ccxtpro.ftx):
                                         for key in ['clientOrderId','symbol','side','amount','remaining','price']})  # may be needed
 
         try:
-            status = await super().cancel_order(None,params={'clientOrderId':clientOrderId})
+            status = await self.mkt_feed.cancel_order(None,params={'clientOrderId':clientOrderId})
             self.order_manager.cancel_sent({'clientOrderId':clientOrderId,
                                         'symbol':symbol,
                                         'status':status,
@@ -1425,25 +1723,25 @@ class myFtx(ccxtpro.ftx):
             return await self.cancel_order(clientOrderId, trigger+'+')
 
     async def close_dust(self):
-        data = await asyncio.gather(*[self.fetch_balance(),self.fetch_markets()])
+        data = await asyncio.gather(*[self.mkt_feed.fetch_balance(),self.mkt_feed.fetch_markets()])
         balances = data[0]
         markets = data[1]
         coros = []
         for coin, balance in balances.items():
-            if coin in self.currencies.keys() \
+            if coin in self.mkt_feed.currencies.keys() \
                     and coin != 'USD' \
                     and balance['total'] != 0.0 \
-                    and abs(balance['total']) < float(self.markets[coin+'/USD']['info']['sizeIncrement']):
+                    and abs(balance['total']) < float(self.mkt_feed.markets[coin+'/USD']['info']['sizeIncrement']):
                 size = balance['total']
-                mid = float(self.markets[coin+'/USD']['info']['last'])
+                mid = float(self.mkt_feed.markets[coin+'/USD']['info']['last'])
                 if size > 0:
                     request = {'fromCoin':coin,'toCoin':'USD','size':abs(size)}
                 else:
                     request = {'fromCoin':'USD','toCoin':coin,'size':abs(size)*self.mid(f'{coin}/USD')}
-                coros += [self.privatePostOtcQuotes(request)]
+                coros += [self.mkt_feed.privatePostOtcQuotes(request)]
 
         quoteId_list = await asyncio.gather(*coros)
-        await asyncio.gather(*[self.privatePostOtcQuotesQuoteIdAccept({'quoteId': int(quoteId['result']['quoteId'])})
+        await asyncio.gather(*[self.mkt_feed.privatePostOtcQuotesQuoteIdAccept({'quoteId': int(quoteId['result']['quoteId'])})
         for quoteId in quoteId_list
         if quoteId['success']])
 

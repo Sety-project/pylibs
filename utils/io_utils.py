@@ -11,7 +11,7 @@ import sys,os,shutil,platform
 import json
 import pandas as pd
 import numpy as np
-from datetime import timedelta, datetime
+from datetime import timedelta, datetime, timezone
 import pyarrow, pyarrow.parquet,s3fs
 
 # this is for jupyter
@@ -150,3 +150,6 @@ def parse_time_param(param):
         horizon = int(param.split('w')[0])
         horizon = timedelta(weeks=horizon)
     return horizon
+
+def myUtcNow(self):
+    return datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000

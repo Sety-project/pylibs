@@ -24,6 +24,8 @@ class ExecutionLogger:
             os.umask(0)
             os.makedirs(self.mktdata_dirname, mode=0o777)
 
+        self.history = []
+
     async def write_data(self, data):
         async with aiofiles.open(self.json_filename, 'w') as file:
             await file.write(json.dumps(data))
