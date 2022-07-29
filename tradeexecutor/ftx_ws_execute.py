@@ -192,11 +192,11 @@ class OrderManager(dict):
                     'IM_discrepancy': risk_data.margin.estimate('IM') - risk_data.margin.actual_IM}
 
         ## mkt details
-        if symbol in self.strategy.marketdata_api.tickers:
-            mkt_data = self.strategy.marketdata_api.tickers[symbol]
+        if symbol in self.strategy.venue_api.tickers:
+            mkt_data = self.strategy.venue_api.tickers[symbol]
             timestamp = mkt_data['timestamp']
         else:
-            mkt_data = self.strategy.marketdata_api.markets[symbol]['info']|{'bidVolume':0,'askVolume':0}#TODO: should have all risk group
+            mkt_data = self.strategy.venue_api.markets[symbol]['info']|{'bidVolume':0,'askVolume':0}#TODO: should have all risk group
             timestamp = self.strategy.parameters['timestamp']
         current |= {'mkt_timestamp': timestamp} \
                    | {key: mkt_data[key] for key in ['bid', 'bidVolume', 'ask', 'askVolume']}
@@ -385,7 +385,7 @@ class OrderManager(dict):
     async def reconcile_fills(self):
         '''fetch fills, to recover missed messages'''
         sincetime = max(self.strategy.parameters['timestamp'], self.latest_fill_reconcile_timestamp - 1000)
-        fetched_fills = sum(await asyncio.gather(*[self.strategy.marketdata_api.fetch_my_trades(since=sincetime,symbol=symbol) for symbol in self.strategy.parameters['symbols']]), [])
+        fetched_fills = sum(await asyncio.gather(*[self.strategy.venue_api.fetch_my_trades(since=sincetime,symbol=symbol) for symbol in self.strategy.parameters['symbols']]), [])
         for fill in fetched_fills:
             fill['comment'] = 'reconciled'
             fill['clientOrderId'] = self.find_clientID_from_fill(fill)
@@ -403,7 +403,7 @@ class OrderManager(dict):
                                           if data[-1]['state'] in OrderManager.openStates}
 
         # add missing orders (we missed orders from the exchange)
-        external_orders = sum(await asyncio.gather(*[self.strategy.marketdata_api.fetch_open_orders(symbol=symbol) for symbol in self.strategy.parameters['symbols']]), [])
+        external_orders = sum(await asyncio.gather(*[self.strategy.venue_api.fetch_open_orders(symbol=symbol) for symbol in self.strategy.parameters['symbols']]), [])
         for order in external_orders:
             if order['clientOrderId'] not in internal_order_internal_status.keys():
                 self.acknowledgment(order | {'comment':'reconciled_missing'})
@@ -413,12 +413,15 @@ class OrderManager(dict):
 
         # remove zombie orders (we beleive they are live but they are not open)
         # should not happen so we put it in the logs
-        internal_order_external_status = await safe_gather([self.strategy.marketdata_api.fetch_order(id=None, params={'clientOrderId':clientOrderId})
+        internal_order_external_status = await safe_gather([self.strategy.venue_api.fetch_order(id=None, params={'clientOrderId':clientOrderId})
                                                    for clientOrderId in internal_order_internal_status.keys()],
-                                                           semaphore=self.strategy.marketdata_api.rest_semaphor,
+                                                           semaphore=self.strategy.rest_semaphor,
                                                            return_exceptions=True)
         for clientOrderId,external_status in zip(internal_order_internal_status.keys(),internal_order_external_status):
             if isinstance(external_status, Exception):
+
+
+
                 self.logger.warning(f'reconcile_orders {clientOrderId} : {external_status}')
                 continue
             if external_status['status'] != 'open':
@@ -590,18 +593,20 @@ class Strategy(dict):
     class ReadyToShutdown(Exception):
         def __init__(self, text):
             super().__init__(text)
-    def __init__(self,parameters,position_manager,order_manager,marketdata_api,signal_engine,order_placement_api):
+    def __init__(self,parameters,position_manager,order_manager,venue_api,signal_engine):
         super().__init__()
-        self.parameters = parameters
+        self.parameters = parameters['strategy']
         self.position_manager = position_manager
         self.order_manager = order_manager
-        self.marketdata_api = marketdata_api
+        self.venue_api = venue_api
         self.signal_engine = signal_engine
-        self.order_placement_api = order_placement_api
+        self.venue_api = venue_api
+
         self.logger = logging.getLogger('tradeexecutor')
         self.data_logger = ExecutionLogger(exchange_name=self.id)
         self.fill_flag = False
 
+        self.rest_semaphor = asyncio.Semaphore(safe_gather_limit)
         self.lock |= {symbol: CustomRLock() for symbol in self.strategy}
         self.lock = {'reconciling':threading.Lock()}
 
@@ -610,49 +615,40 @@ class Strategy(dict):
                | {key: getattr(self, key).to_json()
                   for key in ['strategy', 'order_manager', 'position_manager']}
 
-    def set_target(self, spot, targets,timestamp):
-        for symbol, target in targets.items():
-            if symbol not in self:
-                self[symbol] = {'symbol':symbol, 'target': target, 'spot_price': spot}
-        for symbol, target in targets.items():
-            if self[symbol]['target'] != target:
-                self.logger.info('{} weight changed from {} to {}'.format(
-                    symbol, self[symbol]['target'] * spot, target * spot))
-                self[symbol]['symbol'] = symbol
-                self[symbol]['target'] = target
-                self[symbol]['spot_price'] = spot
-                self[symbol]['timestamp'] = timestamp
-
-        self.logger.history += [dict(self)]
-
     @staticmethod
     async def build(parameters):
         position_manager = await PositionManager.build(parameters['position_manager'])
         order_manager = OrderManager(parameters['order_manager'])
-        market_data_api = await MarketDataAPI.build(parameters['market_data_api'])
+        market_data_api = await VenueAPI.build(parameters['market_data_api'])
         signal_engine = await SignalEngine.build(parameters['signal_engine'])
-        order_placement_api = await OrderManager.build(parameters['order_placement_api'])
+        venue_api = await OrderManager.build(parameters['venue_api'])
 
-        result = ExecutionStrategy({'timestamp':myUtcNow()} | parameters,
+        result = ExecutionStrategy({'timestamp':myUtcNow()} |
+                                   parameters['signal_manager'],
                                    position_manager,
                                    order_manager,
                                    market_data_api,
                                    signal_engine,
-                                   order_placement_api)
+                                   venue_api)
 
         await result.reconcile()
         (spot, targets, timestamp) = await result.order_feed.update_order()
         result.set_target(spot, targets, timestamp)
 
-        trading_fees = await market_data_api.fetch_trading_fees()
-        for symbol in parameters['symbols']:
-            result[symbol] |= {'priceIncrement': float(market_data_api.markets[symbol]['info']['priceIncrement']),
-                               'sizeIncrement': float(
-                                   market_data_api.markets[symbol]['info']['minProvideSize']),
-                               'takerVsMakerFee': trading_fees[symbol]['taker'] - trading_fees[symbol]['maker']
-                               }
-
         return result
+
+    def run(self):
+        self.logger.warning('cancelling orders')
+        await asyncio.gather(*[self.venue_api.cancel_all_orders(symbol) for symbol in self.parameters['symbols']])
+
+        coros = [self.venue_api.monitor_fills(), self.venue_api.monitor_risk()] + \
+                sum([[self.venue_api.monitor_orders(symbol),
+                      self.venue_api.monitor_order_book(symbol),
+                      self.venue_api.monitor_trades(symbol)]
+                     for symbol in self.parameters['symbols']], [])
+
+        await asyncio.gather(*coros)
+
 
     async def build_listener(self, order, parameters):
         '''initialize all state and does some filtering (weeds out slow underlyings; should be in strategy)
@@ -678,32 +674,49 @@ class Strategy(dict):
             await self.order_manager.reconcile(self)
             await self.position_manager.reconcile(self)
             await self.strategy.reconcile(self)
-
-            # replay missed _messages.
-            while self.message_missed:
-                message = self.message_missed.popleft()
-                data = self.safe_value(message, 'data')
-                channel = message['channel']
-                self.logger.warning(f'replaying {channel} after recon')
-                if channel == 'fills':
-                    fill = self.parse_trade(data)
-                    self.process_fill(fill | {'orderTrigger':'replayed'})
-                elif channel == 'orders':
-                    order = self.parse_order(data)
-                    if order['symbol'] in self.strategy:
-                        self.process_order(order | {'orderTrigger':'replayed'})
-                # we don't interecpt the mktdata anyway...
-                elif channel == 'orderbook':
-                    pass
-                    self.populate_ticker(message['symbol'], message)
-                elif channel == 'trades':
-                    pass
-                    self.signal_engine.trades_cache[message['symbol']].append(message)
+            self.replay_missed_messages()
 
         # critical job is done, release lock and print data
         if self.order_manager.fill_flag:
             await self.data_logger.write_history()
             self.order_manager.fill_flag = False
+
+    def replay_missed_messages(self):
+        # replay missed _messages.
+        while self.message_missed:
+            message = self.message_missed.popleft()
+            data = self.safe_value(message, 'data')
+            channel = message['channel']
+            self.logger.warning(f'replaying {channel} after recon')
+            if channel == 'fills':
+                fill = self.parse_trade(data)
+                self.process_fill(fill | {'orderTrigger': 'replayed'})
+            elif channel == 'orders':
+                order = self.parse_order(data)
+                if order['symbol'] in self.strategy:
+                    self.process_order(order | {'orderTrigger': 'replayed'})
+            # we don't interecpt the mktdata anyway...
+            elif channel == 'orderbook':
+                pass
+                #self.populate_ticker(message['symbol'], message)
+            elif channel == 'trades':
+                pass
+                #self.signal_engine.trades_cache[message['symbol']].append(message)
+
+    def set_target(self, spot, targets,timestamp):
+        for symbol, target in targets.items():
+            if symbol not in self:
+                self[symbol] = {'symbol':symbol, 'target': target, 'spot_price': spot}
+        for symbol, target in targets.items():
+            if self[symbol]['target'] != target:
+                self.logger.info('{} weight changed from {} to {}'.format(
+                    symbol, self[symbol]['target'] * spot, target * spot))
+                self[symbol]['symbol'] = symbol
+                self[symbol]['target'] = target
+                self[symbol]['spot_price'] = spot
+                self[symbol]['timestamp'] = timestamp
+
+        self.data_logger.history += [dict(self)]
 
     def process_order(self,order):
         assert order['clientOrderId'],"assert order['clientOrderId']"
@@ -796,8 +809,8 @@ class ExecutionStrategy(Strategy):
 
             # aggressive version understand tolerance as price increment
             if isinstance(exchange.parameters['aggressive_edit_price_tolerance'],float):
-                data['aggressive_edit_price_depth'] = max(1,exchange.parameters['aggressive_edit_price_tolerance']) * data['priceIncrement']
-                data['aggressive_edit_trigger_depth'] = max(1,exchange.parameters['aggressive_edit_price_tolerance']) * data['priceIncrement']
+                data['aggressive_edit_price_depth'] = max(1,exchange.parameters['aggressive_edit_price_tolerance']) * self.venue_api.static[symbol]['priceIncrement']
+                data['aggressive_edit_trigger_depth'] = max(1,exchange.parameters['aggressive_edit_price_tolerance']) * self.venue_api.static[symbol]['priceIncrement']
             else:
                 data['aggressive_edit_price_depth'] = exchange.parameters['aggressive_edit_price_tolerance']
                 data['aggressive_edit_trigger_depth'] = None # takers don't peg
@@ -816,7 +829,7 @@ class ExecutionStrategy(Strategy):
             Critical loop, needs to go quick
             all executes in one go, no async
         '''
-        mid = self.marketdata_api.tickers[symbol]['mid']
+        mid = self.venue_api.tickers[symbol]['mid']
         params = self[symbol]
 
         # size to do:
@@ -861,14 +874,14 @@ class ExecutionStrategy(Strategy):
 
             size = np.clip(trimmed_size, a_min=-params['slice_size'], a_max=params['slice_size'])
 
-            current_basket_price = sum(self.marketdata_api.mid(_symbol) * self[_symbol]['update_time_delta']
+            current_basket_price = sum(self.venue_api.mid(_symbol) * self[_symbol]['update_time_delta']
                                        for _symbol in self.keys())
             # mkt order if target reached.
             # TODO: pray for the other coin to hit the same condition...
             if current_basket_price + 2 * abs(params['update_time_delta']) * params['takerVsMakerFee'] * mid < \
                     self[symbol]['rush_in_level']:
                 # TODO: could replace current_basket_price by two way sweep after if
-                self.order_placement_api.peg_or_stopout(symbol, size, self.marketdata_api.orderbook,
+                self.venue_api.peg_or_stopout(symbol, size, self.venue_api.orderbook,
                                     edit_trigger_depth=params['edit_trigger_depth'],
                                     edit_price_depth='rush_in', stop_depth=None)
                 return
@@ -877,7 +890,7 @@ class ExecutionStrategy(Strategy):
                 # go all in as this decreases margin
                 size = - self.position_manager[symbol]['delta'] / mid
                 if abs(size) > 0:
-                    self.order_placement_api.peg_or_stopout(symbol, size, self.marketdata_api.orderbook,
+                    self.venue_api.peg_or_stopout(symbol, size, self.venue_api.orderbook,
                                         edit_trigger_depth=params['edit_trigger_depth'],
                                         edit_price_depth='rush_out', stop_depth=None)
                 return
@@ -895,7 +908,7 @@ class ExecutionStrategy(Strategy):
             edit_trigger_depth = params['aggressive_edit_trigger_depth']
             edit_price_depth = params['aggressive_edit_price_depth']
             stop_depth = params['stop_depth']
-        self.order_placement_api.peg_or_stopout(symbol, size, self.marketdata_api.orderbook, edit_trigger_depth=edit_trigger_depth,
+        self.venue_api.peg_or_stopout(symbol, size, self.venue_api.orderbook, edit_trigger_depth=edit_trigger_depth,
                             edit_price_depth=edit_price_depth, stop_depth=stop_depth)
 
 class AlgoStrategy(Strategy):
@@ -912,7 +925,7 @@ class AlgoStrategy(Strategy):
             self.set_target(spot, targets, myUtcNow())
         else:
             targets = {key: 0 for key in self}
-            spot = self.marketdata_api.mid(next(key for key in self if self.marketdata_api.market(key)['type'] == 'spot'))
+            spot = self.venue_api.mid(next(key for key in self if self.venue_api.market(key)['type'] == 'spot'))
             self.set_target(spot, targets, myUtcNow())
 
         nowtime = myUtcNow()
@@ -923,8 +936,8 @@ class AlgoStrategy(Strategy):
             # rush_in_level = what level on basket is so good that you go in at market on both legs
             # rush_out_level = what level on basket is so bad that you go out at market on both legs
             is_long_carry = data['target'] * (-1 if ':USD' in symbol else 1) > 0
-            data['rush_in_level'] = quantiles[1 if is_long_carry else 0] * self.marketdata_api.mid(symbol) / 365.25
-            data['rush_out_level'] = quantiles[0 if is_long_carry else 1] * self.marketdata_api.mid(symbol) / 365.25
+            data['rush_in_level'] = quantiles[1 if is_long_carry else 0] * self.venue_api.mid(symbol) / 365.25
+            data['rush_out_level'] = quantiles[0 if is_long_carry else 1] * self.venue_api.mid(symbol) / 365.25
 
             stdev = self.signal_engine.vwap[symbol]['vwap'].std().squeeze()
             if not (stdev > 0): stdev = 1e-16
@@ -937,9 +950,9 @@ class AlgoStrategy(Strategy):
             # aggressive version understand tolerance as price increment
             if isinstance(self.parameters['aggressive_edit_price_tolerance'], float):
                 data['aggressive_edit_price_depth'] = max(1, self.parameters[
-                    'aggressive_edit_price_tolerance']) * data['priceIncrement']
+                    'aggressive_edit_price_tolerance']) * self.venue_api.static[symbol]['priceIncrement']
                 data['aggressive_edit_trigger_depth'] = max(1, self.parameters[
-                    'aggressive_edit_price_tolerance']) * data['priceIncrement']
+                    'aggressive_edit_price_tolerance']) * self.venue_api.static[symbol]['priceIncrement']
             else:
                 data['aggressive_edit_price_depth'] = self.parameters['aggressive_edit_price_tolerance']
                 data['aggressive_edit_trigger_depth'] = None  # takers don't peg
@@ -953,15 +966,13 @@ class AlgoStrategy(Strategy):
                            self.signal_engine.vwap[symbol]['volume'].mean()
             data['slice_size'] = volume_share
 
-        self.timestamp = nowtime
-
     def quoter(self, symbol):
         '''
             leverages orderbook and risk to issue an order
             Critical loop, needs to go quick
             all executes in one go, no async
         '''
-        mid = self.marketdata_api.tickers[symbol]['mid']
+        mid = self.venue_api.tickers[symbol]['mid']
         params = self[symbol]
 
         # size to do:
@@ -1006,14 +1017,14 @@ class AlgoStrategy(Strategy):
 
             size = np.clip(trimmed_size, a_min=-params['slice_size'], a_max=params['slice_size'])
 
-            current_basket_price = sum(self.marketdata_api.mid(_symbol) * self[_symbol]['update_time_delta']
+            current_basket_price = sum(self.venue_api.mid(_symbol) * self[_symbol]['update_time_delta']
                                        for _symbol in self.keys())
             # mkt order if target reached.
             # TODO: pray for the other coin to hit the same condition...
             if current_basket_price + 2 * abs(params['update_time_delta']) * params['takerVsMakerFee'] * mid < \
                     self[symbol]['rush_in_level']:
                 # TODO: could replace current_basket_price by two way sweep after if
-                self.order_placement_api.peg_or_stopout(symbol, size, self.marketdata_api.orderbook,
+                self.venue_api.peg_or_stopout(symbol, size, self.venue_api.orderbook,
                                                       edit_trigger_depth=params['edit_trigger_depth'],
                                                       edit_price_depth='rush_in', stop_depth=None)
                 return
@@ -1022,7 +1033,7 @@ class AlgoStrategy(Strategy):
                 # go all in as this decreases margin
                 size = - self.position_manager[symbol]['delta'] / mid
                 if abs(size) > 0:
-                    self.order_placement_api.peg_or_stopout(symbol, size, self.marketdata_api.orderbook,
+                    self.venue_api.peg_or_stopout(symbol, size, self.venue_api.orderbook,
                                                           edit_trigger_depth=params['edit_trigger_depth'],
                                                           edit_price_depth='rush_out', stop_depth=None)
                 return
@@ -1040,12 +1051,12 @@ class AlgoStrategy(Strategy):
             edit_trigger_depth = params['aggressive_edit_trigger_depth']
             edit_price_depth = params['aggressive_edit_price_depth']
             stop_depth = params['stop_depth']
-        self.order_placement_api.peg_or_stopout(symbol, size, self.marketdata_api.orderbook,
+        self.venue_api.peg_or_stopout(symbol, size, self.venue_api.orderbook,
                                               edit_trigger_depth=edit_trigger_depth,
                                               edit_price_depth=edit_price_depth, stop_depth=stop_depth)
 
 class SignalEngine():
-    '''SignalEngine computes derived data from marketdata_api and/or externally generated client orders'''
+    '''SignalEngine computes derived data from venue_api and/or externally generated client orders'''
     def __init__(self, strategy, parameters):
         self.parameters = parameters
         self.strategy = strategy
@@ -1130,7 +1141,7 @@ class ExternalSignal(SignalEngine):
         start = nowtime - timedelta(seconds=self.parameters['stdev_window'])
         vwap_history_list = await safe_gather([fetch_trades_history(
             market_data_api.market(symbol)['id'], market_data_api, start, nowtime, frequency=frequency)
-            for symbol in self.parameters['symbols']], semaphore=market_data_api.rest_semaphor)
+            for symbol in self.parameters['symbols']], semaphore=self.strategy.rest_semaphor)
         self.vwap = {symbol: data for symbol, data in
                        zip(self.parameters['symbols'], vwap_history_list)}
 
@@ -1210,34 +1221,20 @@ class SpreadTradeSignal(SignalEngine):
 
         return quantiles
 
-class MarketDataAPI(ccxtpro.ftx):
-    '''MarketDataAPI implements rest calls and websocket loops to observe raw market data / order events
+class VenueAPI(ccxtpro.ftx):
+    '''VenueAPI implements rest calls and websocket loops to observe raw market data / order events and place orders
     send events for Strategy to action
     send events to SignalEngine for further processing'''
-    def __init__(self, strategy, parameters):
-        super().__init__(config=parameters)
-        self.parameters = {'timestamp':myUtcNow()}|parameters
-        self.strategy = strategy
-
-        self.rest_semaphor = asyncio.Semaphore(safe_gather_limit)
-
-        self.message_missed = collections.deque(maxlen=parameters['cache_size'])
-        self.options['tradesLimit'] = parameters['signal_engine']['cache_size']
-
-        self.strategy = None
-        self.order_manager = None
-        self.position_manager = None
-        self.signal_engine = None
-
-        self.logger = logging.getLogger('tradeexecutor')
+    class Static(dict):
+        def __init__(self):
+            super().__init__()
 
     @staticmethod
-    async def build(parameters):
-        '''TODO unused for now'''
+    async def build(strategy,parameters):
         if parameters['exchange_name'] not in ['ftx']:
             raise Exception(f'exchange not implemented')
         else:
-            exchange = MarketDataAPI(parameters, config={  ## David personnal
+            exchange = ccxtpro.ftx(parameters, config={  ## David personnal
                 'enableRateLimit': True,
                 'apiKey': 'ZUWyqADqpXYFBjzzCQeUTSsxBZaMHeufPFgWYgQU',
                 'secret': api_params['ftx']['key'],
@@ -1247,7 +1244,27 @@ class MarketDataAPI(ccxtpro.ftx):
             exchange.authenticate()
             await exchange.load_markets()
 
+        exchange.strategy = strategy
+        trading_fees = await exchange.fetch_trading_fees()
+        exchange.static = Static()
+        for symbol in parameters['symbols']:
+            exchange.static[symbol] = \
+                {
+                    'priceIncrement': float(exchange.markets[symbol]['info']['priceIncrement']),
+                    'sizeIncrement': float(exchange.markets[symbol]['info']['minProvideSize']),
+                    'takerVsMakerFee': trading_fees[symbol]['taker'] - trading_fees[symbol]['maker']
+                }
+
         return exchange
+
+    def __init__(self, strategy, static, parameters):
+        super().__init__(config=parameters)
+        self.parameters = {'timestamp':myUtcNow()}|parameters
+        self.strategy = strategy
+        self.static = static
+
+        self.message_missed = collections.deque(maxlen=parameters['cache_size'])
+        self.options['tradesLimit'] = parameters['cache_size'] # TODO: shoud be in signalengine with a different name. inherited from ccxt....
 
     # --------------------------------------------------------------------------------------------
     # ---------------------------------- various helpers -----------------------------------------
@@ -1271,8 +1288,8 @@ class MarketDataAPI(ccxtpro.ftx):
         populates event_records, maintains pending_new
         no lock is done, so we keep collecting mktdata'''
         orderbook = await self.watch_order_book(symbol)
-        if not self.lock['reconciling'].locked() and self.order_manager is not None:
-            self.process_order_book(symbol, orderbook)
+        if not self.strategy.lock['reconciling'].locked():
+            self.strategy.process_order_book(symbol, orderbook)
 
     def populate_ticker(self,symbol,orderbook):
         timestamp = orderbook['timestamp'] * 1000
@@ -1286,16 +1303,16 @@ class MarketDataAPI(ccxtpro.ftx):
                                 'askVolume': orderbook['asks'][0][1]}
 
     def process_order_book(self, symbol, orderbook):
-        with self.lock[symbol]:
+        with self.strategy.lock[symbol]:
             previous_mid = self.mid(symbol)  # based on ticker, in general
             self.populate_ticker(symbol, orderbook)
 
             # don't waste time on deep updates or nothing to do
             # size to do:
             mid = self.mid(symbol)
-            original_size = self.strategy[symbol]['target'] - self.position_manager[symbol]['delta'] / mid
-            if abs(original_size) < self.parameters['significance_threshold'] * self.position_manager.pv / mid \
-                    or abs(original_size) < self.strategy[symbol]['sizeIncrement'] \
+            original_size = self.strategy[symbol]['target'] - self.strategy.position_manager[symbol]['delta'] / mid
+            if abs(original_size) < self.strategy.parameters['significance_threshold'] * self.strategy.position_manager.pv / mid \
+                    or abs(original_size) < self.static[symbol]['sizeIncrement'] \
                     or self.mid(symbol) == previous_mid:
                 return
             else:
@@ -1308,9 +1325,9 @@ class MarketDataAPI(ccxtpro.ftx):
         '''maintains risk_state, event_records, logger.info
             #     await self.reconcile_state() is safer but slower. we have monitor_risk to reconcile'''
         fills = await self.watch_my_trades()
-        if not self.lock['reconciling'].locked():
+        if not self.strategy.lock['reconciling'].locked():
             for fill in fills:
-                self.order_manager.process_fill(fill)
+                self.strategy.process_fill(fill)
 
     # ---------------------------------- orders
 
@@ -1318,18 +1335,18 @@ class MarketDataAPI(ccxtpro.ftx):
     async def monitor_orders(self,symbol):
         '''maintains orders, pending_new, event_records'''
         orders = await self.watch_orders(symbol=symbol)
-        if not self.lock['reconciling'].locked():
+        if not self.strategy.lock['reconciling'].locked():
             for order in orders:
-                self.process_order(order)
+                self.strategy.process_order(order)
 
     # ---------------------------------- misc
 
     @loop
     async def monitor_risk(self):
         '''redundant minutely risk check'''#TODO: would be cool if this could interupt other threads and restart it when margin is ok.
-        await asyncio.sleep(self.position_manager.limit.check_frequency)
-        await self.reconcile()
-        self.position_manager.check_limit()
+        await asyncio.sleep(self.strategy.position_manager.limit.check_frequency)
+        await self.strategy.position_manager.reconcile()
+        self.strategy.position_manager.check_limit()
 
     async def watch_ticker(self, symbol, params={}):
         '''watch_order_book is faster than watch_tickers so we DON'T LISTEN TO TICKERS. Dirty...'''
@@ -1340,7 +1357,7 @@ class MarketDataAPI(ccxtpro.ftx):
         '''maintains risk_state, event_records, logger.info
             #     await self.reconcile_state() is safer but slower. we have monitor_risk to reconcile'''
         trades = await self.watch_trades(symbol=symbol)
-        self.signal_engine.process_trades(trades)
+        self.strategy.signal_engine.process_trades(trades)
 
     # ---------------------------------- just implemented so we hold messages while reconciling
     @intercept_message_during_reconciliation
@@ -1364,14 +1381,6 @@ class MarketDataAPI(ccxtpro.ftx):
         super().handle_order_book_update(client, message)
         self.signal_engine.process_order_book_update(message)
 
-class OrderPlacementAPI(ccxtpro.ftx):
-    '''enriches native API with complex order types and interactions with managers'''
-    def __init__(self,parameters,order_manager,position_manager):
-        self.parameters = parameters
-        self.order_manager = order_manager
-        self.position_manager = position_manager
-        self.logger = logging.getLogger('tradeexecutor')
-
     def round_to_increment(self, sizeIncrement, amount):
         if amount >= 0:
             return np.floor(amount/sizeIncrement) * sizeIncrement
@@ -1379,7 +1388,7 @@ class OrderPlacementAPI(ccxtpro.ftx):
             return -np.floor(-amount / sizeIncrement) * sizeIncrement
 
     def peg_or_stopout(self,symbol,size,orderbook,edit_trigger_depth,edit_price_depth,stop_depth=None):
-        size = self.round_to_increment(self.parameters[symbol]['sizeIncrement'], size)
+        size = self.round_to_increment(self.static[symbol]['sizeIncrement'], size)
         if abs(size) == 0:
             return
 
@@ -1387,8 +1396,8 @@ class OrderPlacementAPI(ccxtpro.ftx):
         opposite_side = self.tickers[symbol]['ask' if size>0 else 'bid']
         mid = self.tickers[symbol]['mid']
 
-        priceIncrement = self.parameters[symbol]['priceIncrement']
-        sizeIncrement = self.parameters[symbol]['sizeIncrement']
+        priceIncrement = self.static[symbol]['priceIncrement']
+        sizeIncrement = self.static[symbol]['sizeIncrement']
 
         if stop_depth is not None:
             stop_trigger = float(self.price_to_precision(symbol,stop_depth))
@@ -1401,16 +1410,16 @@ class OrderPlacementAPI(ccxtpro.ftx):
         else:
             edit_price = sweep_price_atomic(orderbook, size * mid)
             edit_trigger = None
-            self.logger.warning(f'{edit_price_depth} {size} {symbol}')
+            self.strategy.logger.warning(f'{edit_price_depth} {size} {symbol}')
 
         # remove open order dupes is any (shouldn't happen)
-        event_histories = self.order_manager.filter_order_histories([symbol], OrderManager.openStates)
+        event_histories = self.strategy.order_manager.filter_order_histories([symbol], OrderManager.openStates)
         if len(event_histories) > 1:
             first_pending_new = np.argmin(np.array([data[0]['timestamp'] for data in event_histories]))
-            for i,event_history in enumerate(self.order_manager.filter_order_histories([symbol], OrderManager.cancelableStates)):
+            for i,event_history in enumerate(self.strategy.order_manager.filter_order_histories([symbol], OrderManager.cancelableStates)):
                 if i != first_pending_new:
                     asyncio.create_task(self.cancel_order(event_history[-1]['clientOrderId'],'duplicates'))
-                    self.logger.info('canceled duplicate {} order {}'.format(symbol,event_history[-1]['clientOrderId']))
+                    self.strategy.logger.info('canceled duplicate {} order {}'.format(symbol,event_history[-1]['clientOrderId']))
 
         # skip if there is inflight on the spread
         # if self.pending_new_histories(coin) != []:#TODO: rather incorporate orders_pending_new in risk, rather than block
@@ -1421,7 +1430,7 @@ class OrderPlacementAPI(ccxtpro.ftx):
         #         self.logger.info('orders {} still in flight. holding off {}'.format(
         #             [order['clientOrderId'] for order in self.pending_new_histories(coin)[-1]],symbol))
         #     return
-        pending_new_histories = self.order_manager.filter_order_histories(self.parameters['symbols'],
+        pending_new_histories = self.strategy.order_manager.filter_order_histories(self.strategy.parameters['symbols'],
                                                                           ['pending_new'])
         if pending_new_histories != []:
             self.logger.info('orders {} should not be in flight'.format([order[-1]['clientOrderId'] for order in pending_new_histories]))
@@ -1437,7 +1446,7 @@ class OrderPlacementAPI(ccxtpro.ftx):
                                                           'comment':edit_price_depth if isTaker else 'new'}))
         # if only one and it's editable, stopout or peg or wait
         elif len(event_histories)==1 \
-                and (self.order_manager.latest_value(event_histories[0][-1]['clientOrderId'], 'remaining') >= sizeIncrement) \
+                and (self.strategy.order_manager.latest_value(event_histories[0][-1]['clientOrderId'], 'remaining') >= sizeIncrement) \
                 and event_histories[0][-1]['state'] in OrderManager.acknowledgedStates:
             order = event_histories[0][-1]
             order_distance = (1 if order['side'] == 'buy' else -1) * (opposite_side - order['price'])
@@ -1446,7 +1455,7 @@ class OrderPlacementAPI(ccxtpro.ftx):
             # panic stop. we could rather place a trailing stop: more robust to latency, but less generic.
             if (stop_depth and order_distance > stop_trigger) \
                     or isTaker:
-                size = self.order_manager.latest_value(order['clientOrderId'], 'remaining')
+                size = self.strategy.order_manager.latest_value(order['clientOrderId'], 'remaining')
                 price = sweep_price_atomic(orderbook, size * mid)
                 asyncio.create_task(self.edit_order(symbol, 'limit', order_side, abs(size),
                                                      price = price,
@@ -1472,18 +1481,17 @@ class OrderPlacementAPI(ccxtpro.ftx):
     async def create_order(self, symbol, type, side, amount, price=None, params={}):
         '''if acknowledged, place order. otherwise just reconcile
         orders_pending_new is blocking'''
-        amount = self.round_to_increment(self.parameters[symbol]['sizeIncrement'], amount)
+        amount = self.round_to_increment(self.static[symbol]['sizeIncrement'], amount)
         if amount == 0:
             return
         # set pending_new -> send rest -> if success, leave pending_new and give id. Pls note it may have been caught by handle_order by then.
-        clientOrderId = self.order_manager.pending_new({'symbol': symbol,
+        clientOrderId = self.strategy.order_manager.pending_new({'symbol': symbol,
                                                     'type': type,
                                                     'side': side,
                                                     'amount': amount,
                                                     'remaining': amount,
                                                     'price': price,
-                                                    'comment': params['comment']},
-                                                       self)
+                                                    'comment': params['comment']})
         try:
             # REST request
             order = await self.create_order(symbol, type, side, amount, price, params | {'clientOrderId':clientOrderId})
@@ -1492,48 +1500,48 @@ class OrderPlacementAPI(ccxtpro.ftx):
                      'timestamp':myUtcNow(),
                      'state':'rejected',
                      'comment':'create/'+str(e)}
-            self.order_manager.cancel_or_reject(order)
+            self.strategy.order_manager.cancel_or_reject(order)
             if isinstance(e,ccxt.InsufficientFunds):
-                self.logger.info(f'{clientOrderId} too big: {amount*self.mid(symbol)}')
+                self.strategy.logger.info(f'{clientOrderId} too big: {amount*self.mid(symbol)}')
             elif isinstance(e,ccxt.RateLimitExceeded):
                 throttle = 200.0
-                self.logger.info(f'{str(e)}: waiting {throttle} ms)')
+                self.strategy.logger.info(f'{str(e)}: waiting {throttle} ms)')
                 await asyncio.sleep(throttle / 1000)
             else:
                 raise e
         else:
-            self.order_manager.sent(order)
+            self.strategy.order_manager.sent(order)
 
     async def cancel_order(self, clientOrderId, trigger):
         '''set in flight, send cancel, set as pending cancel, set as canceled or insist'''
         symbol = clientOrderId.split('_')[1]
-        self.order_manager.pending_cancel({'comment':trigger}
-                                          | {key: [order[key] for order in self.order_manager[clientOrderId] if key in order][-1]
+        self.strategy.order_manager.pending_cancel({'comment':trigger}
+                                          | {key: [order[key] for order in self.strategy.order_manager[clientOrderId] if key in order][-1]
                                         for key in ['clientOrderId','symbol','side','amount','remaining','price']})  # may be needed
 
         try:
             status = await self.cancel_order(None,params={'clientOrderId':clientOrderId})
-            self.order_manager.cancel_sent({'clientOrderId':clientOrderId,
+            self.strategy.order_manager.cancel_sent({'clientOrderId':clientOrderId,
                                         'symbol':symbol,
                                         'status':status,
                                         'comment':trigger})
             return True
         except ccxt.CancelPending as e:
-            self.order_manager.cancel_sent({'clientOrderId': clientOrderId,
+            self.strategy.order_manager.cancel_sent({'clientOrderId': clientOrderId,
                                         'symbol': symbol,
                                         'status': str(e),
                                         'comment': trigger})
             return True
         except ccxt.InvalidOrder as e: # could be in flight, or unknown
-            self.order_manager.cancel_or_reject({'clientOrderId':clientOrderId,
+            self.strategy.order_manager.cancel_or_reject({'clientOrderId':clientOrderId,
                                              'status':str(e),
                                              'state':'canceled',
                                              'comment':trigger})
             return False
         except Exception as e:
-            self.logger.info(f'{clientOrderId} failed to cancel: {str(e)}')
+            self.strategy.logger.info(f'{clientOrderId} failed to cancel: {str(e)}')
             await asyncio.sleep(.1)
-            return await self.cancel_order(clientOrderId, trigger+'+')
+            return await self.strategy.order_manager.cancel_order(clientOrderId, trigger+'+')
 
     async def close_dust(self):
         data = await asyncio.gather(*[self.fetch_balance(),self.fetch_markets()])
@@ -1544,7 +1552,7 @@ class OrderPlacementAPI(ccxtpro.ftx):
             if coin in self.currencies.keys() \
                     and coin != 'USD' \
                     and balance['total'] != 0.0 \
-                    and abs(balance['total']) < float(self.markets[coin+'/USD']['info']['sizeIncrement']):
+                    and abs(balance['total']) < self.static[coin+'/USD']['sizeIncrement']:
                 size = balance['total']
                 mid = float(self.markets[coin+'/USD']['info']['last'])
                 if size > 0:
@@ -1604,7 +1612,7 @@ async def get_exec_request(exchange_obj, order_name, **kwargs):
 
 async def risk_reduction_routine(order_name, **kwargs):
     config = configLoader.get_executor_params(order=order_name, dirname=kwargs['config'])
-    exchange = await MarketDataAPI.build(kwargs['exchange'], config, subaccount=kwargs['subaccount'])
+    exchange = await VenueAPI.build(kwargs['exchange'], config, subaccount=kwargs['subaccount'])
     orders = await get_exec_request(exchange_obj=exchange, order_name=order_name, **kwargs)
     exchange.logger.critical(f'generated {orders}, now them all')
     await exchange.close()
@@ -1612,33 +1620,19 @@ async def risk_reduction_routine(order_name, **kwargs):
 
 async def single_coin_routine(order_name, **kwargs):
     try:
-        config = configLoader.get_executor_params(order=order_name,dirname=kwargs['config'])
+        parameters = configLoader.get_executor_params(order=order_name,dirname=kwargs['config'])
         order = os.path.join(os.sep, configLoader.get_config_folder_path(config_name=kwargs['config']), "pfoptimizer", order_name)
+        parameters["signal_engine"]['filename'] = order
 
-        future_weights = pd.read_csv(order)
-        exchange_name = future_weights['exchange'].unique()[0]
-        subaccount = future_weights['subaccount'].unique()[0]
-
-        exchange = await MarketDataAPI.build(exchange_name, config, subaccount=subaccount)
-        await exchange.build(order, config | {'comment': order})  # i
-        exchange.logger.warning('cancelling orders')
-        await asyncio.gather(*[exchange.cancel_all_orders(symbol) for symbol in strategy.parameters['symbols']])
-
-        coros = [exchange.monitor_fills(), exchange.monitor_risk()] + \
-                sum([[exchange.monitor_orders(symbol),
-                      exchange.monitor_order_book(symbol),
-                      exchange.monitor_trades(symbol)]
-                     for symbol in strategy.parameters['symbols']], [])
-
-        await asyncio.gather(*coros)
+        strategy = await Strategy.build(parameters)
 
     except Exception as e:
         logger = logging.getLogger('tradeexecutor')
         logger.critical(str(e), exc_info=True)
-        await asyncio.gather(*[exchange.cancel_all_orders(symbol) for symbol in strategy.parameters['symbols']])
-        logger.warning(f'cancelled {exchange.strategy} orders')
-        # await exchange.close_dust()  # Commenting out until bug fixed
-        await exchange.close()
+        await asyncio.gather(*[strategy.venue_api.cancel_all_orders(symbol) for symbol in strategy.parameters['symbols']])
+        logger.warning(f'cancelled orders')
+        # await strategy.close_dust()  # Commenting out until bug fixed
+        await strategy.venue_api.close()
         if not isinstance(e, Strategy.ReadyToShutdown):
             raise e
 
@@ -1646,7 +1640,7 @@ async def listen(order_name,**kwargs):
 
     config = configLoader.get_executor_params(order=order_name, dirname=kwargs['config'])
 
-    exchange = await MarketDataAPI.build(kwargs['exchange'], config, subaccount='')
+    exchange = await VenueAPI.build(kwargs['exchange'], config, subaccount='')
 
     coin = order_name.split('listen_')[1]
     temp_order = pd.DataFrame()
