@@ -28,7 +28,7 @@ import ccxtpro,collections,copy
 # 'rush_out_tolerance': mkt close on both legs if basket worse than quantile(rush_tolerance)
 # 'stdev_window': stdev horizon for scaling parameters. in sec.
 # 'edit_price_tolerance': place on edit_price_tolerance (in minutes) *  stdev
-# 'aggressive_edit_price_tolerance': in priceIncrement
+# 'aggressive_edit_price_increments': in priceIncrement
 # 'edit_trigger_tolerance': chase at edit_trigger_tolerance (in minutes) *  stdev
 # 'stop_tolerance': stop at stop_tolerance (in minutes) *  stdev
 # 'volume_share': % of mkt volume * edit_price_tolerance. so farther is bigger.
@@ -64,15 +64,14 @@ def symbol_locked(wrapped):
 def loop(func):
     @functools.wraps(func)
     async def wrapper_loop(*args, **kwargs):
-        self=args[0]
-        while len(args)==1 or (args[1] in args[0].strategy):
+        self = args[0].strategy
+        while True:
             try:
                 value = await func(*args, **kwargs)
             except ccxt.NetworkError as e:
                 self.logger.info(str(e))
                 self.logger.info('reconciling after '+func.__name__+' dropped off')
-                if self.position_manager and self. order_manager:
-                    await self.reconcile()
+                await self.reconcile()
             except Exception as e:
                 self.logger.info(e, exc_info=True)
                 raise e
@@ -83,8 +82,10 @@ def intercept_message_during_reconciliation(wrapped):
     @functools.wraps(wrapped)
     def _wrapper(*args, **kwargs):
         self=args[0]
-        if args[0].lock['reconciling'].locked():
-            self.logger.warning(f'message during reconciliation{args[2]}')
+        if not isinstance(self,VenueAPI):
+            raise Exception("only apply on venueAPI methods")
+        if self.strategy.lock['reconciling'].locked():
+            self.strategy.logger.warning(f'message during reconciliation{args[2]}')
             self.message_missed.append(args[2])
         else:
             return wrapped(*args, **kwargs)
@@ -99,21 +100,22 @@ class OrderManager(dict):
     acknowledgedStates = set(['acknowledged', 'partially_filled'])
     cancelableStates = set(['sent', 'acknowledged', 'partially_filled'])
 
-    def __init__(self,parameters,strategy):
+    def __init__(self,parameters):
         super().__init__()
         self.parameters = parameters
-        self.strategy = strategy
+        self.strategy = None
         
-        self.latest_order_reconcile_timestamp = parameters['timestamp']
-        self.latest_fill_reconcile_timestamp = parameters['timestamp']
-        self.logger = logging.getLogger('tradeexecutor')
+        self.latest_order_reconcile_timestamp = None
+        self.latest_fill_reconcile_timestamp = None
+
+        self.fill_flag = False
 
     @staticmethod
-    def build(parameters):
+    async def build(parameters):
         if not parameters:
             return None
         else:
-            return OrderManager({'timestamp': myUtcNow()} | parameters['order_manager'])
+            return OrderManager(parameters)
         
     def to_dict(self):
         return dict(self)
@@ -215,7 +217,7 @@ class OrderManager(dict):
         # 2) validate block
         past = self[clientOrderId][-1]
         if past['state'] not in ['pending_new','acknowledged','partially_filled']:
-            self.logger.warning('order {} was {} before sent'.format(past['clientOrderId'],past['state']))
+            self.strategy.logger.warning('order {} was {} before sent'.format(past['clientOrderId'],past['state']))
             return
 
         # 3) new block
@@ -247,7 +249,7 @@ class OrderManager(dict):
         # 2) validate block
         past = self[clientOrderId][-1]
         if past['state'] not in self.openStates:
-            self.logger.warning('order {} re-canceled'.format(past['clientOrderId']))
+            self.strategy.logger.warning('order {} re-canceled'.format(past['clientOrderId']))
             return
 
         # 3) new block
@@ -271,7 +273,7 @@ class OrderManager(dict):
         # 2) validate block
         past = self[clientOrderId][-1]
         if not past['state'] in self.openStates:
-            self.logger.warning('order {} re-canceled'.format(past['clientOrderId']))
+            self.strategy.logger.warning('order {} re-canceled'.format(past['clientOrderId']))
             return
 
         # 3) new block
@@ -380,12 +382,12 @@ class OrderManager(dict):
 
     '''reconciliations to an exchange'''
     async def reconcile(self):
-        await asyncio.gather(self.reconcile_orders(),self.reconcile_fills())
+        await safe_gather([self.reconcile_orders(),self.reconcile_fills()],semaphore=self.strategy.rest_semaphor)
 
     async def reconcile_fills(self):
         '''fetch fills, to recover missed messages'''
-        sincetime = max(self.strategy.parameters['timestamp'], self.latest_fill_reconcile_timestamp - 1000)
-        fetched_fills = sum(await asyncio.gather(*[self.strategy.venue_api.fetch_my_trades(since=sincetime,symbol=symbol) for symbol in self.strategy.parameters['symbols']]), [])
+        sincetime = self.latest_fill_reconcile_timestamp if self.latest_fill_reconcile_timestamp else myUtcNow() - 1000
+        fetched_fills = sum(await safe_gather([self.strategy.venue_api.fetch_my_trades(since=sincetime,symbol=symbol) for symbol in self.parameters['symbols']],semaphore=self.strategy.rest_semaphor), [])
         for fill in fetched_fills:
             fill['comment'] = 'reconciled'
             fill['clientOrderId'] = self.find_clientID_from_fill(fill)
@@ -396,18 +398,16 @@ class OrderManager(dict):
         self.latest_fill_reconcile_timestamp = myUtcNow()
 
     async def reconcile_orders(self):
-        self.latest_order_reconcile_timestamp = myUtcNow()
-
         # list internal orders
         internal_order_internal_status = {clientOrderId:data[-1] for clientOrderId,data in self.items()
                                           if data[-1]['state'] in OrderManager.openStates}
 
         # add missing orders (we missed orders from the exchange)
-        external_orders = sum(await asyncio.gather(*[self.strategy.venue_api.fetch_open_orders(symbol=symbol) for symbol in self.strategy.parameters['symbols']]), [])
+        external_orders = sum(await safe_gather([self.strategy.venue_api.fetch_open_orders(symbol=symbol) for symbol in self.parameters['symbols']],semaphore=self.strategy.rest_semaphor), [])
         for order in external_orders:
             if order['clientOrderId'] not in internal_order_internal_status.keys():
                 self.acknowledgment(order | {'comment':'reconciled_missing'})
-                self.logger.warning('{} was missing'.format(order['clientOrderId']))
+                self.strategy.logger.warning('{} was missing'.format(order['clientOrderId']))
                 found = order['clientOrderId']
                 assert (found in self), f'{found} unknown'
 
@@ -422,11 +422,13 @@ class OrderManager(dict):
 
 
 
-                self.logger.warning(f'reconcile_orders {clientOrderId} : {external_status}')
+                self.strategy.logger.warning(f'reconcile_orders {clientOrderId} : {external_status}')
                 continue
             if external_status['status'] != 'open':
                 self.cancel_or_reject(external_status | {'state': 'canceled', 'comment':'reconciled_zombie'})
-                self.logger.warning('{} was a {} zombie'.format(clientOrderId,internal_order_internal_status[clientOrderId]['state']))
+                self.strategy.logger.warning('{} was a {} zombie'.format(clientOrderId,internal_order_internal_status[clientOrderId]['state']))
+
+        self.latest_order_reconcile_timestamp = myUtcNow()
 
 class PositionManager(dict):
     '''PositionManager owns pv,risk,margin. Even underlyings not being executed (but only one exchange)
@@ -439,55 +441,61 @@ class PositionManager(dict):
             self.delta_limit = limit
             self.check_frequency = check_frequency
 
-    def __init__(self,parameters,strategy):
+    def __init__(self,parameters):
         super().__init__()
         self.parameters = parameters
-        self.strategy = strategy
+        self.strategy = None
         self.pv = None
         self.margin = None
-        self.limit = None
-        self.logger = logging.getLogger('tradeexecutor')
-        self.risk_reconciliations = []
         self.markets = None
+        self.limit = None
+        self.risk_reconciliations = []
 
     def to_dict(self):
         return self.risk_reconciliations
 
     @staticmethod
-    async def build(strategy,parameters):
+    async def build(parameters):
         if not parameters:
             return None
         else:
-            result = PositionManager({'timestamp': myUtcNow()} | parameters['position_manager'])
-            result.limit = PositionManager.LimitBreached(parameters['position_manager']['check_frequency'], parameters['position_manager']['delta_limit'])
+            result = PositionManager(parameters)
+            result.limit = PositionManager.LimitBreached(parameters['check_frequency'], parameters['delta_limit'])
     
-            for symbol in strategy.parameters['symbols']:
+            for symbol in parameters['symbols']:
                 result[symbol] = {'delta': 0,
                                   'delta_timestamp': myUtcNow(),
                                   'delta_id': 0}
-    
-            # Initializes a margin calculator that can understand the margin of an order
-            # reconcile the margin of an exchange with the margin we calculate
-            # pls note it needs the exchange pv, which is known after reconcile
-            result.margin = await MarginCalculator.margin_calculator_factory(strategy.market_data_api)
-            result.markets = strategy.market_data_api.markets
-            
             return result
 
-    async def reconcile(self,market_data_api):
+    @loop
+    async def monitor_risk(self):
+        '''redundant minutely risk check'''#TODO: would be cool if this could interupt other threads and restart it when margin is ok.
+        await asyncio.sleep(self.limit.check_frequency)
+        await self.reconcile()
+        self.check_limit()
+
+    async def reconcile(self):
+
+        # if not already done, Initializes a margin calculator that can understand the margin of an order
+        # reconcile the margin of an exchange with the margin we calculate
+        # pls note it needs the exchange pv, which is known after reconcile
+        self.margin = self.margin if self.margin else await MarginCalculator.margin_calculator_factory(self.strategy.venue_api)
+        self.markets = self.markets if self.markets else self.strategy.venue_api.markets
+
         # recompute risks, margins
         previous_delta = {symbol:{'delta':data['delta']} for symbol,data in self.items()}
         previous_pv = self.pv
 
-        state = await syncronized_state(market_data_api)
-        risk_timestamp = await market_data_api.myUtcNow()
+        state = await syncronized_state(self.strategy.venue_api)
+        risk_timestamp = myUtcNow()
 
         # delta is noisy for perps, so override to delta 1.
         self.pv = 0
         for coin, balance in state['balances']['total'].items():
             if coin != 'USD':
                 symbol = coin + '/USD'
-                mid = state['markets']['price'][market_data_api.market_id(symbol)]
+                mid = state['markets']['price'][self.strategy.venue_api.market_id(symbol)]
                 delta = balance * mid
                 if symbol not in self:
                     self[symbol] = {'delta_id': 0}
@@ -498,8 +506,8 @@ class PositionManager(dict):
         self.pv += state['balances']['total']['USD']  # doesn't contribute to delta, only pv !
 
         for name, position in state['positions']['netSize'].items():
-            symbol = market_data_api.market(name)['symbol']
-            delta = position * market_data_api.mid(symbol)
+            symbol = self.strategy.venue_api.market(name)['symbol']
+            delta = position * self.strategy.venue_api.mid(symbol)
 
             if symbol not in self:
                 self[symbol] = {'delta_id': 0}
@@ -507,8 +515,8 @@ class PositionManager(dict):
             self[symbol]['delta_timestamp'] = risk_timestamp
 
         # update IM
-        await self.margin.refresh(market_data_api, balances=state['balances']['total'], positions=state['positions']['netSize'],
-                                  im_buffer=0.01 * self.pv)
+        await self.margin.refresh(self.strategy.venue_api, balances=state['balances']['total'], positions=state['positions']['netSize'],
+                                  im_buffer=self.parameters['im_buffer'] * self.pv)
 
         delta_error = {symbol: self[symbol]['delta'] - (previous_delta[symbol]['delta'] if symbol in previous_delta else 0)
                        for symbol in self}
@@ -522,6 +530,7 @@ class PositionManager(dict):
                                        'pv_error': self.pv - (previous_pv or 0),
                                        'total_delta_error': sum(delta_error.values())}
                                       for symbol_ in self]
+
     def check_limit(self):
         absolute_risk = dict()
         for symbol in self:
@@ -529,24 +538,22 @@ class PositionManager(dict):
             if coin not in absolute_risk:
                 absolute_risk[coin] = abs(self.coin_delta(symbol))
         if sum(absolute_risk.values()) > self.pv * self.limit.delta_limit:
-            self.logger.info(
+            self.strategy.logger.info(
                 f'absolute_risk {absolute_risk} > {self.pv * self.limit.delta_limit}')
         if self.margin.actual_IM < self.pv / 100:
-            self.logger.info(f'IM {self.margin.actual_IM}  < 1%')
+            self.strategy.logger.info(f'IM {self.margin.actual_IM}  < 1%')
 
     def trim_to_margin(self, mid, size, symbol):
         '''trim size to margin allocation (equal for all running symbols)'''
         marginal_IM = self.margin.order_marginal_cost(symbol, size, mid, 'IM')
         estimated_IM = self.margin.estimate('IM')
         actual_IM = self.margin.actual_IM
-        # TODO: headroom estimate is wrong ....
-        if self.margin.actual_IM <= 0:
-            self.logger.info(
+
+        if self.margin.actual_IM < self.margin.IM_buffer:
+            self.strategy.logger.info(
                 f'estimated_IM {estimated_IM} / actual_IM {actual_IM} / marginal_IM {marginal_IM}')
-            # TODO: check before skipping?
-            # await self.margin_calculator.update_actual(self)
-            # headroom_estimate = self.margin_calculator.actual_IM
-            # if headroom_estimate <= 0: return
+            return 0
+
         marginal_IM = marginal_IM if abs(marginal_IM) > 1e-9 else np.sign(marginal_IM) * 1e-9
         if actual_IM + marginal_IM < self.margin.IM_buffer:
             trim_factor = np.clip((self.margin.IM_buffer - actual_IM) / marginal_IM,a_min=0,a_max=1)
@@ -554,7 +561,7 @@ class PositionManager(dict):
             trim_factor = 1.0
         trimmed_size = size * trim_factor
         if trim_factor < 1:
-            self.logger.info(f'trimmed {size} {symbol} by {trim_factor}')
+            self.strategy.logger.info(f'trimmed {size} {symbol} by {trim_factor}')
         return trimmed_size
     
     def coin_delta(self,symbol):
@@ -589,26 +596,38 @@ class PositionManager(dict):
                 'global_delta_minus': global_delta_minus}
 
 class Strategy(dict):
-    '''Strategy leverages other managers to implement quoter (ie generate orders from mkt change or order feed)'''
+    '''abstract class Strategy leverages other managers to implement quoter (ie generate orders from mkt change or order feed)
+    If there was a bus, its graph would be a tree and Strategy would be the top'''
     class ReadyToShutdown(Exception):
         def __init__(self, text):
             super().__init__(text)
-    def __init__(self,parameters,position_manager,order_manager,venue_api,signal_engine):
+    def __init__(self,parameters,signal_engine,venue_api,order_manager,position_manager):
+        '''Strategy contructor also opens channels btw objects (a simple member data for now)'''
         super().__init__()
-        self.parameters = parameters['strategy']
+        self.parameters = parameters
+
+        # TODO: is this necessary ?
+        self_keys = ['update_time_delta','entry_level','rush_in_level','rush_out_level','edit_price_depth','edit_trigger_depth','aggressive_edit_price_depth','aggressive_edit_trigger_depth','stop_depth','slice_size']
+        for symbol in self.parameters['symbols']:
+            self[symbol] = dict(zip(self_keys,[None]*len(self_keys)))
+
+        # pointers to other objects (like a bus in a single thread...)
+        position_manager.strategy = self
+        order_manager.strategy = self
+        venue_api.strategy = self
+        signal_engine.strategy = self
+
         self.position_manager = position_manager
         self.order_manager = order_manager
         self.venue_api = venue_api
         self.signal_engine = signal_engine
-        self.venue_api = venue_api
 
         self.logger = logging.getLogger('tradeexecutor')
-        self.data_logger = ExecutionLogger(exchange_name=self.id)
-        self.fill_flag = False
+        self.data_logger = ExecutionLogger(exchange_name=venue_api.id)
 
         self.rest_semaphor = asyncio.Semaphore(safe_gather_limit)
-        self.lock |= {symbol: CustomRLock() for symbol in self.strategy}
         self.lock = {'reconciling':threading.Lock()}
+        # self.lock |= {symbol: CustomRLock() for symbol in self.parameters['symbols']}
 
     def to_json(self):
         return {'parameters': self.parameters} \
@@ -617,38 +636,36 @@ class Strategy(dict):
 
     @staticmethod
     async def build(parameters):
-        position_manager = await PositionManager.build(parameters['position_manager'])
-        order_manager = OrderManager(parameters['order_manager'])
-        market_data_api = await VenueAPI.build(parameters['market_data_api'])
-        signal_engine = await SignalEngine.build(parameters['signal_engine'])
-        venue_api = await OrderManager.build(parameters['venue_api'])
+        if os.path.isfile(parameters['signal_engine']['filename']):
+            signal_engine = await SignalEngine.build(parameters['signal_engine'])
+            symbols = {'symbols':signal_engine.parameters['symbols']}
+            venue_api = await VenueAPI.build(symbols|parameters['venue_api'])
+            order_manager = await OrderManager.build(symbols|parameters['order_manager'])
+            position_manager = await PositionManager.build(symbols|parameters['position_manager'])
 
-        result = ExecutionStrategy({'timestamp':myUtcNow()} |
-                                   parameters['signal_manager'],
-                                   position_manager,
-                                   order_manager,
-                                   market_data_api,
-                                   signal_engine,
-                                   venue_api)
+            result = ExecutionStrategy(symbols|parameters['strategy'],
+                                       signal_engine,
+                                       venue_api,
+                                       order_manager,
+                                       position_manager)
+        else:
+            raise Exception("not implemented")
 
         await result.reconcile()
-        (spot, targets, timestamp) = await result.order_feed.update_order()
-        result.set_target(spot, targets, timestamp)
 
         return result
 
-    def run(self):
+    async def run(self):
         self.logger.warning('cancelling orders')
-        await asyncio.gather(*[self.venue_api.cancel_all_orders(symbol) for symbol in self.parameters['symbols']])
+        await safe_gather([self.venue_api.cancel_all_orders(symbol) for symbol in self.parameters['symbols']],semaphore=self.rest_semaphor)
 
-        coros = [self.venue_api.monitor_fills(), self.venue_api.monitor_risk()] + \
+        coros = [self.venue_api.monitor_fills(), self.position_manager.monitor_risk()] + \
                 sum([[self.venue_api.monitor_orders(symbol),
                       self.venue_api.monitor_order_book(symbol),
                       self.venue_api.monitor_trades(symbol)]
                      for symbol in self.parameters['symbols']], [])
 
-        await asyncio.gather(*coros)
-
+        await safe_gather(coros,semaphore=self.rest_semaphor)
 
     async def build_listener(self, order, parameters):
         '''initialize all state and does some filtering (weeds out slow underlyings; should be in strategy)
@@ -658,6 +675,9 @@ class Strategy(dict):
 
         self.strategy = await Strategy.build(self, nowtime, order, parameters['strategy'])
         self.signal_engine = await SignalEngine.build(self, parameters['signal_engine'])
+
+    async def update_quoter_parameters(self):
+        raise Exception("must be implemented below this abstract class")
 
     async def reconcile(self):
         '''update risk using rest
@@ -671,9 +691,10 @@ class Strategy(dict):
 
         # or reconcile, and lock until done. We don't want to place orders while recon is running
         with self.lock['reconciling']:
-            await self.order_manager.reconcile(self)
-            await self.position_manager.reconcile(self)
-            await self.strategy.reconcile(self)
+            await self.signal_engine.reconcile()
+            await self.order_manager.reconcile()
+            await self.position_manager.reconcile()
+            await self.update_quoter_parameters()
             self.replay_missed_messages()
 
         # critical job is done, release lock and print data
@@ -683,8 +704,8 @@ class Strategy(dict):
 
     def replay_missed_messages(self):
         # replay missed _messages.
-        while self.message_missed:
-            message = self.message_missed.popleft()
+        while self.venue_api.message_missed:
+            message = self.venue_api.message_missed.popleft()
             data = self.safe_value(message, 'data')
             channel = message['channel']
             self.logger.warning(f'replaying {channel} after recon')
@@ -702,21 +723,6 @@ class Strategy(dict):
             elif channel == 'trades':
                 pass
                 #self.signal_engine.trades_cache[message['symbol']].append(message)
-
-    def set_target(self, spot, targets,timestamp):
-        for symbol, target in targets.items():
-            if symbol not in self:
-                self[symbol] = {'symbol':symbol, 'target': target, 'spot_price': spot}
-        for symbol, target in targets.items():
-            if self[symbol]['target'] != target:
-                self.logger.info('{} weight changed from {} to {}'.format(
-                    symbol, self[symbol]['target'] * spot, target * spot))
-                self[symbol]['symbol'] = symbol
-                self[symbol]['target'] = target
-                self[symbol]['spot_price'] = spot
-                self[symbol]['timestamp'] = timestamp
-
-        self.data_logger.history += [dict(self)]
 
     def process_order(self,order):
         assert order['clientOrderId'],"assert order['clientOrderId']"
@@ -740,7 +746,7 @@ class Strategy(dict):
         # only log trades being run by this process
         fill['clientOrderId'] = fill['info']['clientOrderId']
         fill['comment'] = 'websocket_fill'
-        self.fill(fill)
+        self.order_manager.fill(fill)
 
         # logger.info
         self.logger.warning('{} filled after {}: {} {} at {}'.format(fill['clientOrderId'],
@@ -750,9 +756,9 @@ class Strategy(dict):
                                                                      fill['price']))
 
         current = self.position_manager[symbol]['delta']
-        target = self.strategy[symbol]['target'] * fill['price']
-        diff = (self.strategy[symbol]['target'] - self.position_manager[symbol]['delta']) * fill['price']
-        initial = self.strategy[symbol]['target'] * fill['price'] - diff
+        target = self.signal_engine[symbol]['target'] * fill['price']
+        diff = (self.signal_engine[symbol]['target'] - self.position_manager[symbol]['delta']) * fill['price']
+        initial = self.signal_engine[symbol]['target'] * fill['price'] - diff
         self.logger.warning('{} risk at {} ms: {}% done [current {}, initial {}, target {}]'.format(
             symbol,
             self.position_manager[symbol]['delta_timestamp'],
@@ -762,20 +768,20 @@ class Strategy(dict):
             target))
 
 class ExecutionStrategy(Strategy):
-    async def reconcile(self, exchange):
-        '''specialized to execute externally generated client orders'''
-        if all(abs(exchange.position_manager[symbol]['delta']) < exchange.parameters[
-            'significance_threshold'] * exchange.position_manager.pv for symbol in self):
+    '''specialized to execute externally generated client orders'''
+    async def update_quoter_parameters(self):
+        '''updates key/values, mostly from signal'''
+        if all(abs(self.position_manager[symbol]['delta']) < self.parameters[
+            'significance_threshold'] * self.position_manager.pv for symbol in self.parameters['symbols']):
             raise Strategy.ReadyToShutdown(
-                f'no {self.keys()} delta and no {self.order_feed} order --> shutting down bot')
-        if os.path.isfile(self.order_feed):
-            (spot, targets, timestamp) = await self.order_feed.update_order()
-            self.set_target(spot, targets, myUtcNow())
-        else:
-            targets = {key: 0 for key in self}
-            spot = exchange.mid(next(key for key in self if exchange.market(key)['type'] == 'spot'))
-            self.set_target(spot, targets, myUtcNow())
+                f'no {self.keys()} delta and no {self.signal_engine} order --> shutting down bot')
 
+        # # read signal_engine
+        # for symbol, data in self.items():
+        #     for key, value in self.signal_engine.items():
+        #         data[key] = value
+        if not self.signal_engine.vwap:
+            await self.signal_engine.initialize_vwap()
         self.signal_engine.compile_vwap(frequency=timedelta(minutes=1))
 
         def basket_vwap_quantile(series_list, diff_list, quantiles):
@@ -784,76 +790,76 @@ class ExecutionStrategy(Strategy):
 
         scaler = 1 # max(0,(time_limit-nowtime)/(time_limit-self.inventory_target.timestamp))
         for symbol, data in self.items():
-            data['update_time_delta'] = data['target'] - exchange.position_manager[symbol]['delta'] / exchange.mid(symbol)
+            data['update_time_delta'] = self.signal_engine[symbol]['target'] - self.position_manager[symbol]['delta'] / self.venue_api.mid(symbol)
 
         for symbol, data in self.items():
             # entry_level = what level on basket is too bad to even place orders
             # rush_in_level = what level on basket is so good that you go in at market on both legs
             # rush_out_level = what level on basket is so bad that you go out at market on both legs
             quantiles = basket_vwap_quantile(
-                [exchange.signal_engine.vwap[symbol]['vwap'] for symbol in self],
-                [data['update_time_delta'] for symbol,data in self.items()],
-                [exchange.parameters['entry_tolerance'],exchange.parameters['rush_in_tolerance'],exchange.parameters['rush_out_tolerance']])
+                [self.signal_engine.vwap[_symbol]['vwap'] for _symbol in self.parameters['symbols']],
+                [data['update_time_delta'] for data in self.values()],
+                [self.parameters['entry_tolerance'],self.parameters['rush_in_tolerance'],self.parameters['rush_out_tolerance']])
 
             data['entry_level'] = quantiles[0]
             data['rush_in_level'] = quantiles[1]
             data['rush_out_level'] = quantiles[2]
 
-            stdev = exchange.signal_engine.vwap[symbol]['vwap'].std().squeeze()
+            stdev = self.signal_engine.vwap[symbol]['vwap'].std().squeeze()
             if not (stdev>0): stdev = 1e-16
 
             # edit_price_depth = how far to put limit on risk increasing orders
-            data['edit_price_depth'] = stdev * np.sqrt(exchange.parameters['edit_price_tolerance']) * scaler
+            data['edit_price_depth'] = stdev * np.sqrt(self.parameters['edit_price_tolerance']) * scaler
             # edit_trigger_depth = how far to let the mkt go before re-pegging limit orders
-            data['edit_trigger_depth'] = stdev * np.sqrt(exchange.parameters['edit_trigger_tolerance']) * scaler
+            data['edit_trigger_depth'] = stdev * np.sqrt(self.parameters['edit_trigger_tolerance']) * scaler
 
             # aggressive version understand tolerance as price increment
-            if isinstance(exchange.parameters['aggressive_edit_price_tolerance'],float):
-                data['aggressive_edit_price_depth'] = max(1,exchange.parameters['aggressive_edit_price_tolerance']) * self.venue_api.static[symbol]['priceIncrement']
-                data['aggressive_edit_trigger_depth'] = max(1,exchange.parameters['aggressive_edit_price_tolerance']) * self.venue_api.static[symbol]['priceIncrement']
-            else:
-                data['aggressive_edit_price_depth'] = exchange.parameters['aggressive_edit_price_tolerance']
+            if isinstance(self.parameters['aggressive_edit_price_increments'],int):
+                data['aggressive_edit_price_depth'] = max(1,self.parameters['aggressive_edit_price_increments']) * self.venue_api.static[symbol]['priceIncrement']
+                data['aggressive_edit_trigger_depth'] = max(1,self.parameters['aggressive_edit_trigger_increments']) * self.venue_api.static[symbol]['priceIncrement']
+            elif self.parameters['aggressive_edit_price_increments'] in 'taker_hedge':
+                data['aggressive_edit_price_depth'] = self.parameters['aggressive_edit_price_increments']
                 data['aggressive_edit_trigger_depth'] = None # takers don't peg
 
                 # stop_depth = how far to set the stop on risk reducing orders
-            data['stop_depth'] = stdev * np.sqrt(exchange.parameters['stop_tolerance']) * scaler
+            data['stop_depth'] = stdev * np.sqrt(self.parameters['stop_tolerance']) * scaler
 
             # slice_size: cap to expected time to trade consistent with edit_price_tolerance
-            volume_share = exchange.parameters['volume_share'] * exchange.parameters['edit_price_tolerance'] * \
-                           exchange.signal_engine.vwap[symbol]['volume'].mean()
+            volume_share = self.parameters['volume_share'] * self.parameters['edit_price_tolerance'] * \
+                           self.signal_engine.vwap[symbol]['volume'].mean()
             data['slice_size'] = volume_share
 
-    def quoter(self, symbol):
+    def process_order_book_update(self, symbol, orderbook):
         '''
             leverages orderbook and risk to issue an order
             Critical loop, needs to go quick
             all executes in one go, no async
         '''
+        strategy = self[symbol]
         mid = self.venue_api.tickers[symbol]['mid']
-        params = self[symbol]
 
         # size to do:
-        original_size = params['target'] - self.strategy.position_manager[symbol]['delta'] / mid
+        original_size = self.signal_engine[symbol]['target'] - self.position_manager[symbol]['delta'] / mid
 
         # risk
-        globalDelta = self.strategy.position_manager.delta_bounds(symbol)['global_delta']
-        delta_limit = self.strategy.position_manager.limit.delta_limit * self.strategy.position_manager.pv
+        globalDelta = self.position_manager.delta_bounds(symbol)['global_delta']
+        delta_limit = self.position_manager.limit.delta_limit * self.position_manager.pv
         marginal_risk = np.abs(globalDelta / mid + original_size) - np.abs(globalDelta / mid)
 
         # if increases risk but not out of limit, trim and go passive.
         if np.sign(original_size) == np.sign(globalDelta):
             # if (global_delta_plus / mid + original_size) > delta_limit:
             #     trimmed_size = delta_limit - global_delta_plus / mid
-            #     self.strategy.logger.debug(
-            #         f'{original_size * mid} {symbol} would increase risk over {self.strategy.limit.delta_limit * 100}% of {self.strategy.risk_state.pv} --> trimming to {trimmed_size * mid}')
+            #     self.logger.debug(
+            #         f'{original_size * mid} {symbol} would increase risk over {self.limit.delta_limit * 100}% of {self.risk_state.pv} --> trimming to {trimmed_size * mid}')
             # elif (global_delta_minus / mid + original_size) < -delta_limit:
             #     trimmed_size = -delta_limit - global_delta_minus / mid
-            #     self.strategy.logger.debug(
-            #         f'{original_size * mid} {symbol} would increase risk over {self.strategy.limit.delta_limit * 100}% of {self.strategy.risk_state.pv} --> trimming to {trimmed_size * mid}')
+            #     self.logger.debug(
+            #         f'{original_size * mid} {symbol} would increase risk over {self.limit.delta_limit * 100}% of {self.risk_state.pv} --> trimming to {trimmed_size * mid}')
             # else:
             #     trimmed_size = original_size
             # if np.sign(trimmed_size) != np.sign(original_size):
-            #     self.strategy.logger.debug(f'skipping (we don t flip orders)')
+            #     self.logger.debug(f'skipping (we don t flip orders)')
             #     return
             if abs(globalDelta / mid + original_size) > delta_limit:
                 if (globalDelta / mid + original_size) > delta_limit:
@@ -863,41 +869,41 @@ class ExecutionStrategy(Strategy):
                 else:
                     raise Exception('what??')
                 if np.sign(trimmed_size) != np.sign(original_size):
-                    self.strategy.logger.debug(
-                        f'{original_size * mid} {symbol} would increase risk over {self.strategy.position_manager.limit.delta_limit * 100}% of {self.strategy.position_manager.pv} --> skipping (we don t flip orders)')
+                    self.logger.debug(
+                        f'{original_size * mid} {symbol} would increase risk over {self.position_manager.limit.delta_limit * 100}% of {self.position_manager.pv} --> skipping (we don t flip orders)')
                     return
                 else:
-                    self.strategy.logger.debug(
-                        f'{original_size * mid} {symbol} would increase risk over {self.strategy.position_manager.limit.delta_limit * 100}% of {self.strategy.position_manager.pv} --> trimming to {trimmed_size * mid}')
+                    self.logger.debug(
+                        f'{original_size * mid} {symbol} would increase risk over {self.position_manager.limit.delta_limit * 100}% of {self.position_manager.pv} --> trimming to {trimmed_size * mid}')
             else:
                 trimmed_size = original_size
 
-            size = np.clip(trimmed_size, a_min=-params['slice_size'], a_max=params['slice_size'])
+            size = np.clip(trimmed_size, a_min=-strategy['slice_size'], a_max=strategy['slice_size'])
 
             current_basket_price = sum(self.venue_api.mid(_symbol) * self[_symbol]['update_time_delta']
                                        for _symbol in self.keys())
             # mkt order if target reached.
             # TODO: pray for the other coin to hit the same condition...
-            if current_basket_price + 2 * abs(params['update_time_delta']) * params['takerVsMakerFee'] * mid < \
-                    self[symbol]['rush_in_level']:
+            if current_basket_price + 2 * abs(strategy['update_time_delta']) * self.venue_api.static[symbol]['takerVsMakerFee'] * mid < \
+                    strategy['rush_in_level']:
                 # TODO: could replace current_basket_price by two way sweep after if
-                self.venue_api.peg_or_stopout(symbol, size, self.venue_api.orderbook,
-                                    edit_trigger_depth=params['edit_trigger_depth'],
-                                    edit_price_depth='rush_in', stop_depth=None)
+                self.venue_api.peg_or_stopout(symbol, size, orderbook,
+                                              edit_trigger_depth=strategy['edit_trigger_depth'],
+                                              edit_price_depth='rush_in', stop_depth=None)
                 return
-            elif current_basket_price - 2 * abs(params['update_time_delta']) * params['takerVsMakerFee'] * mid > \
-                    self[symbol]['rush_out_level']:
+            elif current_basket_price - 2 * abs(strategy['update_time_delta']) * self.venue_api.static[symbol]['takerVsMakerFee'] * mid > \
+                    strategy['rush_out_level']:
                 # go all in as this decreases margin
                 size = - self.position_manager[symbol]['delta'] / mid
                 if abs(size) > 0:
-                    self.venue_api.peg_or_stopout(symbol, size, self.venue_api.orderbook,
-                                        edit_trigger_depth=params['edit_trigger_depth'],
-                                        edit_price_depth='rush_out', stop_depth=None)
+                    self.venue_api.peg_or_stopout(symbol, size, orderbook,
+                                                  edit_trigger_depth=strategy['edit_trigger_depth'],
+                                                  edit_price_depth='rush_out', stop_depth=None)
                 return
             # limit order if level is acceptable (saves margin compared to faraway order)
-            elif current_basket_price < self[symbol]['entry_level']:
-                edit_trigger_depth = params['edit_trigger_depth']
-                edit_price_depth = params['edit_price_depth']
+            elif current_basket_price < strategy['entry_level']:
+                edit_trigger_depth = strategy['edit_trigger_depth']
+                edit_price_depth = strategy['edit_price_depth']
                 stop_depth = None
             # hold off to save margin, if level is bad-ish
             else:
@@ -905,28 +911,21 @@ class ExecutionStrategy(Strategy):
         # if decrease risk, go aggressive without flipping delta
         else:
             size = np.sign(original_size) * min(abs(- globalDelta / mid), abs(original_size))
-            edit_trigger_depth = params['aggressive_edit_trigger_depth']
-            edit_price_depth = params['aggressive_edit_price_depth']
-            stop_depth = params['stop_depth']
-        self.venue_api.peg_or_stopout(symbol, size, self.venue_api.orderbook, edit_trigger_depth=edit_trigger_depth,
-                            edit_price_depth=edit_price_depth, stop_depth=stop_depth)
+            edit_trigger_depth = self[symbol]['aggressive_edit_trigger_depth']
+            edit_price_depth = self[symbol]['aggressive_edit_price_depth']
+            stop_depth = self[symbol]['stop_depth']
+        self.venue_api.peg_or_stopout(symbol, size, orderbook, edit_trigger_depth=edit_trigger_depth,
+                                      edit_price_depth=edit_price_depth, stop_depth=stop_depth)
 
 class AlgoStrategy(Strategy):
-    async def reconcile(self):
+    async def update_quoter_parameters(self):
         '''updates quoter inputs
         reads file if present. If not: if no risk then shutdown bot, else unwind.
         '''
         if all(abs(self.position_manager[symbol]['delta']) < self.parameters[
             'significance_threshold'] * self.position_manager.pv for symbol in self):
             raise Strategy.ReadyToShutdown(
-                f'no {self.keys()} delta and no {self.order_feed} order --> shutting down bot')
-        if os.path.isfile(self.order_feed):
-            (spot, targets, timestamp) = await self.order_feed.update_order()
-            self.set_target(spot, targets, myUtcNow())
-        else:
-            targets = {key: 0 for key in self}
-            spot = self.venue_api.mid(next(key for key in self if self.venue_api.market(key)['type'] == 'spot'))
-            self.set_target(spot, targets, myUtcNow())
+                f'no {self.keys()} delta and no {self.signal_engine} order --> shutting down bot')
 
         nowtime = myUtcNow()
         quantiles = self.signal_engine.compile_spread_distribution()
@@ -935,7 +934,7 @@ class AlgoStrategy(Strategy):
             # entry_level = what level on basket is too bad to even place orders
             # rush_in_level = what level on basket is so good that you go in at market on both legs
             # rush_out_level = what level on basket is so bad that you go out at market on both legs
-            is_long_carry = data['target'] * (-1 if ':USD' in symbol else 1) > 0
+            is_long_carry = self.signal_engine[symbol]['target'] * (-1 if ':USD' in symbol else 1) > 0
             data['rush_in_level'] = quantiles[1 if is_long_carry else 0] * self.venue_api.mid(symbol) / 365.25
             data['rush_out_level'] = quantiles[0 if is_long_carry else 1] * self.venue_api.mid(symbol) / 365.25
 
@@ -948,13 +947,13 @@ class AlgoStrategy(Strategy):
             data['edit_trigger_depth'] = stdev * np.sqrt(self.parameters['edit_trigger_tolerance'])
 
             # aggressive version understand tolerance as price increment
-            if isinstance(self.parameters['aggressive_edit_price_tolerance'], float):
+            if isinstance(self.parameters['aggressive_edit_price_increments'], float):
                 data['aggressive_edit_price_depth'] = max(1, self.parameters[
-                    'aggressive_edit_price_tolerance']) * self.venue_api.static[symbol]['priceIncrement']
+                    'aggressive_edit_price_increments']) * self.venue_api.static[symbol]['priceIncrement']
                 data['aggressive_edit_trigger_depth'] = max(1, self.parameters[
-                    'aggressive_edit_price_tolerance']) * self.venue_api.static[symbol]['priceIncrement']
+                    'aggressive_edit_price_increments']) * self.venue_api.static[symbol]['priceIncrement']
             else:
-                data['aggressive_edit_price_depth'] = self.parameters['aggressive_edit_price_tolerance']
+                data['aggressive_edit_price_depth'] = self.parameters['aggressive_edit_price_increments']
                 data['aggressive_edit_trigger_depth'] = None  # takers don't peg
 
                 # stop_depth = how far to set the stop on risk reducing orders
@@ -987,16 +986,16 @@ class AlgoStrategy(Strategy):
         if np.sign(original_size) == np.sign(globalDelta):
             # if (global_delta_plus / mid + original_size) > delta_limit:
             #     trimmed_size = delta_limit - global_delta_plus / mid
-            #     self.strategy.logger.debug(
-            #         f'{original_size * mid} {symbol} would increase risk over {self.strategy.limit.delta_limit * 100}% of {self.strategy.risk_state.pv} --> trimming to {trimmed_size * mid}')
+            #     self.logger.debug(
+            #         f'{original_size * mid} {symbol} would increase risk over {self.limit.delta_limit * 100}% of {self.risk_state.pv} --> trimming to {trimmed_size * mid}')
             # elif (global_delta_minus / mid + original_size) < -delta_limit:
             #     trimmed_size = -delta_limit - global_delta_minus / mid
-            #     self.strategy.logger.debug(
-            #         f'{original_size * mid} {symbol} would increase risk over {self.strategy.limit.delta_limit * 100}% of {self.strategy.risk_state.pv} --> trimming to {trimmed_size * mid}')
+            #     self.logger.debug(
+            #         f'{original_size * mid} {symbol} would increase risk over {self.limit.delta_limit * 100}% of {self.risk_state.pv} --> trimming to {trimmed_size * mid}')
             # else:
             #     trimmed_size = original_size
             # if np.sign(trimmed_size) != np.sign(original_size):
-            #     self.strategy.logger.debug(f'skipping (we don t flip orders)')
+            #     self.logger.debug(f'skipping (we don t flip orders)')
             #     return
             if abs(globalDelta / mid + original_size) > delta_limit:
                 if (globalDelta / mid + original_size) > delta_limit:
@@ -1021,14 +1020,14 @@ class AlgoStrategy(Strategy):
                                        for _symbol in self.keys())
             # mkt order if target reached.
             # TODO: pray for the other coin to hit the same condition...
-            if current_basket_price + 2 * abs(params['update_time_delta']) * params['takerVsMakerFee'] * mid < \
+            if current_basket_price + 2 * abs(params['update_time_delta']) * self.strategy.venue_api.static[symbol]['takerVsMakerFee'] * mid < \
                     self[symbol]['rush_in_level']:
                 # TODO: could replace current_basket_price by two way sweep after if
                 self.venue_api.peg_or_stopout(symbol, size, self.venue_api.orderbook,
                                                       edit_trigger_depth=params['edit_trigger_depth'],
                                                       edit_price_depth='rush_in', stop_depth=None)
                 return
-            elif current_basket_price - 2 * abs(params['update_time_delta']) * params['takerVsMakerFee'] * mid > \
+            elif current_basket_price - 2 * abs(params['update_time_delta']) * self.strategy.venue_api.static[symbol]['takerVsMakerFee'] * mid > \
                     self[symbol]['rush_out_level']:
                 # go all in as this decreases margin
                 size = - self.position_manager[symbol]['delta'] / mid
@@ -1055,25 +1054,40 @@ class AlgoStrategy(Strategy):
                                               edit_trigger_depth=edit_trigger_depth,
                                               edit_price_depth=edit_price_depth, stop_depth=stop_depth)
 
-class SignalEngine():
-    '''SignalEngine computes derived data from venue_api and/or externally generated client orders'''
-    def __init__(self, strategy, parameters):
+class SignalEngine(dict):
+    '''SignalEngine computes derived data from venue_api and/or externally generated client orders
+    key/values hold target'''
+    def __init__(self, parameters):
         self.parameters = parameters
-        self.strategy = strategy
+        self.strategy = None
 
-        self.orderbook = {symbol: collections.deque(maxlen=parameters['cache_size'])
-                          for symbol in parameters['symbols']}
-        self.trades_cache = {symbol: collections.deque(maxlen=parameters['cache_size'])
-                             for symbol in parameters['symbols']}
+        # raw data caches, filled by API. Processed data is in inheriting objects.
+        self.orderbook = None
+        self.trades_cache = None
 
     @staticmethod
-    async def build(strategy, parameters):
+    async def build(parameters):
         if not parameters:
             return None
         elif parameters['signal'] == 'vwap':
-            return ExternalSignal(strategy, parameters)
+            result = ExternalSignal(parameters)
         elif parameters['signal'] == 'spread_distribution':
-            return SpreadTradeSignal(strategy, parameters)
+            result = SpreadTradeSignal(parameters)
+        await result.reconcile()
+        parameters['symbols'] = list(result.keys())
+
+        result.orderbook = {symbol: collections.deque(maxlen=parameters['cache_size'])
+                          for symbol in parameters['symbols']}
+        result.trades_cache = {symbol: collections.deque(maxlen=parameters['cache_size'])
+                             for symbol in parameters['symbols']}
+
+        return result
+
+    async def reconcile(self):
+        pass
+
+    def get_symbols(self):
+        return self.parameters['symbols']
 
     async def to_json(self):
         coin = list(self.orderbook.keys())[0].replace(':USD', '').replace('/USD', '')
@@ -1094,19 +1108,19 @@ class SignalEngine():
                             await fp.write(json.dumps(data, cls=NpEncoder))
 
     def process_order_book_update(self, message):
-        api = self.strategy.market_data_api
+        api = self.strategy.venue_api
         marketId = api.safe_string(message, 'market')
         if marketId in api.markets_by_id:
-            symbol = api.market_data_api.markets_by_id[marketId]['symbol']
-            item = {'timestamp': api.market_data_api.orderbooks[symbol]['timestamp']}
+            symbol = api.markets_by_id[marketId]['symbol']
+            item = {'timestamp': api.orderbooks[symbol]['timestamp']}
             if 'mid' in self.parameters['orderbook_granularity']:
-                item |= {'mid': 0.5 * (api.market_data_api.orderbooks[symbol]['bids'][0][0] +
-                                       api.market_data_api.orderbooks[symbol]['asks'][0][0])}
+                item |= {'mid': 0.5 * (api.orderbooks[symbol]['bids'][0][0] +
+                                       api.orderbooks[symbol]['asks'][0][0])}
             if 'full' in self.parameters['orderbook_granularity']:
                 item |= {key: api.orderbooks[symbol][key] for key in ['timestamp', 'bids', 'asks']}
 
-            data = next(data for data in self.parameters['orderbook_granularity'] if
-                        isinstance(data, dict) and ('depth' in data))
+            data = next((data for data in self.parameters['orderbook_granularity'] if
+                        isinstance(data, dict) and ('depth' in data)),None)
             if data:
                 depth = data['depth']
                 side_px = sweep_price_atomic(api.orderbooks[symbol], depth)
@@ -1120,27 +1134,34 @@ class SignalEngine():
             self.trades_cache[trade['symbol']].append(trade)
 
 class ExternalSignal(SignalEngine):
-    def __init__(self, strategy, parameters):
-        super().__init__(strategy, parameters)
+    def __init__(self, parameters):
+        super().__init__(parameters)
 
-        self.vwap = dict()
+        self.vwap = None
 
-    async def update_order(self):
+    async def reconcile(self):
+        # TODO: clean up this message schema in pfoptimizer
         weights = await async_read_csv(self.parameters['filename'], index_col=0)
+        weights = weights.set_index('new_symbol').rename(columns={'spot':'benchmark','optimalWeight':'target'})
+        weights['target'] /= weights['benchmark']
+
+        weights['timestamp'] = myUtcNow()
+
+        for symbol in weights.index:
+            self[symbol] = {'target': - weights.loc[symbol, 'target'].squeeze(),
+                            'benchmark': weights.loc[symbol, 'benchmark'].squeeze()}
+
         cash_symbol = weights['spot_ticker'].unique()[0]
+        self[cash_symbol] = {'target': - sum(self[_symbol]['target'] for _symbol in self),
+                            'benchmark': self[list(self.keys())[0]]['benchmark']}
 
-        spot = weights['spot'].unique()[0]
-        targets = (-weights.set_index('new_symbol')['optimalWeight'] / spot).to_dict()
-        targets[cash_symbol] = -sum(targets.values())
-        return (spot, targets, datetime.utcnow().timestamp() * 1000)
-
-    async def initialize_vwap(self,market_data_api):
+    async def initialize_vwap(self):
         # initialize vwap_history
-        nowtime = myUtcNow()
+        nowtime = myUtcNow(return_type='datetime')
         frequency = timedelta(minutes=1)
         start = nowtime - timedelta(seconds=self.parameters['stdev_window'])
         vwap_history_list = await safe_gather([fetch_trades_history(
-            market_data_api.market(symbol)['id'], market_data_api, start, nowtime, frequency=frequency)
+            self.strategy.venue_api.market(symbol)['id'], self.strategy.venue_api, start, nowtime, frequency=frequency)
             for symbol in self.parameters['symbols']], semaphore=self.strategy.rest_semaphor)
         self.vwap = {symbol: data for symbol, data in
                        zip(self.parameters['symbols'], vwap_history_list)}
@@ -1148,33 +1169,50 @@ class ExternalSignal(SignalEngine):
     def compile_vwap(self, frequency, purge=True):
         # get times series of target baskets, compute quantile of increments and add to last price
         for symbol in self.trades_cache:
-            if len(self.trades_cache[symbol]) == 0: continue
-            data = pd.DataFrame(self.trades_cache[symbol])
-            data = data[(data['timestamp'] > self.vwap[symbol]['vwap'].index.max().timestamp() * 1000)]
-            if data.empty: continue
+            if len(self.trades_cache[symbol]) > 0:
+                data = pd.DataFrame(self.trades_cache[symbol])
+                data = data[(data['timestamp'] > self.vwap[symbol]['vwap'].index.max().timestamp() * 1000)]
+                if data.empty: continue
 
-            # compute vwaps
-            data['liquidation'] = data['info'].apply(lambda x: x['liquidation'])
-            data.rename(columns={'datetime': 'time', 'amount': 'size'}, inplace=True)
-            data['size'] = data.apply(lambda x: x['size'] if x['side'] == 'buy' else -x['size'], axis=1)
-            data = data[['size', 'price', 'liquidation', 'time']]
-            vwap = vwap_from_list(frequency=frequency, trades=data)
-            # append vwaps
-            for key in self.vwap[symbol]:
-                updated_data = pd.concat([self.vwap[symbol][key],vwap[key]],axis=0)
-                self.vwap[symbol][key] = updated_data[~updated_data.index.duplicated()].sort_index().ffill()
+                # compute vwaps
+                data['liquidation'] = data['info'].apply(lambda x: x['liquidation'])
+                data.rename(columns={'datetime': 'time', 'amount': 'size'}, inplace=True)
+                data['size'] = data.apply(lambda x: x['size'] if x['side'] == 'buy' else -x['size'], axis=1)
+                data = data[['size', 'price', 'liquidation', 'time']]
+                vwap = vwap_from_list(frequency=frequency, trades=data)
 
-            if purge:
-                self.trades_cache[symbol].clear()
+                # append vwaps
+                for key in self.vwap[symbol]:
+                    updated_data = pd.concat([self.vwap[symbol][key],vwap[key]],axis=0)
+                    self.vwap[symbol][key] = updated_data[~updated_data.index.duplicated()].sort_index().ffill()
+
+                if purge:
+                    self.trades_cache[symbol].clear()
 
 class SpreadTradeSignal(SignalEngine):
 
-    def __init__(self,strategy,parameters):
-        super().__init__(strategy,parameters)
+    def __init__(self,parameters):
+        super().__init__(parameters)
 
         self.spread_trades = []
         self.spread_vwap = []
         self.spread_distribution = []
+
+    async def update_quoter_analytics(self):
+        '''specialized to execute externally generated client orders'''
+        if all(abs(self.position_manager[symbol]['delta']) < self.parameters[
+            'significance_threshold'] * self.position_manager.pv for symbol in self.parameters['symbols']):
+            raise Strategy.ReadyToShutdown(
+                f'no {self.keys()} delta and no {self.signal_engine} order --> shutting down bot')
+        if os.path.isfile(self.signal_engine.parameters['filename']):
+            await self.signal_engine.reconcile()
+        else:
+            targets = {key: 0 for key in self}
+            spot = self.venue_api.mid(next(key for key in self if self.venue_api.market(key)['type'] == 'spot'))
+            timestamp = myUtcNow()
+        self.set_target(self.signal_engine)
+
+        self.signal_engine.compile_vwap(frequency=timedelta(minutes=1))
 
     def compile_spread_trades(self, purge=True):
         '''compute maker/taker spread trades and vwap'''
@@ -1229,42 +1267,33 @@ class VenueAPI(ccxtpro.ftx):
         def __init__(self):
             super().__init__()
 
-    @staticmethod
-    async def build(strategy,parameters):
-        if parameters['exchange_name'] not in ['ftx']:
-            raise Exception(f'exchange not implemented')
-        else:
-            exchange = ccxtpro.ftx(parameters, config={  ## David personnal
+    def __init__(self, parameters):
+        super().__init__(config={  ## David personnal
                 'enableRateLimit': True,
                 'apiKey': 'ZUWyqADqpXYFBjzzCQeUTSsxBZaMHeufPFgWYgQU',
                 'secret': api_params['ftx']['key'],
                 'newUpdates': True})
+        self.parameters = parameters
+        self.strategy = None
+        self.static = None
+
+        self.message_missed = collections.deque(maxlen=parameters['cache_size'])
+        self.options['tradesLimit'] = parameters['cache_size'] # TODO: shoud be in signalengine with a different name. inherited from ccxt....
+
+    @staticmethod
+    async def build(parameters):
+        if parameters['exchange'] not in ['ftx']:
+            raise Exception(f'exchange not implemented')
+        else:
+            exchange = VenueAPI(parameters)
             exchange.verbose = False
             if 'subaccount' in parameters: exchange.headers = {'FTX-SUBACCOUNT': parameters['subaccount']}
             exchange.authenticate()
             await exchange.load_markets()
-
-        exchange.strategy = strategy
-        trading_fees = await exchange.fetch_trading_fees()
-        exchange.static = Static()
-        for symbol in parameters['symbols']:
-            exchange.static[symbol] = \
-                {
-                    'priceIncrement': float(exchange.markets[symbol]['info']['priceIncrement']),
-                    'sizeIncrement': float(exchange.markets[symbol]['info']['minProvideSize']),
-                    'takerVsMakerFee': trading_fees[symbol]['taker'] - trading_fees[symbol]['maker']
-                }
+            symbols = parameters['symbols'] if 'symbols' in parameters else list(exchange.markets.keys())
+            exchange.static = await Static.build(exchange,symbols)
 
         return exchange
-
-    def __init__(self, strategy, static, parameters):
-        super().__init__(config=parameters)
-        self.parameters = {'timestamp':myUtcNow()}|parameters
-        self.strategy = strategy
-        self.static = static
-
-        self.message_missed = collections.deque(maxlen=parameters['cache_size'])
-        self.options['tradesLimit'] = parameters['cache_size'] # TODO: shoud be in signalengine with a different name. inherited from ccxt....
 
     # --------------------------------------------------------------------------------------------
     # ---------------------------------- various helpers -----------------------------------------
@@ -1288,8 +1317,20 @@ class VenueAPI(ccxtpro.ftx):
         populates event_records, maintains pending_new
         no lock is done, so we keep collecting mktdata'''
         orderbook = await self.watch_order_book(symbol)
-        if not self.strategy.lock['reconciling'].locked():
-            self.strategy.process_order_book(symbol, orderbook)
+        previous_mid = self.mid(symbol)  # based on ticker, in general
+        self.populate_ticker(symbol, orderbook)
+
+        # don't waste time on deep updates or nothing to do
+        # blocked by reconciling lock
+        mid = self.mid(symbol)
+        original_size = self.strategy.signal_engine[symbol]['target'] - self.strategy.position_manager[symbol]['delta'] / mid
+        if abs(original_size) < self.strategy.parameters['significance_threshold'] * self.strategy.position_manager.pv / mid \
+                or abs(original_size) < self.static[symbol]['sizeIncrement'] \
+                or self.mid(symbol) == previous_mid \
+                or self.strategy.lock['reconciling'].locked():
+            return
+        else:
+            self.strategy.process_order_book_update(symbol,orderbook)
 
     def populate_ticker(self,symbol,orderbook):
         timestamp = orderbook['timestamp'] * 1000
@@ -1301,22 +1342,6 @@ class VenueAPI(ccxtpro.ftx):
                                 'mid': 0.5 * (orderbook['bids'][0][0] + orderbook['asks'][0][0]),
                                 'bidVolume': orderbook['bids'][0][1],
                                 'askVolume': orderbook['asks'][0][1]}
-
-    def process_order_book(self, symbol, orderbook):
-        with self.strategy.lock[symbol]:
-            previous_mid = self.mid(symbol)  # based on ticker, in general
-            self.populate_ticker(symbol, orderbook)
-
-            # don't waste time on deep updates or nothing to do
-            # size to do:
-            mid = self.mid(symbol)
-            original_size = self.strategy[symbol]['target'] - self.strategy.position_manager[symbol]['delta'] / mid
-            if abs(original_size) < self.strategy.parameters['significance_threshold'] * self.strategy.position_manager.pv / mid \
-                    or abs(original_size) < self.static[symbol]['sizeIncrement'] \
-                    or self.mid(symbol) == previous_mid:
-                return
-            else:
-                self.strategy.quoter(symbol, orderbook)
 
     # ---------------------------------- fills
 
@@ -1340,13 +1365,6 @@ class VenueAPI(ccxtpro.ftx):
                 self.strategy.process_order(order)
 
     # ---------------------------------- misc
-
-    @loop
-    async def monitor_risk(self):
-        '''redundant minutely risk check'''#TODO: would be cool if this could interupt other threads and restart it when margin is ok.
-        await asyncio.sleep(self.strategy.position_manager.limit.check_frequency)
-        await self.strategy.position_manager.reconcile()
-        self.strategy.position_manager.check_limit()
 
     async def watch_ticker(self, symbol, params={}):
         '''watch_order_book is faster than watch_tickers so we DON'T LISTEN TO TICKERS. Dirty...'''
@@ -1379,7 +1397,7 @@ class VenueAPI(ccxtpro.ftx):
     def handle_order_book_update(self, client, message):
         '''just implemented so we don't block messages while reconciling'''
         super().handle_order_book_update(client, message)
-        self.signal_engine.process_order_book_update(message)
+        self.strategy.signal_engine.process_order_book_update(message)
 
     def round_to_increment(self, sizeIncrement, amount):
         if amount >= 0:
@@ -1424,22 +1442,22 @@ class VenueAPI(ccxtpro.ftx):
         # skip if there is inflight on the spread
         # if self.pending_new_histories(coin) != []:#TODO: rather incorporate orders_pending_new in risk, rather than block
         #     if self.pending_new_histories(coin,symbol) != []:
-        #         self.logger.info('orders {} should not be in flight'.format([order['clientOrderId'] for order in self.pending_new_histories(coin,symbol)[-1]]))
+        #         self.strategy.logger.info('orders {} should not be in flight'.format([order['clientOrderId'] for order in self.pending_new_histories(coin,symbol)[-1]]))
         #     else:
         #         # this happens mostly between pending_new and create_order on the other leg. not a big deal...
-        #         self.logger.info('orders {} still in flight. holding off {}'.format(
+        #         self.strategy.logger.info('orders {} still in flight. holding off {}'.format(
         #             [order['clientOrderId'] for order in self.pending_new_histories(coin)[-1]],symbol))
         #     return
-        pending_new_histories = self.strategy.order_manager.filter_order_histories(self.strategy.parameters['symbols'],
+        pending_new_histories = self.strategy.order_manager.filter_order_histories(self.parameters['symbols'],
                                                                           ['pending_new'])
         if pending_new_histories != []:
-            self.logger.info('orders {} should not be in flight'.format([order[-1]['clientOrderId'] for order in pending_new_histories]))
+            self.strategy.logger.info('orders {} should not be in flight'.format([order[-1]['clientOrderId'] for order in pending_new_histories]))
             return
 
         # if no open order, create an order
         order_side = 'buy' if size>0 else 'sell'
         if len(event_histories)==0:
-            trimmed_size = self.position_manager.trim_to_margin(mid, size, symbol)
+            trimmed_size = self.strategy.position_manager.trim_to_margin(mid, size, symbol)
             asyncio.create_task(self.create_order(symbol, 'limit', order_side, abs(trimmed_size), price=edit_price,
                                                   params={'postOnly': not isTaker,
                                                           'ioc': isTaker,
@@ -1494,7 +1512,7 @@ class VenueAPI(ccxtpro.ftx):
                                                     'comment': params['comment']})
         try:
             # REST request
-            order = await self.create_order(symbol, type, side, amount, price, params | {'clientOrderId':clientOrderId})
+            order = await super().create_order(symbol, type, side, amount, price, params | {'clientOrderId':clientOrderId})
         except Exception as e:
             order = {'clientOrderId':clientOrderId,
                      'timestamp':myUtcNow(),
@@ -1520,7 +1538,7 @@ class VenueAPI(ccxtpro.ftx):
                                         for key in ['clientOrderId','symbol','side','amount','remaining','price']})  # may be needed
 
         try:
-            status = await self.cancel_order(None,params={'clientOrderId':clientOrderId})
+            status = await super().cancel_order(None,params={'clientOrderId':clientOrderId})
             self.strategy.order_manager.cancel_sent({'clientOrderId':clientOrderId,
                                         'symbol':symbol,
                                         'status':status,
@@ -1539,12 +1557,12 @@ class VenueAPI(ccxtpro.ftx):
                                              'comment':trigger})
             return False
         except Exception as e:
-            self.strategy.logger.info(f'{clientOrderId} failed to cancel: {str(e)}')
+            self.strategy.logger.info(f'{clientOrderId} failed to cancel: {str(e)} --> retrying')
             await asyncio.sleep(.1)
             return await self.strategy.order_manager.cancel_order(clientOrderId, trigger+'+')
 
     async def close_dust(self):
-        data = await asyncio.gather(*[self.fetch_balance(),self.fetch_markets()])
+        data = await safe_gather([self.fetch_balance(),self.fetch_markets()],semaphore=self.strategy.rest_semaphor)
         balances = data[0]
         markets = data[1]
         coros = []
@@ -1561,71 +1579,20 @@ class VenueAPI(ccxtpro.ftx):
                     request = {'fromCoin':'USD','toCoin':coin,'size':abs(size)*self.mid(f'{coin}/USD')}
                 coros += [self.privatePostOtcQuotes(request)]
 
-        quoteId_list = await asyncio.gather(*coros)
-        await asyncio.gather(*[self.privatePostOtcQuotesQuoteIdAccept({'quoteId': int(quoteId['result']['quoteId'])})
+        quoteId_list = await safe_gather(coros,semaphore=self.strategy.rest_semaphor)
+        await safe_gather([self.privatePostOtcQuotesQuoteIdAccept({'quoteId': int(quoteId['result']['quoteId'])},semaphore=self.strategy.rest_semaphor)
         for quoteId in quoteId_list
-        if quoteId['success']])
-
-async def get_exec_request(exchange_obj, order_name, **kwargs):
-    dirname = os.path.join(os.sep, configLoader.get_config_folder_path(config_name=kwargs['config']), "pfoptimizer")
-    exchange_name = exchange_obj.id
-    subaccount = exchange_obj.headers['FTX-SUBACCOUNT']
-
-    if order_name == 'spread':
-        coin = kwargs['coin']
-        cash_name = coin + '/USD'
-        future_name = coin + '-PERP'
-        cash_price = float(exchange_obj.market(cash_name)['info']['price'])
-        future_price = float(exchange_obj.market(future_name)['info']['price'])
-        target_portfolio = pd.DataFrame(columns=['coin', 'name', 'optimalCoin', 'currentCoin', 'spot_price'], data=[
-            [coin, cash_name, float(kwargs['cash_size']) / cash_price, 0, cash_price],
-            [coin, future_name, -float(kwargs['cash_size']) / future_price, 0, future_price]])
-
-    elif order_name == 'flatten':  # only works for basket with 2 symbols
-        future_weights = pd.DataFrame(columns=['name', 'optimalWeight'])
-        diff = await diff_portoflio(exchange_obj, future_weights)
-        smallest_risk = diff.groupby(by='coin')['currentCoin'].agg(
-            lambda series: series.apply(abs).min() if series.shape[0] > 1 else 0)
-        target_portfolio = diff
-        target_portfolio['optimalCoin'] = diff.apply(lambda f: smallest_risk[f['coin']] * np.sign(f['currentCoin']),
-                                                     axis=1)
-
-    elif order_name == 'unwind':
-        future_weights = pd.DataFrame(columns=['name', 'optimalWeight'])
-        target_portfolio = await diff_portoflio(exchange_obj, future_weights)
-    else:
-        raise Exception("unknown command")
-
-    target_portfolio['exchange'] = exchange_name
-    target_portfolio['subaccount'] = subaccount
-    target_portfolio.rename(columns={'spot_price':'spot','optimalUSD':'optimalWeight'},inplace=True)
-    target_portfolio['spot_ticker'] = target_portfolio['coin'].apply(lambda c: f'{c}/USD')
-    target_portfolio['new_symbol'] = target_portfolio['name'].apply(lambda f: exchange_obj.market(f)['symbol'])
-
-    dfs = []
-    filenames = []
-    for coin, df in target_portfolio.groupby(by='coin'):
-        temp_filename = os.path.join(os.sep, dirname, f'{order_name}_{exchange_name}_{subaccount}_{coin}.csv')
-        filenames += [temp_filename]
-        df.to_csv(temp_filename)
-    return filenames
-
-async def risk_reduction_routine(order_name, **kwargs):
-    config = configLoader.get_executor_params(order=order_name, dirname=kwargs['config'])
-    exchange = await VenueAPI.build(kwargs['exchange'], config, subaccount=kwargs['subaccount'])
-    orders = await get_exec_request(exchange_obj=exchange, order_name=order_name, **kwargs)
-    exchange.logger.critical(f'generated {orders}, now them all')
-    await exchange.close()
-    await asyncio.gather(*[single_coin_routine(order, **kwargs) for order in orders])
+        if quoteId['success']],semaphore=self.strategy.rest_semaphor)
 
 async def single_coin_routine(order_name, **kwargs):
+    parameters = configLoader.get_executor_params(order=order_name,dirname=kwargs['config'])
+    order = os.path.join(os.sep, configLoader.get_config_folder_path(config_name=kwargs['config']), "pfoptimizer", order_name)
+    parameters["signal_engine"]['filename'] = order
+
+    strategy = await Strategy.build(parameters)
+
     try:
-        parameters = configLoader.get_executor_params(order=order_name,dirname=kwargs['config'])
-        order = os.path.join(os.sep, configLoader.get_config_folder_path(config_name=kwargs['config']), "pfoptimizer", order_name)
-        parameters["signal_engine"]['filename'] = order
-
-        strategy = await Strategy.build(parameters)
-
+        await strategy.run()
     except Exception as e:
         logger = logging.getLogger('tradeexecutor')
         logger.critical(str(e), exc_info=True)
@@ -1655,7 +1622,7 @@ async def listen(order_name,**kwargs):
     coros = [exchange.broadcast_analytics()] + \
             sum([[exchange.monitor_order_book(symbol),
                   exchange.monitor_trades(symbol)]
-                 for symbol in self.strategy.parameters['symbols']], [])
+                 for symbol in exchange.strategy.parameters['symbols']], [])
     await asyncio.gather(*coros)
 
 @api
@@ -1681,8 +1648,6 @@ def main(*args,**kwargs):
 
     if 'listen' in order_name:
         asyncio.run(listen(order_name, **kwargs))
-    elif order_name in ['unwind','flatten']:
-        asyncio.run(risk_reduction_routine(order_name, **kwargs))
     else:
         asyncio.run(single_coin_routine(order_name, **kwargs)) # --> I am filled or I timed out and I have flattened position
 

@@ -175,9 +175,24 @@ def collateralWeightInitial(future):
     else:
         return max(0.01,future['collateralWeight']-0.05)
 
-class Static():
-    '''static class'''
+class Static(dict):
     _cache = dict() # {function_name: result}
+
+    def __init__(self):
+        super().__init__()
+
+    @staticmethod
+    async def build(exchange,symbols):
+        result = Static()
+        trading_fees = await exchange.fetch_trading_fees()
+        for symbol in symbols:
+            result[symbol] = \
+                {
+                    'priceIncrement': float(exchange.markets[symbol]['info']['priceIncrement']),
+                    'sizeIncrement': float(exchange.markets[symbol]['info']['minProvideSize']),
+                    'takerVsMakerFee': trading_fees[symbol]['taker'] - trading_fees[symbol]['maker']
+                }
+        return result
 
     ### get all static fields TODO: could just append coindetails if it wasn't for index,imf factor,positionLimitWeight
     @staticmethod

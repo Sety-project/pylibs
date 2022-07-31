@@ -151,5 +151,14 @@ def parse_time_param(param):
         horizon = timedelta(weeks=horizon)
     return horizon
 
-def myUtcNow(self):
-    return datetime.utcnow().replace(tzinfo=timezone.utc).timestamp() * 1000
+def myUtcNow(return_type='float'):
+    result = datetime.utcnow()
+    if return_type == 'datetime':
+        return result
+    result = result.replace(tzinfo=timezone.utc).timestamp() * 1000
+    if return_type == 'float':
+        return result
+    result = int(result)
+    if return_type == 'int':
+        return result
+    raise Exception(f'invalid return_type {return_type}')
