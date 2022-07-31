@@ -72,6 +72,52 @@ async def refresh_universe(exchange, universe_filter):
         universe = configLoader.get_bases(universe_filter)
         return universe
 
+async def get_exec_request(run_type, exchange, **kwargs):
+    subaccount = kwargs['subaccount']
+    exchange_obj = await open_exchange(exchange,subaccount)
+    dirname = os.path.join(os.sep, configLoader.get_config_folder_path(config_name=kwargs['config']), "pfoptimizer")
+
+    if run_type == 'spread':
+        coin = kwargs['coin']
+        cash_name = coin + '/USD'
+        future_name = coin + '-PERP'
+        cash_price = float(exchange_obj.market(cash_name)['info']['price'])
+        future_price = float(exchange_obj.market(future_name)['info']['price'])
+        target_portfolio = pd.DataFrame(columns=['coin', 'name', 'optimalCoin', 'currentCoin', 'spot_price'], data=[
+            [coin, cash_name, float(kwargs['cash_size']) / cash_price, 0, cash_price],
+            [coin, future_name, -float(kwargs['cash_size']) / future_price, 0, future_price]])
+
+    elif run_type == 'flatten':  # only works for basket with 2 symbols
+        future_weights = pd.DataFrame(columns=['name', 'optimalWeight'])
+        diff = await diff_portoflio(exchange_obj, future_weights)
+        smallest_risk = diff.groupby(by='coin')['currentCoin'].agg(
+            lambda series: series.apply(abs).min() if series.shape[0] > 1 else 0)
+        target_portfolio = diff
+        target_portfolio['optimalCoin'] = diff.apply(lambda f: smallest_risk[f['coin']] * np.sign(f['currentCoin']),
+                                                     axis=1)
+
+    elif run_type == 'unwind':
+        future_weights = pd.DataFrame(columns=['name', 'optimalWeight'])
+        target_portfolio = await diff_portoflio(exchange_obj, future_weights)
+    else:
+        raise Exception("unknown command")
+
+    target_portfolio['exchange'] = exchange
+    target_portfolio['subaccount'] = subaccount
+    target_portfolio.rename(columns={'spot_price':'spot','optimalUSD':'optimalWeight'},inplace=True)
+    target_portfolio['spot_ticker'] = target_portfolio['coin'].apply(lambda c: f'{c}/USD')
+    target_portfolio['new_symbol'] = target_portfolio['name'].apply(lambda f: exchange_obj.market(f)['symbol'])
+
+    await exchange_obj.close()
+
+    dfs = []
+    filenames = []
+    for coin, df in target_portfolio.groupby(by='coin'):
+        temp_filename = os.path.join(os.sep,dirname,f'weights_{exchange}_{subaccount}_{coin}.csv')
+        filenames += [temp_filename]
+        df.to_csv(temp_filename)
+    return filenames
+
 # runs optimization * [time, params]
 async def perp_vs_cash(
         exchange,
@@ -372,9 +418,6 @@ def main(*args,**kwargs):
 
     run_type = args[0]
     exchange_name = args[1]
-    if run_type == 'sysperp':
-        subaccount = kwargs['subaccount']
-
     config = configLoader.get_pfoptimizer_params(dirname=kwargs['config'] if 'config' in kwargs else None)
 
     if run_type == 'basis':
@@ -382,6 +425,7 @@ def main(*args,**kwargs):
         depth = float(kwargs['depth']) if 'depth' in kwargs else 0
         res = enricher_wrapper(*args[1:],instrument_type,depth)
     if run_type == 'sysperp':
+        subaccount = kwargs['subaccount']
         res_list = asyncio.run(strategy_wrapper(
             exchange_name=exchange_name,
             subaccount=subaccount,
@@ -448,6 +492,8 @@ def main(*args,**kwargs):
                                         backtest_start= datetime(2021,2,17).replace(tzinfo=timezone.utc),#.replace(minute=0, second=0, microsecond=0)-timedelta(days=2),# live start was datetime(2022,6,21,19),
                                         backtest_end = datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0, second=0, microsecond=0)-timedelta(hours=1)))
         return pd.DataFrame()
+    elif run_type in ['unwind','flatten','spread']:
+        res = asyncio.run(get_exec_request(run_type,exchange_name,**kwargs))
     else:
         logger.critical(f'commands: sysperp [signal_horizon] [holding_period], backtest, depth [signal_horizon] [holding_period]')
     return res

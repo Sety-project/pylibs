@@ -157,14 +157,19 @@ MyModules.register(name='histfeed',
                    kwargs_validation={'nb_days': [lambda x: isinstance(int(x), int), 'not an int']})
 MyModules.register(name='pfoptimizer',
                    testbed=["sysperp ftx subaccount=debug",
-                             "basis ftx instrument_type=perpetual depth=100000"],
+                            "basis ftx instrument_type=perpetual depth=100000",
+                            "unwind ftx subaccount=debug",
+                            "flatten ftx subaccount=debug",
+                            "spread ftx subaccount=debug coin=ETH cash_size=10"],
                    args_validation=[
-                       ['run_type', lambda x: x in ["sysperp", "backtest", "depth", "basis"],'not in {}'.format(["sysperp", "backtest", "depth", "basis"])],
+                       ['run_type', lambda x: x in ["sysperp", "backtest", "depth", "basis", "unwind","flatten","spread"],'not in {}'.format(["sysperp", "backtest", "depth", "basis", "unwind","flatten","spread"])],
                        ['exchange', lambda x: x in ["ftx"], 'not in {}'.format(["ftx"])]],
                    kwargs_validation={'instrument_type':[lambda x: ["perpetual", "future", "all"],'not in {}'.format(["perpetual", "future", "all"])],
                                       'subaccount':[lambda x: True,'not found'],
                                       'depth':[lambda x: isinstance(float(x),float),'need a float'],
-                                      'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(config_name=x))),'not found']})
+                                      'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(config_name=x))),'not found'],
+                                      'coin':[lambda x: isinstance(str(x),str),'need a str'],
+                                      'cash_size':[lambda x: isinstance(float(x),float),'need a float']})
 MyModules.register(name='riskpnl',
                    testbed=["risk ftx debug nb_runs=1",
                              "plex ftx debug period=2d"],
