@@ -7,7 +7,7 @@ from utils.ftx_utils import Static, find_spot_ticker
 from utils.config_loader import *
 from histfeed.ftx_history import get_history
 from utils.ccxt_utilities import open_exchange
-from utils.api_utils import MyModules,api
+from utils.api_utils import api
 
 async def refresh_universe(exchange, universe_filter):
     ''' Reads from universe.json '''
