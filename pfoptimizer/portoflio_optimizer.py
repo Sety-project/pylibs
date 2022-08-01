@@ -371,7 +371,8 @@ def to_json(exchange, all,config_name):
 
     with open(f'{pfoptimizer_res_last_filename}.json','w+') as fp:
         json.dump(all.T.to_dict(),fp,cls=NpEncoder)
-    all['underlying'] = all.apply(lambda f: f.name.split('/')[0].split(':')[0],axis=1)
+    all['underlying'] = all.apply(lambda f: exchange.market(f.name)['base'],axis=1)
+    all.index = [exchange.market(f)['symbol'] for f in all.index]
     for coin, data in all.groupby(by='underlying'):
         with open(f'{pfoptimizer_res_last_filename}_{coin}.json', 'w+') as fp:
             json.dump(data.T.to_dict(), fp,cls=NpEncoder)

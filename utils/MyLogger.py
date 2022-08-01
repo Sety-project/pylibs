@@ -24,11 +24,15 @@ class ExecutionLogger:
             os.umask(0)
             os.makedirs(self.mktdata_dirname, mode=0o777)
 
-        self.history = []
-
-    async def write_data(self, data):
-        async with aiofiles.open(self.json_filename, 'w') as file:
-            await file.write(json.dumps(data))
+    async def write_history(self, data):
+        if os.path.isfile(self.json_filename):
+            async with aiofiles.open(self.json_filename, 'r') as file:
+                content = await file.read()
+            history = json.load(content)
+        else:
+            history = []
+        async with aiofiles.open(self.json_filename, 'w+') as file:
+            await file.write(json.dumps(history+[data]))
 
     @staticmethod
     def batch_summarize_exec_logs(exchange='ftx', subaccount='',dirname=os.path.join(os.sep, 'tmp','prod','tradeexecutor'),

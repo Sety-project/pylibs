@@ -522,7 +522,7 @@ class PositionManager(dict):
 
         delta_error = {symbol: self[symbol]['delta'] - (previous_delta[symbol]['delta'] if symbol in previous_delta else 0)
                        for symbol in self}
-        self.risk_reconciliations += [{'symbol': symbol_,
+        self.risk_reconciliations = [{'symbol': symbol_,
                                        'delta_timestamp': self[symbol_]['delta_timestamp'],
                                        'delta': self[symbol_]['delta'],
                                        'netDelta': self.coin_delta(symbol_),
@@ -631,10 +631,11 @@ class Strategy(dict):
         self.lock = {'reconciling':threading.Lock()}
         # self.lock |= {symbol: CustomRLock() for symbol in self.parameters['symbols']}
 
-    def to_json(self):
-        return {'parameters': self.parameters} \
-               | {key: getattr(self, key).to_json()
-                  for key in ['strategy', 'order_manager', 'position_manager']}
+    def to_dict(self):
+        return {'parameters': self.parameters,
+                'stategy': dict(self),
+                'order_manager': self.order_manager.to_dict(),
+                'position_manager': self.position_manager.to_dict()}
 
     @staticmethod
     async def build(parameters):
@@ -651,7 +652,7 @@ class Strategy(dict):
                                        order_manager,
                                        position_manager)
         else:
-            raise Exception("not implemented")
+            raise Exception("{} not found".format(parameters['signal_engine']['filename']))
 
         await result.reconcile()
 
@@ -701,7 +702,7 @@ class Strategy(dict):
 
         # critical job is done, release lock and print data
         if self.order_manager.fill_flag:
-            await self.data_logger.write_history()
+            await self.data_logger.write_history(self.to_dict())
             self.order_manager.fill_flag = False
 
     def replay_missed_messages(self):
