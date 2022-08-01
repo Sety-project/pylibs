@@ -134,6 +134,8 @@ class NpEncoder(json.JSONEncoder):
             return obj.to_json()
         if isinstance(obj, collections.deque):
             return list(obj)
+        if isinstance(obj, pd.Timestamp):
+            return obj.isoformat()
         return super(NpEncoder, self).default(obj)
 
 def parse_time_param(param):

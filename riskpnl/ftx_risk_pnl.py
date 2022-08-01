@@ -141,13 +141,14 @@ async def diff_portoflio(exchange,future_weights=pd.DataFrame()) -> pd.DataFrame
     result['coin'] = result['name'].apply(lambda x: exchange.market(x)['base'])
     #we ignore the basis for scaling the perps. Too volatile. If spot absent use perp.
     result['spot_price']=result['coin'].apply(lambda x: float(exchange.market(x+('/USD' if (x+'/USD') in exchange.markets else '-PERP'))['info']['price']))
-    result['optimalCoin'] = result['optimalUSD'] / result['spot_price']
+    result['benchmark'] = result['name'].apply(lambda x: float(exchange.market(x)['info']['price']))
+    result['target'] = result['optimalUSD'] / result['spot_price']
     result['currentUSD'] = result['currentCoin'] * result['spot_price']
     result['minProvideSize'] = result['name'].apply(lambda f: float(exchange.market(f)['info']['minProvideSize']))
     if result.empty:
         result['diffCoin'] = 0
     else:
-        result['diffCoin']= result['optimalCoin']-result['currentCoin']
+        result['diffCoin']= result['target']-result['currentCoin']
     result['diffUSD'] = result['diffCoin']*result['spot_price']
 
     result = result[np.abs(result['diffCoin'])>0]

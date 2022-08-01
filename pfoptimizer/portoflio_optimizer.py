@@ -78,6 +78,7 @@ async def get_exec_request(run_type, exchange, **kwargs):
     dirname = os.path.join(os.sep, configLoader.get_config_folder_path(config_name=kwargs['config']), "pfoptimizer")
 
     if run_type == 'spread':
+        raise Exception('wrong for now, prints two lines')
         coin = kwargs['coin']
         cash_name = coin + '/USD'
         future_name = coin + '-PERP'
@@ -102,21 +103,10 @@ async def get_exec_request(run_type, exchange, **kwargs):
     else:
         raise Exception("unknown command")
 
-    target_portfolio['exchange'] = exchange
-    target_portfolio['subaccount'] = subaccount
-    target_portfolio.rename(columns={'spot_price':'spot','optimalUSD':'optimalWeight'},inplace=True)
-    target_portfolio['spot_ticker'] = target_portfolio['coin'].apply(lambda c: f'{c}/USD')
-    target_portfolio['new_symbol'] = target_portfolio['name'].apply(lambda f: exchange_obj.market(f)['symbol'])
-
+    target_portfolio = target_portfolio.set_index('name')
+    to_json(exchange_obj, target_portfolio, kwargs['config'])
     await exchange_obj.close()
-
-    dfs = []
-    filenames = []
-    for coin, df in target_portfolio.groupby(by='coin'):
-        temp_filename = os.path.join(os.sep,dirname,f'weights_{exchange}_{subaccount}_{coin}.csv')
-        filenames += [temp_filename]
-        df.to_csv(temp_filename)
-    return filenames
+    return target_portfolio
 
 # runs optimization * [time, params]
 async def perp_vs_cash(
@@ -342,21 +332,52 @@ async def perp_vs_cash(
         logging.getLogger('pfoptimizer').info(display)
 
         # print to bus
-        optimized = pd.concat([optimized, enriched],axis=0,join='outer').drop(
+        optimized = optimized.drop(
     index=['USD', 'total']).fillna(0.0).sort_values(by='optimalWeight', key=lambda f: np.abs(f),
                                                                    ascending=False).head(config["NB_COINS"]["value"])
-        optimized[['spot_ticker','underlying','new_symbol']] = enriched[['spot_ticker','underlying','new_symbol']]
-        #optimized['underlying'] =
-        optimized['exchange'] = exchange.id
-        optimized['subaccount'] = exchange.headers['FTX-SUBACCOUNT']
-        optimized.to_csv(f'{pfoptimizer_res_filename}_weights.csv')
-
+        with open(f'{pfoptimizer_res_filename}_weights.json','w+') as fp:
+            json.dump(optimized.T.to_dict(),fp,cls=NpEncoder)
         updated.to_csv(f'{pfoptimizer_res_filename}_snapshot.csv')
         parameters.to_csv(f'{pfoptimizer_res_filename}_parameters.csv')
+
+        futures_version = pd.DataFrame()
+        futures_version['benchmark'] = optimized['mark']
+        futures_version['target'] = - optimized['optimalWeight'] / optimized['spot']
+        futures_version.index = [exchange.market(f)['symbol'] for f in optimized.index]
+        spot_version = pd.DataFrame()
+        spot_version['benchmark'] = optimized['spot']
+        spot_version['target'] = optimized['optimalWeight'] / optimized['spot']
+        spot_version.index = [f.replace(':USD', '') for f in futures_version.index]
+        all = pd.concat([futures_version, spot_version], axis=0, join='outer')
+
+        to_json(exchange, all, config_name)
 
         return optimized
     else:
         return trajectory
+
+
+def to_json(exchange, all,config_name):
+    exchange_name = exchange.id
+    all['exchange'] = exchange_name
+    subaccount = exchange.headers['FTX-SUBACCOUNT']
+    all['subaccount'] = subaccount
+
+    # send bus message
+    pfoptimizer_path = os.path.join(os.sep, configLoader.get_config_folder_path(
+        config_name=config_name), "pfoptimizer")
+    pfoptimizer_res_last_filename = os.path.join(os.sep, pfoptimizer_path,
+                                                 f"weights_{exchange_name}_{subaccount}")
+
+    with open(f'{pfoptimizer_res_last_filename}.json','w+') as fp:
+        json.dump(all.T.to_dict(),fp,cls=NpEncoder)
+    all['underlying'] = all.apply(lambda f: f.name.split('/')[0].split(':')[0],axis=1)
+    for coin, data in all.groupby(by='underlying'):
+        with open(f'{pfoptimizer_res_last_filename}_{coin}.json', 'w+') as fp:
+            json.dump(data.T.to_dict(), fp,cls=NpEncoder)
+
+    return {'all': all.T.to_dict()} \
+             | {coin: data.T.to_dict() for coin, data in all.groupby(by='underlying')}
 
 async def strategy_wrapper(**kwargs):
 
@@ -441,16 +462,6 @@ def main(*args,**kwargs):
             backtest_start=None,
             backtest_end=None))
         res = res_list[0]
-        # send bus message
-        pfoptimizer_path = os.path.join(os.sep,configLoader.get_config_folder_path(config_name=kwargs['config'] if 'config' in kwargs else None), "pfoptimizer")
-        pfoptimizer_res_last_filename = os.path.join(os.sep,pfoptimizer_path,
-                                                     f"weights_{exchange_name}_{subaccount}")
-        res = res.sort_values(by='optimalWeight', key=lambda f: np.abs(f),
-                                                                       ascending=False)
-        res.to_csv(f'{pfoptimizer_res_last_filename}.csv')
-        for coin in res['underlying'].unique():
-            res[res['underlying']==coin].to_csv(f"{pfoptimizer_res_last_filename}_{coin}.csv")
-
     elif run_type == 'depth':
         global UNIVERSE
         UNIVERSE = 'max'  # set universe to 'max'

@@ -189,7 +189,7 @@ MyModules.register(name='ux',
                    kwargs_validation={})
 
 MyModules.register(name='tradeexecutor',
-                   testbed=["weights_ftx_debug_ETH.csv"], # ,"unwind exchange=ftx subaccount=debug config=prod"
+                   testbed=["weights_ftx_debug_ETH.json"], # ,"unwind exchange=ftx subaccount=debug config=prod"
                    args_validation=[
                        ['order', lambda x: isinstance(x,str),'not a str']],
                    kwargs_validation={'exchange':[lambda x: x in ['ftx'],'not in {}'.format(['ftx'])],

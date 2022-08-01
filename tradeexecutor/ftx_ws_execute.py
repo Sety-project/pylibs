@@ -1,8 +1,10 @@
 import asyncio
+import json
 import logging
 import os.path
 import time as t
 
+import aiofiles
 import numpy as np
 import pandas as pd
 
@@ -1141,19 +1143,13 @@ class ExternalSignal(SignalEngine):
 
     async def reconcile(self):
         # TODO: clean up this message schema in pfoptimizer
-        weights = await async_read_csv(self.parameters['filename'], index_col=0)
-        weights = weights.set_index('new_symbol').rename(columns={'spot':'benchmark','optimalWeight':'target'})
-        weights['target'] /= weights['benchmark']
+        async with aiofiles.open(self.parameters['filename'], 'r') as fp:
+            content = await fp.read()
+        weights = json.loads(content)
+        weights = {symbol:data|{'timestamp': myUtcNow()} for symbol,data in weights.items()}
 
-        weights['timestamp'] = myUtcNow()
-
-        for symbol in weights.index:
-            self[symbol] = {'target': - weights.loc[symbol, 'target'].squeeze(),
-                            'benchmark': weights.loc[symbol, 'benchmark'].squeeze()}
-
-        cash_symbol = weights['spot_ticker'].unique()[0]
-        self[cash_symbol] = {'target': - sum(self[_symbol]['target'] for _symbol in self),
-                            'benchmark': self[list(self.keys())[0]]['benchmark']}
+        for symbol,data in weights.items():
+            self[symbol] = data
 
     async def initialize_vwap(self):
         # initialize vwap_history
