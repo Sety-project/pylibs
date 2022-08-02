@@ -5,6 +5,10 @@ on:
   push:
     branches: [ master ]
     paths:
+      - 'histfeed/**'
+      - 'pfoptimizer/**'
+      - 'riskpnl/**'
+      - 'tradeexecutor/**'
       - 'ux/**'
       - 'utils/**'
 
