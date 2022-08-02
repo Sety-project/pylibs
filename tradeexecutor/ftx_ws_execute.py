@@ -470,13 +470,6 @@ class PositionManager(dict):
                                   'delta_id': 0}
             return result
 
-    @loop
-    async def monitor_risk(self):
-        '''redundant minutely risk check'''#TODO: would be cool if this could interupt other threads and restart it when margin is ok.
-        await asyncio.sleep(self.limit.check_frequency)
-        await self.reconcile()
-        self.check_limit()
-
     async def reconcile(self):
 
         # if not already done, Initializes a margin calculator that can understand the margin of an order
@@ -522,7 +515,7 @@ class PositionManager(dict):
 
         delta_error = {symbol: self[symbol]['delta'] - (previous_delta[symbol]['delta'] if symbol in previous_delta else 0)
                        for symbol in self}
-        self.risk_reconciliations = [{'symbol': symbol_,
+        self.risk_reconciliations = {symbol_:{
                                        'delta_timestamp': self[symbol_]['delta_timestamp'],
                                        'delta': self[symbol_]['delta'],
                                        'netDelta': self.coin_delta(symbol_),
@@ -531,7 +524,7 @@ class PositionManager(dict):
                                        'actual_IM': self.margin.actual_IM,
                                        'pv_error': self.pv - (previous_pv or 0),
                                        'total_delta_error': sum(delta_error.values())}
-                                      for symbol_ in self]
+                                      for symbol_ in self}
 
     def check_limit(self):
         absolute_risk = dict()
@@ -612,6 +605,7 @@ class Strategy(dict):
         self_keys = ['update_time_delta','entry_level','rush_in_level','rush_out_level','edit_price_depth','edit_trigger_depth','aggressive_edit_price_depth','aggressive_edit_trigger_depth','stop_depth','slice_size']
         for symbol in self.parameters['symbols']:
             self[symbol] = dict(zip(self_keys,[None]*len(self_keys)))
+        self.timestamp = None
 
         # pointers to other objects (like a bus in a single thread...)
         position_manager.strategy = self
@@ -632,10 +626,11 @@ class Strategy(dict):
         # self.lock |= {symbol: CustomRLock() for symbol in self.parameters['symbols']}
 
     def to_dict(self):
-        return {'parameters': self.parameters,
-                'stategy': dict(self),
+        return {'parameters': {'timestamp':self.timestamp} | self.parameters,
+                'strategy': {symbol:{'timestamp':self.timestamp} | data for symbol,data in self.items()},
                 'order_manager': self.order_manager.to_dict(),
-                'position_manager': self.position_manager.to_dict()}
+                'position_manager': self.position_manager.to_dict(),
+                'signal_engine': self.signal_engine.to_dict()}
 
     @staticmethod
     async def build(parameters):
@@ -662,7 +657,7 @@ class Strategy(dict):
         self.logger.warning('cancelling orders')
         await safe_gather([self.venue_api.cancel_all_orders(symbol) for symbol in self.parameters['symbols']],semaphore=self.rest_semaphor)
 
-        coros = [self.venue_api.monitor_fills(), self.position_manager.monitor_risk()] + \
+        coros = [self.venue_api.monitor_fills(), self.periodic_reconcile()] + \
                 sum([[self.venue_api.monitor_orders(symbol),
                       self.venue_api.monitor_order_book(symbol),
                       self.venue_api.monitor_trades(symbol)]
@@ -681,6 +676,17 @@ class Strategy(dict):
 
     async def update_quoter_parameters(self):
         raise Exception("must be implemented below this abstract class")
+
+    async def periodic_reconcile(self):
+        '''redundant minutely risk check'''
+        while True:
+            try:
+                await asyncio.sleep(self.position_manager.limit.check_frequency)
+                await self.reconcile()
+                self.position_manager.check_limit()
+            except Exception as e:
+                self.logger.info(e, exc_info=True)
+                raise e
 
     async def reconcile(self):
         '''update risk using rest
@@ -719,7 +725,7 @@ class Strategy(dict):
                 order = self.parse_order(data)
                 if order['symbol'] in self.strategy:
                     self.process_order(order | {'orderTrigger': 'replayed'})
-            # we don't interecpt the mktdata anyway...
+            # we don't intercept the mktdata anyway...
             elif channel == 'orderbook':
                 pass
                 #self.populate_ticker(message['symbol'], message)
@@ -773,16 +779,16 @@ class Strategy(dict):
 class ExecutionStrategy(Strategy):
     '''specialized to execute externally generated client orders'''
     async def update_quoter_parameters(self):
+        self.timestamp = myUtcNow()
         '''updates key/values, mostly from signal'''
-        if all(abs(self.position_manager[symbol]['delta']) < self.parameters[
-            'significance_threshold'] * self.position_manager.pv for symbol in self.parameters['symbols']):
+        no_delta = [abs(self.position_manager[symbol]['delta']) < self.parameters['significance_threshold'] * self.position_manager.pv
+                    for symbol in self.parameters['symbols']]
+        no_target = [abs(self.signal_engine[symbol]['target']) < self.parameters['significance_threshold'] * self.position_manager.pv
+                    for symbol in self.parameters['symbols']]
+        if all(no_delta) and all(no_target):
             raise Strategy.ReadyToShutdown(
                 f'no {self.keys()} delta and no {self.signal_engine} order --> shutting down bot')
 
-        # # read signal_engine
-        # for symbol, data in self.items():
-        #     for key, value in self.signal_engine.items():
-        #         data[key] = value
         if not self.signal_engine.vwap:
             await self.signal_engine.initialize_vwap()
         self.signal_engine.compile_vwap(frequency=timedelta(minutes=1))
@@ -791,8 +797,10 @@ class ExecutionStrategy(Strategy):
             series = pd.concat([serie * coef for serie, coef in zip(series_list, diff_list)], join='inner', axis=1)
             return [-1e18 if quantile<=0 else 1e18 if quantile>=1 else series.sum(axis=1).quantile(quantile) for quantile in quantiles]
 
+        nowtime = myUtcNow()
         scaler = 1 # max(0,(time_limit-nowtime)/(time_limit-self.inventory_target.timestamp))
         for symbol, data in self.items():
+            data['timestamp'] = nowtime
             data['update_time_delta'] = self.signal_engine[symbol]['target'] - self.position_manager[symbol]['delta'] / self.venue_api.mid(symbol)
 
         for symbol, data in self.items():
@@ -1089,8 +1097,8 @@ class SignalEngine(dict):
     async def reconcile(self):
         pass
 
-    def get_symbols(self):
-        return self.parameters['symbols']
+    def to_dict(self):
+        return {symbol:{'timestamp':self.timestamp} | data for symbol,data in self.items()}
 
     async def to_json(self):
         coin = list(self.orderbook.keys())[0].replace(':USD', '').replace('/USD', '')
@@ -1139,18 +1147,18 @@ class SignalEngine(dict):
 class ExternalSignal(SignalEngine):
     def __init__(self, parameters):
         super().__init__(parameters)
-
+        self.timestamp = None
         self.vwap = None
 
     async def reconcile(self):
-        # TODO: clean up this message schema in pfoptimizer
         async with aiofiles.open(self.parameters['filename'], 'r') as fp:
             content = await fp.read()
         weights = json.loads(content)
-        weights = {symbol:data|{'timestamp': myUtcNow()} for symbol,data in weights.items()}
 
-        for symbol,data in weights.items():
-            self[symbol] = data
+        if dict(self) != weights:
+            for symbol,data in weights.items():
+                self[symbol] = data
+            self.timestamp = myUtcNow()
 
     async def initialize_vwap(self):
         # initialize vwap_history
@@ -1209,6 +1217,8 @@ class SpreadTradeSignal(SignalEngine):
             timestamp = myUtcNow()
         self.set_target(self.signal_engine)
 
+        if not self.vwap:
+            await self.initialize_vwap()
         self.signal_engine.compile_vwap(frequency=timedelta(minutes=1))
 
     def compile_spread_trades(self, purge=True):
