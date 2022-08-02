@@ -505,6 +505,7 @@ def main(*args,**kwargs):
                                         backtest_end = datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0, second=0, microsecond=0)-timedelta(hours=1)))
         return pd.DataFrame()
     elif run_type in ['unwind','flatten','spread']:
+        if 'config' not in kwargs: kwargs['config'] = None
         res = asyncio.run(get_exec_request(run_type,exchange_name,**kwargs))
     else:
         logger.critical(f'commands: sysperp [signal_horizon] [holding_period], backtest, depth [signal_horizon] [holding_period]')
