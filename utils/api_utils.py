@@ -2,8 +2,6 @@ import logging,os,sys,datetime,subprocess,importlib,functools,pathlib
 from utils.io_utils import parse_time_param
 from utils.config_loader import configLoader
 
-#import click
-
 def build_logging(app_name,
                   log_date=datetime.datetime.utcnow(),
                   log_mapping={logging.INFO:'info.log',logging.WARNING:'warning.log',logging.CRITICAL:'program_flow.log'}):
