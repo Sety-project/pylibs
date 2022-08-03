@@ -75,7 +75,7 @@ async def refresh_universe(exchange, universe_filter):
 async def get_exec_request(run_type, exchange, **kwargs):
     subaccount = kwargs['subaccount']
     exchange_obj = await open_exchange(exchange,subaccount)
-    dirname = os.path.join(os.sep, configLoader.get_config_folder_path(config_name=kwargs['config']), "pfoptimizer")
+    dirname = os.path.join(os.sep, configLoader.get_config_folder_path(config_name=kwargs['config'] if 'config' in kwargs else None), "pfoptimizer")
 
     if run_type == 'spread':
         raise Exception('wrong for now, prints two lines')
@@ -505,8 +505,7 @@ def main(*args,**kwargs):
                                         backtest_end = datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0, second=0, microsecond=0)-timedelta(hours=1)))
         return pd.DataFrame()
     elif run_type in ['unwind','flatten','spread']:
-        if 'config' not in kwargs: kwargs['config'] = None
-        res = asyncio.run(get_exec_request(run_type,exchange_name,**kwargs))
+        res = asyncio.run(get_exec_request(run_type,exchange_name,config,**kwargs))
     else:
         logger.critical(f'commands: sysperp [signal_horizon] [holding_period], backtest, depth [signal_horizon] [holding_period]')
     return res
