@@ -35,7 +35,7 @@ class ExecutionLogger:
             await file.write(json.dumps(history+[data]))
 
     @staticmethod
-    def batch_summarize_exec_logs(exchange='ftx', subaccount='',dirname=os.path.join(os.sep, 'tmp','','tradeexecutor'),
+    def batch_summarize_exec_logs(exchange='ftx', subaccount='',dirname=os.path.join(os.sep, 'tmp','prod','tradeexecutor'),
                                   start=datetime(1970, 1, 1),
                                   end=datetime.now(),
                                   rebuild=True,
@@ -100,7 +100,7 @@ class ExecutionLogger:
                     result = new_log
                 else:
                     for key, value in new_log.items():
-                        result[key] = pd.concat([result[key], value], axis=1)
+                        result[key] = pd.concat([result[key], value], axis=0)
 
         return result,removed_filenames
 
