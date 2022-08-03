@@ -41,7 +41,7 @@ async def single_coin_routine(order_name, **kwargs):
         logger.warning(f'cancelled orders')
         # await strategy.close_dust()  # Commenting out until bug fixed
         await strategy.venue_api.close()
-        if not isinstance(e, SignalEngine.ReadyToShutdown):
+        if not isinstance(e, Strategy.ReadyToShutdown):
             raise e
 
 async def listen(order_name,**kwargs):
