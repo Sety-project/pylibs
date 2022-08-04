@@ -16,13 +16,17 @@ from utils.io_utils import myUtcNow
 class Strategy(dict):
     '''abstract class Strategy leverages other managers to implement quoter (ie generate orders from mkt change or order feed)
     If there was a bus, its graph would be a tree and Strategy would be the top'''
+    class ReadyToShutdown(Exception):
+        def __init__(self, text):
+            super().__init__(text)
+
     def __init__(self,parameters,signal_engine,venue_api,order_manager,position_manager):
         '''Strategy contructor also opens channels btw objects (a simple member data for now)'''
         super().__init__()
         self.parameters = parameters
 
         # TODO: is this necessary ?
-        self_keys = ['update_time_delta','entry_level','rush_in_level','rush_out_level','edit_price_depth','edit_trigger_depth','aggressive_edit_price_depth','aggressive_edit_trigger_depth','stop_depth','slice_size']
+        self_keys = ['target','benchmark','update_time_delta','entry_level','rush_in_level','rush_out_level','edit_price_depth','edit_trigger_depth','aggressive_edit_price_depth','aggressive_edit_trigger_depth','stop_depth','slice_size']
         for symbol in self.parameters['symbols']:
             self[symbol] = dict(zip(self_keys,[None]*len(self_keys)))
         self.timestamp = None
@@ -75,13 +79,13 @@ class Strategy(dict):
 
     async def run(self):
         self.logger.warning('cancelling orders')
-        await safe_gather([self.venue_api.cancel_all_orders(symbol) for symbol in self.parameters['symbols']],semaphore=self.rest_semaphor)
+        await safe_gather([self.venue_api.cancel_all_orders(symbol) for symbol in self],semaphore=self.rest_semaphor)
 
         coros = [self.venue_api.monitor_fills(), self.periodic_reconcile()] + \
                 sum([[self.venue_api.monitor_orders(symbol),
                       self.venue_api.monitor_order_book(symbol),
                       self.venue_api.monitor_trades(symbol)]
-                     for symbol in self.parameters['symbols']], [])
+                     for symbol in self], [])
 
         await safe_gather(coros,semaphore=self.rest_semaphor)
 
@@ -184,31 +188,38 @@ class Strategy(dict):
                                                                      fill['side'], fill['amount'],
                                                                      fill['price']))
 
-        current = self.position_manager[symbol]['delta']
-        target = self.signal_engine[symbol]['target'] * fill['price']
-        diff = (self.signal_engine[symbol]['target'] - self.position_manager[symbol]['delta']) * fill['price']
-        initial = self.signal_engine[symbol]['target'] * fill['price'] - diff
-        self.logger.warning('{} risk at {} ms: {}% done [current {}, initial {}, target {}]'.format(
-            symbol,
-            self.position_manager[symbol]['delta_timestamp'],
-            (current - initial) / diff * 100,
-            current,
-            initial,
-            target))
+        if 'verbose' in self.parameters['options']:
+            current = self.position_manager[symbol]['delta']
+            target = self.signal_engine[symbol]['target'] * fill['price']
+            diff = (self.signal_engine[symbol]['target'] - self.position_manager[symbol]['delta']) * fill['price']
+            initial = self.signal_engine[symbol]['target'] * fill['price'] - diff
+            self.logger.warning('{} risk at {} ms: {}% done [current {}, initial {}, target {}]'.format(
+                symbol,
+                self.position_manager[symbol]['delta_timestamp'],
+                (current - initial) / diff * 100,
+                current,
+                initial,
+                target))
 
 
 class ExecutionStrategy(Strategy):
     '''specialized to execute externally generated client orders'''
     async def update_quoter_parameters(self):
+        '''updates key/values from signal'''
         self.timestamp = myUtcNow()
-        '''updates key/values, mostly from signal'''
+
+        # overwrite key/value from signal_engine
+        for symbol,data in self.signal_engine.items():
+            for key, value in data.items():
+                self[symbol][key] = value
+
         no_delta = [abs(self.position_manager[symbol]['delta']) < self.parameters['significance_threshold'] * self.position_manager.pv
-                    for symbol in self.parameters['symbols']]
-        no_target = [abs(self.signal_engine[symbol]['target']) < self.parameters['significance_threshold'] * self.position_manager.pv
-                    for symbol in self.parameters['symbols']]
+                    for symbol in self]
+        no_target = [abs(data['target']*data['benchmark']) < self.parameters['significance_threshold'] * self.position_manager.pv
+                    for symbol,data in self.items()]
         if all(no_delta) and all(no_target):
             raise Strategy.ReadyToShutdown(
-                f'no {self.keys()} delta and no {self.signal_engine} order --> shutting down bot')
+                f'no {self.keys()} delta and no {dict(self)} order --> shutting down bot')
 
         if not self.signal_engine.vwap:
             await self.signal_engine.initialize_vwap()
@@ -222,14 +233,14 @@ class ExecutionStrategy(Strategy):
         scaler = 1 # max(0,(time_limit-nowtime)/(time_limit-self.inventory_target.timestamp))
         for symbol, data in self.items():
             data['timestamp'] = nowtime
-            data['update_time_delta'] = self.signal_engine[symbol]['target'] - self.position_manager[symbol]['delta'] / self.venue_api.mid(symbol)
+            data['update_time_delta'] = data['target'] - self.position_manager[symbol]['delta'] / self.venue_api.mid(symbol)
 
         for symbol, data in self.items():
             # entry_level = what level on basket is too bad to even place orders
             # rush_in_level = what level on basket is so good that you go in at market on both legs
             # rush_out_level = what level on basket is so bad that you go out at market on both legs
             quantiles = basket_vwap_quantile(
-                [self.signal_engine.vwap[_symbol]['vwap'] for _symbol in self.parameters['symbols']],
+                [self.signal_engine.vwap[_symbol]['vwap'] for _symbol in self],
                 [data['update_time_delta'] for data in self.values()],
                 [self.parameters['entry_tolerance'],self.parameters['rush_in_tolerance'],self.parameters['rush_out_tolerance']])
 
@@ -268,10 +279,10 @@ class ExecutionStrategy(Strategy):
             all executes in one go, no async
         '''
         strategy = self[symbol]
-        mid = self.venue_api.tickers[symbol]['mid']
+        mid = 0.5*(orderbook['bids'][0][0]+orderbook['asks'][0][0])
 
         # size to do:
-        original_size = self.signal_engine[symbol]['target'] - self.position_manager[symbol]['delta'] / mid
+        original_size = strategy['target'] - self.position_manager[symbol]['delta'] / mid
 
         # risk
         globalDelta = self.position_manager.delta_bounds(symbol)['global_delta']
@@ -343,9 +354,9 @@ class ExecutionStrategy(Strategy):
         # if decrease risk, go aggressive without flipping delta
         else:
             size = np.sign(original_size) * min(abs(- globalDelta / mid), abs(original_size))
-            edit_trigger_depth = self[symbol]['aggressive_edit_trigger_depth']
-            edit_price_depth = self[symbol]['aggressive_edit_price_depth']
-            stop_depth = self[symbol]['stop_depth']
+            edit_trigger_depth = strategy['aggressive_edit_trigger_depth']
+            edit_price_depth = strategy['aggressive_edit_price_depth']
+            stop_depth = strategy['stop_depth']
         self.venue_api.peg_or_stopout(symbol, size, orderbook, edit_trigger_depth=edit_trigger_depth,
                                       edit_price_depth=edit_price_depth, stop_depth=stop_depth)
 
