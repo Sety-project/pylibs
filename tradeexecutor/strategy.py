@@ -144,11 +144,12 @@ class Strategy(dict):
             self.logger.warning(f'replaying {channel} after recon')
             if channel == 'fills':
                 fill = self.parse_trade(data)
-                self.process_fill(fill | {'orderTrigger': 'replayed'})
+                self.position_manager.process_fill(fill | {'orderTrigger': 'replayed'})
+                self.order_manager.process_fill(fill | {'orderTrigger': 'replayed'})
             elif channel == 'orders':
                 order = self.parse_order(data)
                 if order['symbol'] in self.strategy:
-                    self.process_order(order | {'orderTrigger': 'replayed'})
+                    self.order_manager.acknowledgment(order | {'comment': 'websocket_acknowledgment','orderTrigger': 'replayed'})
             # we don't intercept the mktdata anyway...
             elif channel == 'orderbook':
                 pass
@@ -156,51 +157,6 @@ class Strategy(dict):
             elif channel == 'trades':
                 pass
                 #self.signal_engine.trades_cache[message['symbol']].append(message)
-
-    def process_order(self,order):
-        assert order['clientOrderId'],"assert order['clientOrderId']"
-        self.order_manager.acknowledgment(order | {'comment': 'websocket_acknowledgment'}) # status new, triggered, open or canceled
-
-    def process_fill(self, fill):
-        symbol = fill['symbol']
-
-        # update risk_state
-        if symbol not in self.position_manager:
-            self.position_manager[symbol] = {'delta': 0, 'delta_id': 0, 'delta_timestamp': myUtcNow()}
-        data = self.position_manager[symbol]
-        fill_size = fill['amount'] * (1 if fill['side'] == 'buy' else -1) * fill['price']
-        data['delta'] += fill_size
-        data['delta_id'] = max(data['delta_id'], int(fill['order']))
-        data['delta_timestamp'] = fill['timestamp']
-
-        # update margin
-        self.position_manager.margin.add_instrument(symbol, fill_size)
-
-        # only log trades being run by this process
-        fill['clientOrderId'] = fill['info']['clientOrderId']
-        fill['comment'] = 'websocket_fill'
-        self.order_manager.fill(fill)
-
-        # logger.info
-        self.logger.warning('{} filled after {}: {} {} at {}'.format(fill['clientOrderId'],
-                                                                     fill['timestamp'] - int(
-                                                                         fill['clientOrderId'].split('_')[-1]),
-                                                                     fill['side'], fill['amount'],
-                                                                     fill['price']))
-
-        if 'verbose' in self.parameters['options']:
-            current = self.position_manager[symbol]['delta']
-            target = self.signal_engine[symbol]['target'] * fill['price']
-            diff = (self.signal_engine[symbol]['target'] - self.position_manager[symbol]['delta']) * fill['price']
-            initial = self.signal_engine[symbol]['target'] * fill['price'] - diff
-            self.logger.warning('{} risk at {} ms: {}% done [current {}, initial {}, target {}]'.format(
-                symbol,
-                self.position_manager[symbol]['delta_timestamp'],
-                (current - initial) / diff * 100,
-                current,
-                initial,
-                target))
-
 
 class ExecutionStrategy(Strategy):
     '''specialized to execute externally generated client orders'''

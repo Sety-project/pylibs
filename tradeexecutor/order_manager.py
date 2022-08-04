@@ -241,6 +241,13 @@ class OrderManager(dict):
             self[clientOrderId] += [current]
             self.strategy.position_manager.margin.add_open_order(order_event)
 
+    def process_fill(self, fill):
+        # only log trades being run by this process
+        fill['clientOrderId'] = fill['info']['clientOrderId']
+        fill['comment'] = 'websocket_fill'
+        self.order_manager.fill(fill)
+
+
     def fill(self,order_event):
         '''order_event: id, trigger,timestamp,amount,order,symbol'''
         self.fill_flag = True
@@ -262,6 +269,14 @@ class OrderManager(dict):
             self[clientOrderId] += [current|{'state':'filled'}]
         else:
             self[clientOrderId] += [current | {'state': 'partially_filled'}]
+
+        if 'verbose' in self.strategy.parameters:
+            # logger.info
+            self.strategy.logger.warning('{} filled after {}: {} {} at {}'.format(order_event['clientOrderId'],
+                                                                         order_event['timestamp'] - int(
+                                                                             order_event['clientOrderId'].split('_')[-1]),
+                                                                         order_event['side'], order_event['amount'],
+                                                                         order_event['price']))
 
     def cancel_or_reject(self, order_event):
         '''order_event: id, trigger,timestamp,amount,order,symbol'''
@@ -293,7 +308,7 @@ class OrderManager(dict):
     async def reconcile_fills(self):
         '''fetch fills, to recover missed messages'''
         sincetime = self.latest_fill_reconcile_timestamp if self.latest_fill_reconcile_timestamp else myUtcNow() - 1000
-        fetched_fills = sum(await safe_gather([self.strategy.venue_api.fetch_my_trades(since=sincetime,symbol=symbol) for symbol in self],semaphore=self.strategy.rest_semaphor), [])
+        fetched_fills = sum(await safe_gather([self.strategy.venue_api.fetch_my_trades(since=sincetime,symbol=symbol) for symbol in self.parameters['symbols']],semaphore=self.strategy.rest_semaphor), [])
         for fill in fetched_fills:
             fill['comment'] = 'reconciled'
             fill['clientOrderId'] = self.find_clientID_from_fill(fill)
@@ -309,7 +324,7 @@ class OrderManager(dict):
                                           if data[-1]['state'] in OrderManager.openStates}
 
         # add missing orders (we missed orders from the exchange)
-        external_orders = sum(await safe_gather([self.strategy.venue_api.fetch_open_orders(symbol=symbol) for symbol in self],semaphore=self.strategy.rest_semaphor), [])
+        external_orders = sum(await safe_gather([self.strategy.venue_api.fetch_open_orders(symbol=symbol) for symbol in self.parameters['symbols']],semaphore=self.strategy.rest_semaphor), [])
         for order in external_orders:
             if order['clientOrderId'] not in internal_order_internal_status.keys():
                 self.acknowledgment(order | {'comment':'reconciled_missing'})

@@ -43,6 +43,33 @@ class PositionManager(dict):
                                   'delta_id': 0}
             return result
 
+    def process_fill(self, fill):
+        symbol = fill['symbol']
+        # update risk_state
+        if symbol not in self:
+            self[symbol] = {'delta': 0, 'delta_id': 0, 'delta_timestamp': myUtcNow()}
+        data = self[symbol]
+        fill_size = fill['amount'] * (1 if fill['side'] == 'buy' else -1) * fill['price']
+        data['delta'] += fill_size
+        data['delta_id'] = max(data['delta_id'], int(fill['order']))
+        data['delta_timestamp'] = fill['timestamp']
+
+        # update margin
+        self.position_manager.margin.add_instrument(symbol, fill_size)
+
+        if 'verbose' in self.parameters['options']:
+            current = self[symbol]['delta']
+            target = self.strategy[symbol]['target'] * fill['price']
+            diff = (self.strategy[symbol]['target'] - self[symbol]['delta']) * fill['price']
+            initial = self.strategy[symbol]['target'] * fill['price'] - diff
+            self.strategy.logger.warning('{} risk at {} ms: {}% done [current {}, initial {}, target {}]'.format(
+                symbol,
+                self[symbol]['delta_timestamp'],
+                (current - initial) / diff * 100,
+                current,
+                initial,
+                target))
+
     async def reconcile(self):
 
         # if not already done, Initializes a margin calculator that can understand the margin of an order

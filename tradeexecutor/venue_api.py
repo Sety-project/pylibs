@@ -134,7 +134,8 @@ class VenueAPI(ccxtpro.ftx):
         fills = await self.watch_my_trades()
         if not self.strategy.lock['reconciling'].locked():
             for fill in fills:
-                self.strategy.process_fill(fill)
+                self.strategy.position_manager.process_fill(fill)
+                self.strategy.order_manager.process_fill(fill)
 
     # ---------------------------------- orders
 
@@ -144,7 +145,7 @@ class VenueAPI(ccxtpro.ftx):
         orders = await self.watch_orders(symbol=symbol)
         if not self.strategy.lock['reconciling'].locked():
             for order in orders:
-                self.strategy.process_order(order)
+                self.strategy.order_manager.acknowledgment(order | {'comment': 'websocket_acknowledgment'})
 
     # ---------------------------------- misc
 
