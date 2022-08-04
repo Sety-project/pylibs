@@ -62,10 +62,6 @@ class VenueAPI(ccxtpro.ftx):
         self.message_missed = collections.deque(maxlen=parameters['cache_size'])
         self.options['tradesLimit'] = parameters['cache_size'] # TODO: shoud be in signalengine with a different name. inherited from ccxt....
 
-    class ReadyToShutdown(Exception):
-        def __init__(self, text):
-            super().__init__(text)
-
     @staticmethod
     async def build(parameters):
         if parameters['exchange'] not in ['ftx']:

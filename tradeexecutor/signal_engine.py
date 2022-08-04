@@ -117,7 +117,7 @@ class ExternalSignal(SignalEngine):
         start = nowtime - timedelta(seconds=self.parameters['stdev_window'])
         vwap_history_list = await safe_gather([fetch_trades_history(
             self.strategy.venue_api.market(symbol)['id'], self.strategy.venue_api, start, nowtime, frequency=frequency)
-            for symbol in self.parameters['symbols']], semaphore=self.strategy.rest_semaphor)
+            for symbol in self], semaphore=self.strategy.rest_semaphor)
         self.vwap = {symbol: data for symbol, data in
                        zip(self.parameters['symbols'], vwap_history_list)}
 
@@ -156,10 +156,6 @@ class SpreadTradeSignal(SignalEngine):
 
     async def update_quoter_analytics(self):
         '''specialized to execute externally generated client orders'''
-        if all(abs(self.position_manager[symbol]['delta']) < self.parameters[
-            'significance_threshold'] * self.position_manager.pv for symbol in self.parameters['symbols']):
-            raise SignalEngine.ReadyToShutdown(
-                f'no {self.keys()} delta and no {self.signal_engine} order --> shutting down bot')
         if os.path.isfile(self.signal_engine.parameters['filename']):
             await self.signal_engine.reconcile()
         else:
