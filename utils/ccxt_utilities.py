@@ -99,12 +99,11 @@ async def open_exchange(exchange_name,subaccount,config={}):
                                            'secret': api_params.loc[exchange_name,'value'],
                                        } | config)
     elif exchange_name == 'paradigm':
-        raise Exception('not implemented')
-        exchange = ccxt.paradigm(config={
-                                          'enableRateLimit': True,
-                                          'apiKey': 'EytZmov5bDDPGXqvYviriCs8',
-                                          'secret': api_params.loc[exchange_name, 'value'],
-                                      } | config)
+        from mess.paradigm_tape import paradigm_request
+        result = paradigm_request(path='/v1/fs/trade_tape',
+                                  access_key='EytZmov5bDDPGXqvYviriCs8',
+                                  secret_key=api_params.loc[exchange_name, 'value'])
+        return result
     #subaccount_list = pd.DataFrame((exchange.privateGetSubaccounts())['result'])
     else: print('what exchange?')
     exchange.checkRequiredCredentials()  # raises AuthenticationError
