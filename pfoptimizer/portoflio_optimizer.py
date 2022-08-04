@@ -78,15 +78,15 @@ async def get_exec_request(run_type, exchange, **kwargs):
     dirname = os.path.join(os.sep, configLoader.get_config_folder_path(config_name=kwargs['config'] if 'config' in kwargs else None), "pfoptimizer")
 
     if run_type == 'spread':
-        raise Exception('wrong for now, prints two lines')
         coin = kwargs['coin']
         cash_name = coin + '/USD'
         future_name = coin + '-PERP'
         cash_price = float(exchange_obj.market(cash_name)['info']['price'])
         future_price = float(exchange_obj.market(future_name)['info']['price'])
-        target_portfolio = pd.DataFrame(columns=['coin', 'name', 'optimalCoin', 'currentCoin', 'spot_price'], data=[
-            [coin, cash_name, float(kwargs['cash_size']) / cash_price, 0, cash_price],
-            [coin, future_name, -float(kwargs['cash_size']) / future_price, 0, future_price]])
+        target_portfolio = pd.DataFrame(columns=['name','benchmark', 'target', 'exchange', 'subaccount', 'underlying'],
+                                        data=[
+            [cash_name, cash_price, float(kwargs['cash_size']), exchange, subaccount, coin],
+            [future_name, future_price, -float(kwargs['cash_size']), exchange, subaccount, coin]])
 
     elif run_type == 'flatten':  # only works for basket with 2 symbols
         future_weights = pd.DataFrame(columns=['name', 'optimalWeight'])
@@ -104,7 +104,7 @@ async def get_exec_request(run_type, exchange, **kwargs):
         raise Exception("unknown command")
 
     target_portfolio = target_portfolio.set_index('name')
-    to_json(exchange_obj, target_portfolio, kwargs['config'])
+    to_json(exchange_obj, target_portfolio, kwargs['config'] if 'config' in kwargs else None)
     await exchange_obj.close()
     return target_portfolio
 
@@ -505,7 +505,7 @@ def main(*args,**kwargs):
                                         backtest_end = datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0, second=0, microsecond=0)-timedelta(hours=1)))
         return pd.DataFrame()
     elif run_type in ['unwind','flatten','spread']:
-        res = asyncio.run(get_exec_request(run_type,exchange_name,config,**kwargs))
+        res = asyncio.run(get_exec_request(run_type,exchange_name,**kwargs))
     else:
         logger.critical(f'commands: sysperp [signal_horizon] [holding_period], backtest, depth [signal_horizon] [holding_period]')
     return res
