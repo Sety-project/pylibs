@@ -293,7 +293,7 @@ class OrderManager(dict):
     async def reconcile_fills(self):
         '''fetch fills, to recover missed messages'''
         sincetime = self.latest_fill_reconcile_timestamp if self.latest_fill_reconcile_timestamp else myUtcNow() - 1000
-        fetched_fills = sum(await safe_gather([self.strategy.venue_api.fetch_my_trades(since=sincetime,symbol=symbol) for symbol in self.parameters['symbols']],semaphore=self.strategy.rest_semaphor), [])
+        fetched_fills = sum(await safe_gather([self.strategy.venue_api.fetch_my_trades(since=sincetime,symbol=symbol) for symbol in self],semaphore=self.strategy.rest_semaphor), [])
         for fill in fetched_fills:
             fill['comment'] = 'reconciled'
             fill['clientOrderId'] = self.find_clientID_from_fill(fill)
@@ -309,7 +309,7 @@ class OrderManager(dict):
                                           if data[-1]['state'] in OrderManager.openStates}
 
         # add missing orders (we missed orders from the exchange)
-        external_orders = sum(await safe_gather([self.strategy.venue_api.fetch_open_orders(symbol=symbol) for symbol in self.parameters['symbols']],semaphore=self.strategy.rest_semaphor), [])
+        external_orders = sum(await safe_gather([self.strategy.venue_api.fetch_open_orders(symbol=symbol) for symbol in self],semaphore=self.strategy.rest_semaphor), [])
         for order in external_orders:
             if order['clientOrderId'] not in internal_order_internal_status.keys():
                 self.acknowledgment(order | {'comment':'reconciled_missing'})
