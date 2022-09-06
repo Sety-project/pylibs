@@ -382,7 +382,7 @@ def to_json(exchange, all,config_name):
 
 async def strategy_wrapper(**kwargs):
 
-    if kwargs['equity_override'][0].isnumeric():
+    if kwargs['equity_override'][0]>0:
         exchange = await open_exchange(kwargs['exchange_name'], '')
         equity_override = kwargs['equity_override'][0]
     else:
@@ -494,6 +494,7 @@ def main(*args,**kwargs):
                                     asyncio.run(strategy_wrapper(
                                         exchange_name=exchange_name,
                                         equity_override=equity,
+                                        config_name=None,  # yuk..
                                         concentration_limit=concentration_limit,
                                         mktshare_limit=mktshare_limit,
                                         minimum_carry=minimum_carry,
@@ -501,7 +502,7 @@ def main(*args,**kwargs):
                                         signal_horizon=sig_horizon,
                                         holding_period=hol_period,
                                         slippage_override=slippage_override,
-                                        backtest_start= datetime(2021,2,17).replace(tzinfo=timezone.utc),#.replace(minute=0, second=0, microsecond=0)-timedelta(days=2),# live start was datetime(2022,6,21,19),
+                                        backtest_start= datetime(2022,6,17).replace(tzinfo=timezone.utc),#.replace(minute=0, second=0, microsecond=0)-timedelta(days=2),# live start was datetime(2022,6,21,19),
                                         backtest_end = datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0, second=0, microsecond=0)-timedelta(hours=1)))
         return pd.DataFrame()
     elif run_type in ['unwind','flatten','spread']:

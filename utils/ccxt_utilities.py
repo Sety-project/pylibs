@@ -68,13 +68,13 @@ async def open_exchange(exchange_name,subaccount,config={}):
         exchange = ccxt.binance(config={# subaccount convexity
         'enableRateLimit': True,
         'apiKey': 'V2KfGbMd9Zd9fATONTESrbtUtkEHFcVDr6xAI4KyGBjKs7z08pQspTaPhqITwh1M',
-        'secret': api_params.loc[exchange_name,'value'],
+        'secret': api_params[exchange_name]['key'],
     }|config)
     elif exchange_name == 'okex5':
         exchange = ccxt.okex5(config={
             'enableRateLimit': True,
             'apiKey': '6a72779d-0a4a-4554-a283-f28a17612747',
-            'secret': api_params.loc[exchange_name,'value'],
+            'secret': api_params[exchange_name]['key'],
             'secret2': api_params.loc[exchange_name,'comment'],
         }|config)
         if subaccount != 'convexity':
@@ -84,25 +84,25 @@ async def open_exchange(exchange_name,subaccount,config={}):
         exchange = ccxt.huobi(config={
             'enableRateLimit': True,
             'apiKey': 'b7d9d6f8-ce6a01b8-8b6ab42f-mn8ikls4qg',
-            'secret': api_params.loc[exchange_name,'value'],
+            'secret': api_params[exchange_name]['key'],
         }|config)
     elif exchange_name == 'deribit':
         exchange = ccxt.deribit(config={
             'enableRateLimit': True,
             'apiKey': '4vc_41O4',
-            'secret': api_params.loc[exchange_name,'value'],
+            'secret': api_params[exchange_name]['key'],
         }|config)
     elif exchange_name == 'kucoin':
         exchange = ccxt.kucoin(config={
                                            'enableRateLimit': True,
                                            'apiKey': '62091838bff2a30001b0d3f6',
-                                           'secret': api_params.loc[exchange_name,'value'],
+                                           'secret': api_params[exchange_name]['key'],
                                        } | config)
     elif exchange_name == 'paradigm':
         from mess.paradigm_tape import paradigm_request
         result = paradigm_request(path='/v1/fs/trade_tape',
                                   access_key='EytZmov5bDDPGXqvYviriCs8',
-                                  secret_key=api_params.loc[exchange_name, 'value'])
+                                  secret_key=api_params[exchange_name]['key'])
         return result
     #subaccount_list = pd.DataFrame((exchange.privateGetSubaccounts())['result'])
     else: print('what exchange?')

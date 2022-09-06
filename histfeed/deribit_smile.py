@@ -1,7 +1,9 @@
+import os.path
 import sys,math,scipy,datetime,copy
 import pandas as pd
 import numpy as np
 import requests
+from utils.config_loader import configLoader
 
 class black_scholes:
     @staticmethod
@@ -135,14 +137,16 @@ def deribit_smile_tardis(currency,whatever):
             # vega*amount weighted regress (eg heston) of side_iv on otm_delta,expiry (later bid and ask)
             # vega*amount weighted regress (eg heston) of side_iv on otm_delta,expiry (later bid and ask)
 
-def deribit_smile_genesisvolatility(currency,start):
+def deribit_smile_genesisvolatility(currency,start,end):
     '''
     full volsurface history as multiindex dataframe: date as milli x (tenor as years, strike of 'atm')
     '''
 
     # just read from file, since we only have 30d using LITE
-    nrows = int(1 + (datetime.datetime.utcnow().replace(tzinfo=timezone.utc) - start).total_seconds() / 3600)
-    data = pd.read_excel('Runtime/Deribit_Mktdata_database/genesisvolatility/manual.xlsx',index_col=0,header=[0,1],sheet_name=currency,nrows=nrows)/100
+    nrows = int(1 + (end - start).total_seconds() / 3600)
+    mktdata_exchange_repo = configLoader.get_mktdata_folder_for_exchange('deribit')
+    mktdatafile = os.path.join(os.sep,mktdata_exchange_repo,'genesisvolatility','manual.xlsx')
+    data = pd.read_excel(mktdatafile,index_col=0,header=[0,1],sheet_name=currency,nrows=nrows)/100
     return data
 
     url = "https://app.pinkswantrading.com/graphql"
@@ -222,7 +226,9 @@ def deribit_smile_main(*argv):
     print(f'running {argv}')
 
     if argv[0] == 'genesisvolatility':
-        deribit_smile_genesisvolatility(currency=argv[1])
+        end = datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc)
+        start = end - datetime.timedelta(argv[2])
+        deribit_smile_genesisvolatility(currency=argv[1],start=start,end=end)
     elif argv[0] == 'tardis':
         deribit_smile_tardis(argv[1],argv[2])
     else:

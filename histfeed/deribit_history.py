@@ -2,9 +2,9 @@
 import copy
 
 import pandas as pd
-from io_utils import *
-from ccxt_utilities import *
-from deribit_smile import deribit_smile_genesisvolatility, MktCurve, VolSurface
+from utils.io_utils import *
+from utils.ccxt_utilities import *
+from histfeed.deribit_smile import deribit_smile_genesisvolatility, MktCurve, VolSurface
 import ccxt as ccxt # needs to be reassigned from ccxtpro
 
 funding_start = datetime(2019, 4, 30)
@@ -31,7 +31,7 @@ def open_exchange(exchange_name,subaccount,config={}):
     return exchange
 
 def get_history(derivative, start = 'cache', end = datetime(2022,4,25,7),
-        dirname = 'Runtime/Deribit_Mktdata_database'):
+        dirname = configLoader.get_mktdata_folder_for_exchange('deribit')):
     ''' all rates annualized, all volumes daily in usd'''
 
     def time_interval(data,start,end):
@@ -76,7 +76,7 @@ def get_history(derivative, start = 'cache', end = datetime(2022,4,25,7),
 
 def build_history(derivative,exchange,
         end = (datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0,second=0,microsecond=0)),
-        dirname = 'Runtime/Deribit_Mktdata_database'):
+        dirname = configLoader.get_mktdata_folder_for_exchange('deribit')):
     '''for now, increments local files and then uploads to s3'''
 
     coroutines = []
@@ -184,7 +184,7 @@ def rate_history(future,exchange,
         data['rate/c'] = data.apply(
             lambda y: calc_basis(y['mark/c'],
                                  indexes.loc[y.name, future['instrument_name']+'/indexes/c'], future['expiryTime'],
-                                 datetime.fromtimestamp(int(y.name / 1000), tz=timez)), axis=1)
+                                 datetime.fromtimestamp(int(y.name / 1000), tz=timezone)), axis=1)
     elif future['type'] == 'swap': ### 1h funding = (mark/spot-1)/24
         data['rate/c'] = (data['mark/c'] / indexes[future['instrument_name']+'/indexes/c'] - 1)*365.25
     else:

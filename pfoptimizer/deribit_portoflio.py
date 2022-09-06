@@ -1,10 +1,10 @@
-import copy
-import math
+import os,sys,math,datetime,copy
 
 import numpy as np
+import pandas as pd
 import scipy
 
-from deribit_history import *
+from histfeed.deribit_history import deribit_history_main
 
 class black_scholes:
     @staticmethod
@@ -468,7 +468,7 @@ def strategies_main(*argv):
         prev_portfolio = copy.deepcopy(portfolio)
 
         if run_i%100==0:
-            print('{} at {}'.format(run_i,datetime.utcnow().replace(tzinfo=timezone.utc)))
+            print('{} at {}'.format(run_i,datetime.utcnow().replace(tzinfo=datetime.timezone.utc)))
 
     display = pd.concat(series,axis=1)
     display.loc[(['predict','actual'],slice(None),slice(None))] = display.loc[(['predict','actual'],slice(None),slice(None))].cumsum(axis=1)
