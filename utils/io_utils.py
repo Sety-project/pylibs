@@ -164,3 +164,14 @@ def myUtcNow(return_type='float'):
     if return_type == 'int':
         return result
     raise Exception(f'invalid return_type {return_type}')
+
+def ignore_error(func):
+    @functools.wraps(func)
+    async def wrapper_ignore_error(*args, **kwargs):
+        try:
+            return await func(*args, **kwargs)
+        except Exception as e:
+            logger = logging.getLogger(func.__module__.split('.')[0])
+            logger.warning(e,exc_info=True)
+    return wrapper_ignore_error
+

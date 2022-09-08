@@ -142,11 +142,7 @@ async def fetch_borrow_rate_history(exchange, coin,start_time,end_time,params={}
         'end_time': end_time
     }
 
-    try:
-        response = await exchange.publicGetSpotMarginHistory(exchange.extend(request, params))
-    except Exception as e:
-        logging.exception(e,exc_info=True)
-        return pd.DataFrame()
+    response = await exchange.publicGetSpotMarginHistory(exchange.extend(request, params))
 
     if len(exchange.safe_value(response, 'result', []))==0: return pd.DataFrame()
     result = pd.DataFrame(exchange.safe_value(response, 'result', [])).astype({'coin':str,'time':str,'size':float,'rate':float})

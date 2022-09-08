@@ -382,7 +382,7 @@ def to_json(exchange, all,config_name):
 
 async def strategy_wrapper(**kwargs):
 
-    if kwargs['equity_override'][0]>0:
+    if type(kwargs['equity_override'][0])==float:
         exchange = await open_exchange(kwargs['exchange_name'], '')
         equity_override = kwargs['equity_override'][0]
     else:

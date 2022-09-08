@@ -133,6 +133,7 @@ async def correct_history(futures,exchange,hy_history,dirname=configLoader.get_m
     await safe_gather(coroutines)
 
 ### only perps, only borrow and funding, only hourly, time is fixing / payment time.
+@ignore_error
 async def borrow_history(coin,
                          exchange,
                          end=(datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
@@ -149,8 +150,6 @@ async def borrow_history(coin,
     data = pd.concat(await safe_gather([
         fetch_borrow_rate_history(exchange,coin,start_time,start_time+f-int(resolution))
             for start_time in start_times]),axis=0,join='outer')
-    if len(data)==0:
-        return pd.DataFrame(columns=[coin+'_rate_borrow',coin+'_rate_size'])
 
     data = data.astype(dtype={'time': 'int64'}).set_index('time')[['rate','size']]
     data.rename(columns={'rate':coin+'_rate_borrow','size':coin+'_rate_size'},inplace=True)
@@ -160,6 +159,7 @@ async def borrow_history(coin,
     if dirname != '': await async_to_parquet(data, os.path.join(dirname, coin + '_borrow.parquet'),mode='a')
 
 ######### annualized funding for perps, time is fixing / payment time.
+@ignore_error
 async def funding_history(future,
                           exchange,
                           start=(datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0))-timedelta(days=30),
@@ -179,9 +179,6 @@ async def funding_history(future,
                                 for start_time in start_times])
     funding = [y for x in lists for y in x]
 
-    if len(funding)==0:
-        return pd.DataFrame(columns=[exchange.market(future['symbol'])['id'] + '_rate_funding'])
-
     data = pd.DataFrame(funding)
     data['time']=data['timestamp'].astype(dtype='int64')
     data[exchange.market(future['symbol'])['id'] + '_rate_funding']=data['fundingRate']*365.25*24
@@ -194,6 +191,7 @@ async def funding_history(future,
                                              mode='a')
 
 #### annualized rates for futures and perp, volumes are daily
+@ignore_error
 async def rate_history(future,exchange,
                  end=datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0),
                  start=datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)-timedelta(days=30),
@@ -215,12 +213,6 @@ async def rate_history(future,exchange,
                                {'start_time':start_time, 'end_time':start_time+f-int(resolution),'price':'index'}]])
     mark = [y for x in mark_indexes[::2] for y in x]
     indexes = [y for x in mark_indexes[1::2] for y in x]
-
-    if ((len(indexes) == 0) | (len(mark) == 0)):
-        return pd.DataFrame(columns=
-                         [exchange.market(future['symbol'])['id'] + '_mark_' + c for c in ['t', 'o', 'h', 'l', 'c', 'volume']]
-                        +[exchange.market(future['symbol'])['id'] + '_indexes_' + c for c in ['t', 'o', 'h', 'l', 'c', 'volume']]
-                        +[exchange.market(future['symbol'])['id'] + '_rate_' + c for c in ['T','c','h','l']])
     column_names = ['t', 'o', 'h', 'l', 'c', 'volume']
 
     ###### indexes
@@ -257,7 +249,10 @@ async def rate_history(future,exchange,
         data['rate_l'] = (mark['mark_l'] / indexes['indexes_l'] - 1)*365.25
     else:
         raise Exception('what is ' + future['symbol'] + ' ?')
-    
+
+    ##### openInterestUsd
+    data['openInterestUsd_c'] = future['openInterestUsd']
+
     data.columns = [exchange.market(future['symbol'])['id'] + '_' + c for c in data.columns]
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     data = data[~data.index.duplicated()].sort_index()
@@ -268,6 +263,7 @@ async def rate_history(future,exchange,
                                              mode='a')
 
 ## populates future_price or spot_price depending on type
+@ignore_error
 async def spot_history(symbol, exchange,
                        end= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
                        start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
@@ -286,10 +282,7 @@ async def spot_history(symbol, exchange,
         exchange.fetch_ohlcv(symbol, timeframe=timeframe, params={'start_time':start_time, 'end_time':start_time+f-int(resolution)})
                                 for start_time in start_times])
     spot = [y for x in spot_lists for y in x]
-
     column_names = ['t', 'o', 'h', 'l', 'c', 'volume']
-    if len(spot)==0:
-        return pd.DataFrame(columns=[symbol.replace('/USD', '') + '_price_' + c for c in column_names])
 
     ###### spot
     data = pd.DataFrame(columns=column_names, data=spot).astype(dtype={'t': 'int64', 'volume': 'float'}).set_index('t')
@@ -302,6 +295,7 @@ async def spot_history(symbol, exchange,
                                                         symbol.replace('/USD', '') + '_price.parquet'),
                                            mode='a')
 
+@ignore_error
 async def fetch_trades_history(symbol,
                                exchange,
                                start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
