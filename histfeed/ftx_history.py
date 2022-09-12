@@ -81,21 +81,23 @@ async def build_history(futures,
     # static values for non spot Margin underlyings
     otc_file = configLoader.get_static_params_used()
     for f in list(futures.loc[futures['spotMargin'] == False, 'underlying'].unique()):
-        spot_parquet = from_parquet(os.path.join(dirname, f + '_price.parquet'))
-        to_parquet(pd.DataFrame(index=spot_parquet.index,
-                                columns=[f + '_rate_borrow'],
-                                data=otc_file.loc[f,'borrow'] if futures.loc[f+'-PERP','spotMargin'] == 'OTC' else 999
-                                ),
-                   os.path.join(dirname, f +'_borrow.parquet'),
-                   mode='a')
+        try:
+            spot_parquet = from_parquet(os.path.join(dirname, f + '_price.parquet'))
+            to_parquet(pd.DataFrame(index=spot_parquet.index,
+                                    columns=[f + '_rate_borrow'],
+                                    data=otc_file.loc[f,'borrow'] if futures.loc[f+'-PERP','spotMargin'] == 'OTC' else 999
+                                    ),
+                       os.path.join(dirname, f +'_borrow.parquet'),
+                       mode='a')
 
-        to_parquet(pd.DataFrame(index=spot_parquet.index,
-                                columns=[f + '_rate_size'],
-                                data=otc_file.loc[f,'size'] if futures.loc[f+'-PERP','spotMargin'] == 'OTC' else 0
-                                ),
-                   os.path.join(dirname, f + '_borrow.parquet'),
-                   mode='a')
-
+            to_parquet(pd.DataFrame(index=spot_parquet.index,
+                                    columns=[f + '_rate_size'],
+                                    data=otc_file.loc[f,'size'] if futures.loc[f+'-PERP','spotMargin'] == 'OTC' else 0
+                                    ),
+                       os.path.join(dirname, f + '_borrow.parquet'),
+                       mode='a')
+        except Exception as e:
+            logger.warning(e,exc_info=True)
 async def correct_history(futures,exchange,hy_history,dirname=configLoader.get_mktdata_folder_path()):
     '''for now, increments local files and then uploads to s3'''
 
