@@ -19,7 +19,6 @@ class Strategy(dict):
     class ReadyToShutdown(Exception):
         def __init__(self, text):
             super().__init__(text)
-
     def __init__(self,parameters,signal_engine,venue_api,order_manager,position_manager):
         '''Strategy contructor also opens channels btw objects (a simple member data for now)'''
         super().__init__()
@@ -32,10 +31,10 @@ class Strategy(dict):
         self.timestamp = None
 
         # pointers to other objects (like a bus in a single thread...)
-        position_manager.strategy = self
-        order_manager.strategy = self
-        venue_api.strategy = self
-        signal_engine.strategy = self
+        if position_manager is not None: position_manager.strategy = self
+        if order_manager is not None: order_manager.strategy = self
+        if venue_api is not None: venue_api.strategy = self
+        if signal_engine is not None: signal_engine.strategy = self
 
         self.position_manager = position_manager
         self.order_manager = order_manager
@@ -58,20 +57,33 @@ class Strategy(dict):
 
     @staticmethod
     async def build(parameters):
-        if os.path.isfile(parameters['signal_engine']['filename']):
-            signal_engine = await SignalEngine.build(parameters['signal_engine'])
-            symbols = {'symbols':signal_engine.parameters['symbols']}
-            venue_api = await VenueAPI.build(symbols | parameters['venue_api'])
-            order_manager = await OrderManager.build(symbols | parameters['order_manager'])
-            position_manager = await PositionManager.build(symbols | parameters['position_manager'])
+        signal_engine = await SignalEngine.build(parameters['signal_engine'])
+        symbols = {'symbols':signal_engine.parameters['symbols']}
+        venue_api = await VenueAPI.build(symbols | parameters['venue_api'])
+        order_manager = await OrderManager.build(symbols | parameters['order_manager'])
+        position_manager = await PositionManager.build(symbols | parameters['position_manager'])
 
-            result = ExecutionStrategy(symbols|parameters['strategy'],
-                                       signal_engine,
-                                       venue_api,
-                                       order_manager,
-                                       position_manager)
-        else:
-            raise Exception("{} not found".format(parameters['signal_engine']['filename']))
+        result = ExecutionStrategy(symbols|parameters['strategy'],
+                                   signal_engine,
+                                   venue_api,
+                                   order_manager,
+                                   position_manager)
+
+        await result.reconcile()
+
+        return result
+
+    @staticmethod
+    async def build_listener(self, order, parameters):
+        signal_engine = await SignalEngine.build(parameters['signal_engine'])
+        symbols = {'symbols':signal_engine.parameters['symbols']}
+        venue_api = await VenueAPI.build(symbols | parameters['venue_api'])
+
+        result = Strategy(symbols|parameters['strategy'],
+                                   signal_engine,
+                                   venue_api,
+                                   order_manager=None,
+                                   position_manager=None)
 
         await result.reconcile()
 
@@ -89,21 +101,12 @@ class Strategy(dict):
 
         await safe_gather(coros,semaphore=self.rest_semaphor)
 
-    async def build_listener(self, order, parameters):
-        '''initialize all state and does some filtering (weeds out slow underlyings; should be in strategy)
-            target_sub_portfolios = {coin:{rush_level_increment,
-            symbol1:{'spot_price','diff','target'}]}]'''
-        nowtime = datetime.utcnow().replace(tzinfo=timezone.utc)
-
-        self.strategy = await Strategy.build(self, nowtime, order, parameters['strategy'])
-        self.signal_engine = await SignalEngine.build(self, parameters['signal_engine'])
-
     async def update_quoter_parameters(self):
         raise Exception("must be implemented below this abstract class")
 
     async def periodic_reconcile(self):
         '''redundant minutely risk check'''
-        while True:
+        while self.position_manager:
             try:
                 await asyncio.sleep(self.position_manager.limit.check_frequency)
                 await self.reconcile()
@@ -160,6 +163,7 @@ class Strategy(dict):
 
 class ExecutionStrategy(Strategy):
     '''specialized to execute externally generated client orders'''
+
     async def update_quoter_parameters(self):
         '''updates key/values from signal'''
         self.timestamp = myUtcNow()
@@ -236,6 +240,12 @@ class ExecutionStrategy(Strategy):
         '''
         strategy = self[symbol]
         mid = 0.5*(orderbook['bids'][0][0]+orderbook['asks'][0][0])
+
+        original_size = self.signal_engine[symbol]['target'] - self.position_manager[symbol]['delta'] / mid
+        if abs(original_size) < self.parameters['significance_threshold'] * self.position_manager.pv / mid \
+                or abs(original_size) < self.venue_api.static[symbol]['sizeIncrement'] \
+                or self.lock['reconciling'].locked():
+            return
 
         # size to do:
         original_size = strategy['target'] - self.position_manager[symbol]['delta'] / mid
@@ -316,7 +326,8 @@ class ExecutionStrategy(Strategy):
         self.venue_api.peg_or_stopout(symbol, size, orderbook, edit_trigger_depth=edit_trigger_depth,
                                       edit_price_depth=edit_price_depth, stop_depth=stop_depth)
 
-
+    def process_trades(self, trades):
+        pass
 class AlgoStrategy(Strategy):
     async def update_quoter_parameters(self):
         '''updates quoter inputs
@@ -420,14 +431,14 @@ class AlgoStrategy(Strategy):
                                        for _symbol in self.keys())
             # mkt order if target reached.
             # TODO: pray for the other coin to hit the same condition...
-            if current_basket_price + 2 * abs(params['update_time_delta']) * self.strategy.venue_api.static[symbol]['takerVsMakerFee'] * mid < \
+            if current_basket_price + 2 * abs(params['update_time_delta']) * self.venue_api.static[symbol]['takerVsMakerFee'] * mid < \
                     self[symbol]['rush_in_level']:
                 # TODO: could replace current_basket_price by two way sweep after if
                 self.venue_api.peg_or_stopout(symbol, size, self.venue_api.orderbook,
                                                       edit_trigger_depth=params['edit_trigger_depth'],
                                                       edit_price_depth='rush_in', stop_depth=None)
                 return
-            elif current_basket_price - 2 * abs(params['update_time_delta']) * self.strategy.venue_api.static[symbol]['takerVsMakerFee'] * mid > \
+            elif current_basket_price - 2 * abs(params['update_time_delta']) * self.venue_api.static[symbol]['takerVsMakerFee'] * mid > \
                     self[symbol]['rush_out_level']:
                 # go all in as this decreases margin
                 size = - self.position_manager[symbol]['delta'] / mid
@@ -453,3 +464,16 @@ class AlgoStrategy(Strategy):
         self.venue_api.peg_or_stopout(symbol, size, self.venue_api.orderbook,
                                               edit_trigger_depth=edit_trigger_depth,
                                               edit_price_depth=edit_price_depth, stop_depth=stop_depth)
+
+class ListenerStrategy(Strategy):
+    async def run(self):
+        coros = [self.periodic_reconcile(),
+                 self.venue_api.monitor_order_book(self.keys()[0]),
+                self.venue_api.monitor_trades(self.keys()[0])]
+
+        await safe_gather(coros,semaphore=self.rest_semaphor)
+
+    def process_order_book_update(self, trades):
+        self.signal_engine.process_order_book_update(trades)
+    def process_trades(self, trades):
+        self.signal_engine.process_trades(trades)

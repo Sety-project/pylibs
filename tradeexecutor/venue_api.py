@@ -99,20 +99,8 @@ class VenueAPI(ccxtpro.ftx):
         populates event_records, maintains pending_new
         no lock is done, so we keep collecting mktdata'''
         orderbook = await self.watch_order_book(symbol)
-        previous_mid = self.mid(symbol)  # based on ticker, in general
         self.populate_ticker(symbol, orderbook)
-
-        # don't waste time on deep updates or nothing to do
-        # blocked by reconciling lock
-        mid = self.mid(symbol)
-        original_size = self.strategy.signal_engine[symbol]['target'] - self.strategy.position_manager[symbol]['delta'] / mid
-        if abs(original_size) < self.strategy.parameters['significance_threshold'] * self.strategy.position_manager.pv / mid \
-                or abs(original_size) < self.static[symbol]['sizeIncrement'] \
-                or self.mid(symbol) == previous_mid \
-                or self.strategy.lock['reconciling'].locked():
-            return
-        else:
-            self.strategy.process_order_book_update(symbol,orderbook)
+        self.strategy.process_order_book_update(symbol,orderbook)
 
     def populate_ticker(self,symbol,orderbook):
         timestamp = orderbook['timestamp'] * 1000
@@ -158,7 +146,7 @@ class VenueAPI(ccxtpro.ftx):
         '''maintains risk_state, event_records, logger.info
             #     await self.reconcile_state() is safer but slower. we have monitor_risk to reconcile'''
         trades = await self.watch_trades(symbol=symbol)
-        self.strategy.signal_engine.process_trades(trades)
+        self.strategy.process_trades(trades)
 
     # ---------------------------------- just implemented so we hold messages while reconciling
     @intercept_message_during_reconciliation

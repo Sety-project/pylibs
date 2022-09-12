@@ -29,10 +29,13 @@ class SignalEngine(dict):
     async def build(parameters):
         if not parameters:
             return None
-        elif parameters['signal'] == 'vwap':
+        elif parameters['signal'] == 'external':
             result = ExternalSignal(parameters)
         elif parameters['signal'] == 'spread_distribution':
             result = SpreadTradeSignal(parameters)
+        elif parameters['signal'] == 'listen':
+            result = SignalEngine(parameters)
+            result[parameters['symbol']] = 0
         await result.reconcile()
         parameters['symbols'] = list(result.keys())
 
@@ -93,9 +96,10 @@ class SignalEngine(dict):
         for trade in trades:
             self.trades_cache[trade['symbol']].append(trade)
 
-
 class ExternalSignal(SignalEngine):
     def __init__(self, parameters):
+        if not os.path.isfile(parameters['filename']):
+            raise Exception("{} not found".format(parameters['filename']))
         super().__init__(parameters)
         self.timestamp = None
         self.vwap = None
@@ -156,17 +160,18 @@ class SpreadTradeSignal(SignalEngine):
 
     async def update_quoter_analytics(self):
         '''specialized to execute externally generated client orders'''
-        if os.path.isfile(self.signal_engine.parameters['filename']):
+        raise Exception('not implemented')
+        if os.path.isfile(self.parameters['filename']):
             await self.signal_engine.reconcile()
         else:
             targets = {key: 0 for key in self}
-            spot = self.venue_api.mid(next(key for key in self if self.venue_api.market(key)['type'] == 'spot'))
+            spot = self.strategy.venue_api.mid(next(key for key in self if self.strategy.venue_api.market(key)['type'] == 'spot'))
             timestamp = myUtcNow()
         self.set_target(self.signal_engine)
 
         if not self.vwap:
             await self.initialize_vwap()
-        self.signal_engine.compile_vwap(frequency=timedelta(minutes=1))
+        self.compile_vwap(frequency=timedelta(minutes=1))
 
     def compile_spread_trades(self, purge=True):
         '''compute maker/taker spread trades and vwap'''

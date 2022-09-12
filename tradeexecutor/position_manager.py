@@ -55,7 +55,7 @@ class PositionManager(dict):
         data['delta_timestamp'] = fill['timestamp']
 
         # update margin
-        self.position_manager.margin.add_instrument(symbol, fill_size)
+        self.margin.add_instrument(symbol, fill_size)
 
         if 'verbose' in self.parameters['options']:
             current = self[symbol]['delta']
