@@ -242,11 +242,10 @@ class OrderManager(dict):
             self.strategy.position_manager.margin.add_open_order(order_event)
 
     def process_fill(self, fill):
-        # only log trades being run by this process
-        fill['clientOrderId'] = fill['info']['clientOrderId']
-        fill['comment'] = 'websocket_fill'
-        self.order_manager.fill(fill)
-
+        if fill['symbol'] in self:
+            fill['clientOrderId'] = fill['info']['clientOrderId']
+            fill['comment'] = 'websocket_fill'
+            self.fill(fill)
 
     def fill(self,order_event):
         '''order_event: id, trigger,timestamp,amount,order,symbol'''

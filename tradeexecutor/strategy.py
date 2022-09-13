@@ -142,16 +142,16 @@ class Strategy(dict):
         # replay missed _messages.
         while self.venue_api.message_missed:
             message = self.venue_api.message_missed.popleft()
-            data = self.safe_value(message, 'data')
+            data = message['data']
             channel = message['channel']
             self.logger.warning(f'replaying {channel} after recon')
             if channel == 'fills':
-                fill = self.parse_trade(data)
+                fill = self.venue_api.parse_trade(data)
                 self.position_manager.process_fill(fill | {'orderTrigger': 'replayed'})
                 self.order_manager.process_fill(fill | {'orderTrigger': 'replayed'})
             elif channel == 'orders':
-                order = self.parse_order(data)
-                if order['symbol'] in self.strategy:
+                order = self.venue_api.parse_order(data)
+                if order['symbol'] in self:
                     self.order_manager.acknowledgment(order | {'comment': 'websocket_acknowledgment','orderTrigger': 'replayed'})
             # we don't intercept the mktdata anyway...
             elif channel == 'orderbook':

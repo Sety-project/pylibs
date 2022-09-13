@@ -30,7 +30,7 @@ class ExecutionLogger:
         if os.path.isfile(filename):
             async with aiofiles.open(filename, 'r') as file:
                 content = await file.read()
-            history = json.load(content)
+                history = json.loads(content)
         else:
             history = []
         async with aiofiles.open(filename, 'w+') as file:

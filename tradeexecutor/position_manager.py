@@ -57,7 +57,7 @@ class PositionManager(dict):
         # update margin
         self.margin.add_instrument(symbol, fill_size)
 
-        if 'verbose' in self.parameters['options']:
+        if 'verbose' in self.strategy.parameters['options'] and symbol in self.strategy:
             current = self[symbol]['delta']
             target = self.strategy[symbol]['target'] * fill['price']
             diff = (self.strategy[symbol]['target'] - self[symbol]['delta']) * fill['price']
