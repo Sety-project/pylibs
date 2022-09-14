@@ -228,8 +228,7 @@ class VenueAPI(ccxtpro.ftx):
         # if no open order, create an order
         order_side = 'buy' if size>0 else 'sell'
         if len(event_histories)==0:
-            trimmed_size = self.strategy.position_manager.trim_to_margin(mid, size, symbol)
-            asyncio.create_task(self.create_order(symbol, 'limit', order_side, abs(trimmed_size), price=edit_price,
+            asyncio.create_task(self.create_order(symbol, 'limit', order_side, abs(size), price=edit_price,
                                                   params={'postOnly': not isTaker,
                                                           'ioc': isTaker,
                                                           'comment':edit_price_depth if isTaker else 'new'}))
@@ -270,20 +269,22 @@ class VenueAPI(ccxtpro.ftx):
     async def create_order(self, symbol, type, side, amount, price=None, params={}):
         '''if acknowledged, place order. otherwise just reconcile
         orders_pending_new is blocking'''
-        amount = self.round_to_increment(self.static[symbol]['sizeIncrement'], amount)
+        mid = self.tickers[symbol]['mid']
+        trimmed_size = self.strategy.position_manager.trim_to_margin(mid, amount, symbol)
+        rounded_amount = self.round_to_increment(self.static[symbol]['sizeIncrement'], trimmed_size)
         if amount == 0:
             return
         # set pending_new -> send rest -> if success, leave pending_new and give id. Pls note it may have been caught by handle_order by then.
         clientOrderId = self.strategy.order_manager.pending_new({'symbol': symbol,
                                                     'type': type,
                                                     'side': side,
-                                                    'amount': amount,
-                                                    'remaining': amount,
+                                                    'amount': rounded_amount,
+                                                    'remaining': rounded_amount,
                                                     'price': price,
                                                     'comment': params['comment']})
         try:
             # REST request
-            order = await super().create_order(symbol, type, side, amount, price, params | {'clientOrderId':clientOrderId})
+            order = await super().create_order(symbol, type, side, rounded_amount, price, params | {'clientOrderId':clientOrderId})
         except Exception as e:
             order = {'clientOrderId':clientOrderId,
                      'timestamp':myUtcNow(),
@@ -291,7 +292,7 @@ class VenueAPI(ccxtpro.ftx):
                      'comment':'create/'+str(e)}
             self.strategy.order_manager.cancel_or_reject(order)
             if isinstance(e,ccxtpro.InsufficientFunds):
-                self.strategy.logger.info(f'{clientOrderId} too big: {amount*self.mid(symbol)}')
+                self.strategy.logger.info(f'{clientOrderId} too big: {rounded_amount*self.mid(symbol)}')
             elif isinstance(e,ccxtpro.RateLimitExceeded):
                 throttle = 200.0
                 self.strategy.logger.info(f'{str(e)}: waiting {throttle} ms)')

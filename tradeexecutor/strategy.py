@@ -3,6 +3,7 @@ from datetime import datetime, timezone, timedelta
 
 import numpy as np
 import pandas as pd
+import ccxtpro
 
 from tradeexecutor.order_manager import OrderManager
 from tradeexecutor.position_manager import PositionManager
@@ -111,8 +112,12 @@ class Strategy(dict):
                 await asyncio.sleep(self.position_manager.limit.check_frequency)
                 await self.reconcile()
                 self.position_manager.check_limit()
+            except ccxtpro.NetworkError as e:
+                self.logger.warning(str(e))
+                self.logger.warning('reconciling after periodic_reconcile dropped off')
+                await self.periodic_reconcile()
             except Exception as e:
-                self.logger.info(e, exc_info=True)
+                self.logger.warning(e, exc_info=True)
                 raise e
 
     async def reconcile(self):
