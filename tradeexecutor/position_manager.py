@@ -45,12 +45,14 @@ class PositionManager(dict):
 
     def process_fill(self, fill):
         symbol = fill['symbol']
+        px = fill['price']
+        fill_size = fill['amount'] * (1 if fill['side'] == 'buy' else -1)
+
         # update risk_state
         if symbol not in self:
             self[symbol] = {'delta': 0, 'delta_id': 0, 'delta_timestamp': myUtcNow()}
         data = self[symbol]
-        fill_size = fill['amount'] * (1 if fill['side'] == 'buy' else -1) * fill['price']
-        data['delta'] += fill_size
+        data['delta'] += fill_size * px
         data['delta_id'] = max(data['delta_id'], int(fill['order']))
         data['delta_timestamp'] = fill['timestamp']
 
@@ -58,16 +60,12 @@ class PositionManager(dict):
         self.margin.add_instrument(symbol, fill_size)
 
         if 'verbose' in self.strategy.parameters['options'] and symbol in self.strategy:
-            current = self[symbol]['delta']
-            target = self.strategy[symbol]['target'] * fill['price']
-            diff = (self.strategy[symbol]['target'] - self[symbol]['delta']) * fill['price']
-            initial = self.strategy[symbol]['target'] * fill['price'] - diff
-            self.strategy.logger.warning('{} risk at {} ms: {}% done [current {}, initial {}, target {}]'.format(
+            current = self[symbol]['delta'] * px
+            target = self.strategy[symbol]['target'] * px
+            self.strategy.logger.warning('{} risk at {} ms: [current {}, target {}]'.format(
                 symbol,
                 self[symbol]['delta_timestamp'],
-                (current - initial) / diff * 100,
                 current,
-                initial,
                 target))
 
     async def reconcile(self):
@@ -146,7 +144,7 @@ class PositionManager(dict):
 
         if self.margin.actual_IM < self.margin.IM_buffer:
             self.strategy.logger.info(
-                f'estimated_IM {estimated_IM} / actual_IM {actual_IM} / marginal_IM {marginal_IM}')
+                f'actual_IM {self.margin.actual_IM} < IM_buffer {self.margin.IM_buffer} (estimated_IM {estimated_IM} / actual_IM {actual_IM} / marginal_IM {marginal_IM})')
             return 0
 
         marginal_IM = marginal_IM if abs(marginal_IM) > 1e-9 else np.sign(marginal_IM) * 1e-9

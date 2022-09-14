@@ -96,8 +96,8 @@ class MarginCalculator:
 
     def add_instrument(self ,symbol ,size):
         '''size in coin'''
-        increment = self.balances_and_positions[symbol]['size'] if symbol in self.balances_and_positions else 0
-        self.balances_and_positions[symbol] = {'size' :size + increment,
+        initial = self.balances_and_positions[symbol]['size'] if symbol in self.balances_and_positions else 0
+        self.balances_and_positions[symbol] = {'size' :size + initial,
                                                'spot_or_swap' : self.type_func(symbol)}
 
     def add_open_order(self, order):
