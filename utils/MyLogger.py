@@ -26,18 +26,18 @@ class ExecutionLogger:
             os.umask(0)
             os.makedirs(self.mktdata_dirname, mode=0o777)
 
-    async def write_history(self, records: dict[list[dict]]):
+    async def write_history(self, records: dict[list[dict]]) -> dict[list[dict]]:
         coin = records['parameters'][0]['symbols'][0].replace(':USD','').replace('/USD','')
         filename = self.json_filename.replace('.json',f'_{coin}.json')
         if os.path.isfile(filename):
             async with aiofiles.open(filename, 'r') as file:
                 content = await file.read()
                 history = json.loads(content)
-            new_records = {key: (data if key!='order_manager' else []) + records[key]
-                           for key,data in history.items() }
+            new_records = {key: (data if key !='order_manager' else []) + records[key]
+                           for key,data in history.items()}
         else:
             new_records = records
-        async with aiofiles.open(filename, 'w+') as file:
+        async with aiofiles.open(filename, 'w') as file:
             await file.write(json.dumps(new_records))
 
     @staticmethod
