@@ -47,22 +47,12 @@ async def single_coin_routine(order_name, **kwargs):
 async def listen(order_name,**kwargs):
 
     config = configLoader.get_executor_params(order=order_name, dirname=kwargs['config'])
+    strategy = await Strategy.build_listener(order_name, config | {'comment': order_name})
+    await strategy.run()
 
-    exchange = await VenueAPI.build(kwargs['exchange'], config, subaccount='')
-
-    coin = order_name.split('listen_')[1]
-    temp_order = pd.DataFrame()
-    temp_order['new_symbol'] = [symbol for symbol,data in exchange.markets.items() if data['base'] == coin and data['quote'] == 'USD']
-    temp_order['spot'] = 1
-    temp_order['spot_ticker'] = f'{coin}/USD'
-    temp_order['optimalWeight'] = 0
-    temp_order.to_csv(order_name)
-
-    await exchange.build_listener(order_name, config | {'comment': order_name})
-
-    coros = [exchange.broadcast_analytics()] + \
-            sum([[exchange.monitor_order_book(symbol),
-                  exchange.monitor_trades(symbol)]
+    coros = [strategy.broadcast_analytics()] + \
+            sum([[strategy.monitor_order_book(symbol),
+                  strategy.monitor_trades(symbol)]
                  for symbol in exchange.strategy.parameters['symbols']], [])
     await asyncio.gather(*coros)
 

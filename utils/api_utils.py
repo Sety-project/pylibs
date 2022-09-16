@@ -1,4 +1,4 @@
-import logging,os,sys,datetime,subprocess,importlib,functools,pathlib
+import logging,os,sys,datetime,subprocess,importlib,functools,pathlib,shutil
 from utils.io_utils import parse_time_param
 from utils.config_loader import configLoader
 
@@ -46,6 +46,16 @@ def build_logging(app_name,
     logger.setLevel(min(log_mapping.keys()))
 
     return logger
+
+def rename_logfile(text):
+    # cosmetic: rename log wi
+    logger = logging.getLogger('tradeexecutor')
+    for handler in logger.handlers:
+        if isinstance(handler, logging.FileHandler):
+            old_name = handler.baseFilename
+            new_name = old_name.replace('.log', f'_{text}.log')
+            shutil.move(old_name, new_name)
+            handler.baseFilename = new_name
 
 def extract_args_kwargs(command,not_passed_token="not_passed"):
     args = [arg.split('=')[0] for arg in command if len(arg.split('=')) == 1]

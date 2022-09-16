@@ -1,4 +1,4 @@
-import asyncio, logging, threading, os
+import asyncio, logging, threading
 from datetime import datetime, timezone, timedelta
 
 import numpy as np
@@ -12,7 +12,7 @@ from tradeexecutor.venue_api import VenueAPI
 from utils.MyLogger import ExecutionLogger
 from utils.async_utils import safe_gather_limit, safe_gather
 from utils.io_utils import myUtcNow
-
+from utils.api_utils import rename_logfile
 
 class Strategy(dict):
     '''abstract class Strategy leverages other managers to implement quoter (ie generate orders from mkt change or order feed)
@@ -59,8 +59,11 @@ class Strategy(dict):
 
     @staticmethod
     async def build(parameters):
+
         signal_engine = await SignalEngine.build(parameters['signal_engine'])
         symbols = {'symbols':signal_engine.parameters['symbols']}
+        rename_logfile(symbols['symbols'][0].replace(':USD', '').replace('/USD', ''))
+
         venue_api = await VenueAPI.build(symbols | parameters['venue_api'])
         order_manager = await OrderManager.build(symbols | parameters['order_manager'])
         position_manager = await PositionManager.build(symbols | parameters['position_manager'])
