@@ -272,7 +272,7 @@ class VenueAPI(ccxtpro.ftx):
         mid = self.tickers[symbol]['mid']
         trimmed_size = self.strategy.position_manager.trim_to_margin(mid, amount, symbol)
         rounded_amount = self.round_to_increment(self.static[symbol]['sizeIncrement'], trimmed_size)
-        if amount == 0:
+        if rounded_amount == 0:
             return
         # set pending_new -> send rest -> if success, leave pending_new and give id. Pls note it may have been caught by handle_order by then.
         clientOrderId = self.strategy.order_manager.pending_new({'symbol': symbol,
