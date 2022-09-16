@@ -10,6 +10,8 @@ from utils.api_utils import build_logging,extract_args_kwargs
 
 class ExecutionLogger:
     '''it s a logger that can also write jsons, and summarize them'''
+    tab_list = ['strategy', 'parameters', 'by_coin', 'by_symbol', 'by_clientOrderId', 'order_manager', 'risk_recon']
+
     def __init__(self,log_date=datetime.utcnow(),exchange_name='ftx'):
         log_path = os.path.join(os.sep, 'tmp', 'tradeexecutor', 'archive')
         if not os.path.exists(log_path):
@@ -24,20 +26,22 @@ class ExecutionLogger:
             os.umask(0)
             os.makedirs(self.mktdata_dirname, mode=0o777)
 
-    async def write_history(self, data):
-        coin = data['parameters']['symbols'][0].replace(':USD','').replace('/USD','')
+    async def write_history(self, records: dict[list[dict]]):
+        coin = records['parameters'][0]['symbols'][0].replace(':USD','').replace('/USD','')
         filename = self.json_filename.replace('.json',f'_{coin}.json')
         if os.path.isfile(filename):
             async with aiofiles.open(filename, 'r') as file:
                 content = await file.read()
                 history = json.loads(content)
+            new_records = {key: (data if key!='order_manager' else []) + records[key]
+                           for key,data in history.items() }
         else:
-            history = []
+            new_records = records
         async with aiofiles.open(filename, 'w+') as file:
-            await file.write(json.dumps(history+[data]))
+            await file.write(json.dumps(new_records))
 
     @staticmethod
-    def batch_summarize_exec_logs(exchange='ftx', subaccount='',dirname=os.path.join(os.sep, 'tmp','prod','tradeexecutor'),
+    def batch_summarize_exec_logs(exchange='ftx', subaccount='',dirname=os.path.join(os.sep, 'tmp','','tradeexecutor'),
                                   start=datetime(1970, 1, 1),
                                   end=datetime.now(),
                                   rebuild=True,
@@ -52,7 +56,7 @@ class ExecutionLogger:
             os.makedirs(unreadable_dirname, mode=0o777)
 
         # read already compiled logs
-        tab_list = ['strategy', 'parameters', 'by_coin', 'by_symbol', 'by_clientOrderId', 'order_manager', 'risk_recon'] + (
+        tab_list = ExecutionLogger.tab_list + (
             ['history'] if add_history_context else [])
         try:
             if rebuild: raise Exception('not an exception: just skip history on rebuild=True')
@@ -73,13 +77,11 @@ class ExecutionLogger:
             except Exception as e:  # always outside (start,end)
                 continue
 
-        concatenated_logs,removed_filenames = ExecutionLogger.concatenate_logs(filenames, archive_dirname)
+        concatenated_logs = ExecutionLogger.concatenate_logs(filenames, archive_dirname)
 
         compiled_logs = ExecutionLogger.summarize_exec_logs(concatenated_logs,start=start,end=end,add_history_context=add_history_context)
         for key, value in compiled_logs.items():
             value.to_csv(os.path.join(dirname, f'all_{key}.csv'))
-
-        return f'moved {len(removed_filenames)} logs to unreadable'
 
     @staticmethod
     def concatenate_logs(filenames,archive_dirname):
@@ -88,32 +90,26 @@ class ExecutionLogger:
         for filename in filenames:
             try:
                 with open(os.path.join(os.sep, archive_dirname, filename), 'r') as file:
-                    list_dict = json.load(file)
-                new_log = {'parameters': pd.concat([pd.Series(d['parameters']) for d in list_dict],axis=1).T,
-                           'strategy': pd.concat([pd.DataFrame(d['strategy']) for d in list_dict]).T,
-                           'order_manager': pd.concat([pd.DataFrame(sum(d['order_manager'].values(),[])) for d in list_dict],axis=1),
-                           'position_manager': pd.DataFrame([{'symbol':symbol}|data for d in list_dict for symbol,data in d['position_manager'].items()]),
-                           'signal_engine': pd.concat([pd.DataFrame(d['signal_engine']) for d in list_dict]).T}
-            except Exception as e:
-                if os.path.isfile(os.path.join(os.sep, archive_dirname, filename)):
-                    removed_filenames.extend(filename)
-            else:
+                    new_log = json.load(file)
                 if not result:
                     result = new_log
                 else:
                     for key, value in new_log.items():
-                        result[key] = pd.concat([result[key], value], axis=0)
+                        result[key] += value
+            except Exception as e:
+                removed_filenames += [filename]
+                continue
 
-        return result,removed_filenames
+        return result
 
     @staticmethod
-    def summarize_exec_logs(df,start,end,add_history_context=False):
+    def summarize_exec_logs(df: dict[list[dict]],start,end,add_history_context=False):
         '''summarize DataFrame'''
-        parameters = df['parameters']
-        strategy = df['strategy']
-        order_manager = df['order_manager']
-        position_manager = df['position_manager'].rename(columns={'delta_timestamp':'timestamp'})
-        signal_engine = df['signal_engine'].reset_index().rename(columns={'index':'symbol'})
+        parameters = pd.DataFrame(df['parameters'])
+        strategy = pd.DataFrame(df['strategy'])
+        order_manager = pd.DataFrame(df['order_manager'])
+        position_manager = pd.DataFrame(df['position_manager']).rename(columns={'delta_timestamp':'timestamp'})
+        signal_engine = pd.DataFrame(df['signal_engine']).rename(columns={'index':'symbol'})
 
         parameters = parameters[(parameters['timestamp']>start.timestamp()*1000)&(parameters['timestamp']<end.timestamp()*1000)]
         strategy = strategy[(strategy['timestamp'] > start.timestamp() * 1000) & (strategy['timestamp'] < end.timestamp() * 1000)]

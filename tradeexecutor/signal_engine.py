@@ -49,8 +49,8 @@ class SignalEngine(dict):
     async def reconcile(self):
         pass
 
-    def to_dict(self):
-        return {symbol:{'timestamp':self.timestamp} | data for symbol,data in self.items()}
+    def serialize(self) -> list[dict]:
+        return [{'symbol':symbol,'timestamp':self.timestamp} | data for symbol,data in self.items()]
 
     async def to_json(self):
         coin = list(self.orderbook.keys())[0].replace(':USD', '').replace('/USD', '')

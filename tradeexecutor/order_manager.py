@@ -30,8 +30,8 @@ class OrderManager(dict):
         else:
             return OrderManager(parameters)
 
-    def to_dict(self):
-        return dict(self)
+    def serialize(self) -> list[dict]:
+        return sum(self.values(),[])
 
     '''various helpers'''
 

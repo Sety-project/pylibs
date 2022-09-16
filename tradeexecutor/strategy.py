@@ -49,12 +49,13 @@ class Strategy(dict):
         self.lock = {'reconciling':threading.Lock()}
         # self.lock |= {symbol: CustomRLock() for symbol in self.parameters['symbols']}
 
-    def to_dict(self):
-        return {'parameters': {'timestamp':self.timestamp} | self.parameters,
-                'strategy': {symbol:{'timestamp':self.timestamp} | data for symbol,data in self.items()},
-                'order_manager': self.order_manager.to_dict(),
-                'position_manager': self.position_manager.to_dict(),
-                'signal_engine': self.signal_engine.to_dict()}
+    def serialize(self) -> dict[list[dict]]:
+        '''{data type:[dict]}'''
+        return {'parameters': [{'timestamp':self.timestamp} | self.parameters],
+                'strategy': [{'symbol': symbol, 'timestamp':self.timestamp} | data for symbol,data in self.items()],
+                'order_manager': self.order_manager.serialize(),
+                'position_manager': self.position_manager.serialize(),
+                'signal_engine': self.signal_engine.serialize()}
 
     @staticmethod
     async def build(parameters):
@@ -140,7 +141,7 @@ class Strategy(dict):
 
         # critical job is done, release lock and print data
         if self.order_manager.fill_flag:
-            await self.data_logger.write_history(self.to_dict())
+            await self.data_logger.write_history(self.serialize())
             self.order_manager.fill_flag = False
 
     def replay_missed_messages(self):

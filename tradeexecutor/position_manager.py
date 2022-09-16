@@ -26,8 +26,10 @@ class PositionManager(dict):
         self.limit = None
         self.risk_reconciliations = []
 
-    def to_dict(self):
-        return self.risk_reconciliations
+    def serialize(self) -> list[dict]:
+        result = self.risk_reconciliations
+        self.risk_reconciliations = []
+        return result
 
     @staticmethod
     async def build(parameters):
@@ -113,7 +115,7 @@ class PositionManager(dict):
 
         delta_error = {symbol: self[symbol]['delta'] - (previous_delta[symbol]['delta'] if symbol in previous_delta else 0)
                        for symbol in self}
-        self.risk_reconciliations = {symbol_:{
+        self.risk_reconciliations += [{'symbol':symbol_,
                                        'delta_timestamp': self[symbol_]['delta_timestamp'],
                                        'delta': self[symbol_]['delta'],
                                        'netDelta': self.coin_delta(symbol_),
@@ -122,7 +124,7 @@ class PositionManager(dict):
                                        'actual_IM': self.margin.actual_IM,
                                        'pv_error': self.pv - (previous_pv or 0),
                                        'total_delta_error': sum(delta_error.values())}
-                                      for symbol_ in self}
+                                      for symbol_ in self]
 
     def check_limit(self):
         absolute_risk = dict()
