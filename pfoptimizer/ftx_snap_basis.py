@@ -507,8 +507,8 @@ def cash_carry_optimizer(exchange, futures,
     if 'warm_start' in optional_params:
         xt = previous_weights.values
     else:
-        # tiny position in the right direaction
-        xt = futures['direction'].values
+        # equal weighted position in the right direction
+        xt = futures['direction'].values * equity / len(futures.loc[futures['direction'] != 0].index)
 
     if 'frozen_weights' in futures.columns:
         res=futures[['frozen_weights']].rename({'frozen_weights':'x'}).to_numpy()
