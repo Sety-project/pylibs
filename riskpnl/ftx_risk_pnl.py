@@ -393,7 +393,7 @@ async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
         result.set_index('attribution',inplace=True)
         return result[~result.index.duplicated()]
 
-    end_of_day = await fetch_EOD(cash_flows['attribution'].append(start_portfolio['attribution']).unique(),end,end_portfolio)
+    end_of_day = await fetch_EOD(cash_flows['attribution'].append(start_portfolio['attribution']).append(cash_flows['coin']).unique(),end,end_portfolio)
 
     # rescale inflows, or recompute if needed
     cash_flows['USDamt'] *= cash_flows['coin'].apply(lambda f: end_of_day.loc[f,'spot'])
