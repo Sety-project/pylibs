@@ -1,6 +1,7 @@
 import scipy.optimize as opt
 from riskpnl.ftx_margin import BasisMarginCalculator
 from histfeed.ftx_history import *
+from tradeexecutor.venue_api import VenueAPI
 
 finite_diff_rel_step = 1e-4
 
@@ -62,7 +63,7 @@ async def enricher(exchange,
     for col in coin_details.columns:
         coin_details[col] = pd.to_numeric(coin_details[col], errors='ignore')
 
-    borrows = await Static.fetch_coin_details(exchange)
+    borrows = await VenueAPI.Static.fetch_coin_details(exchange)
     futures = pd.merge(futures, borrows[['borrow', 'lend', 'borrow_open_interest']], how='left', left_on='underlying',
                        right_index=True)
     futures['quote_borrow'] = float(borrows.loc['USD', 'borrow'])
@@ -123,7 +124,7 @@ def enricher_wrapper(exchange_name,instrument_type,depth) ->pd.DataFrame():
 
         exchange = await open_exchange(exchange_name,'')
         markets = await exchange.fetch_markets()
-        futures = pd.DataFrame(await Static.fetch_futures(exchange)).set_index('name')
+        futures = pd.DataFrame(await VenueAPI.Static.fetch_futures(exchange)).set_index('name')
         futures = futures[
             (futures['expired'] == False) & (futures['enabled'] == True) & (futures['type'] != "move")
             & (futures.apply(lambda f: float(find_spot_ticker(markets, f, 'ask')), axis=1) > 0.0)

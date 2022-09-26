@@ -1,7 +1,7 @@
+from tradeexecutor.venue_api import VenueAPI
 from utils.ftx_utils import *
-from utils.config_loader import *
 from utils.io_utils import  *
-from utils.api_utils import MyModules,api
+from utils.api_utils import api
 
 history_start = datetime(2019, 11, 26).replace(tzinfo=timezone.utc)
 
@@ -352,7 +352,7 @@ async def fetch_trades_history(symbol,
             'volume':vwap[symbol.split('/USD')[0] + '_trades_volume'],
             'liquidation_intensity':vwap[symbol.split('/USD')[0] + '_trades_liquidation_intensity']}
 
-def vwap_from_list(frequency, trades):
+def vwap_from_list(frequency, trades: list[dict]) -> pd.DataFrame:
     '''needs ['size', 'price', 'liquidation', 'time' as isostring]'''
     data = pd.DataFrame(data=trades)
     data[['size', 'price']] = data[['size', 'price']].astype(float)
@@ -374,7 +374,7 @@ async def ftx_history_main_wrapper(run_type, exchange_name, universe_name, nb_da
     exchange = await open_exchange(exchange_name,'')
     universe = configLoader.get_bases(universe_name)
     nb_days = int(nb_days)
-    futures = pd.DataFrame(await Static.fetch_futures(exchange)).set_index('name')
+    futures = pd.DataFrame(await VenueAPI.Static.fetch_futures(exchange)).set_index('name')
     await exchange.load_markets()
 
     #universe should be either 'all', either a universe name, or a list of currencies
