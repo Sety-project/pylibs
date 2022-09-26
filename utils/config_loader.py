@@ -74,8 +74,8 @@ class configLoader():
         try:
             if order in ['unwind','flatten']:
                 params_filename = 'emergency_params.json'
-            elif 'listen' in order:
-                params_filename = 'listen_params.json'
+            elif 'spreaddistribution' in order:
+                params_filename = 'spreaddistribution_params.json'
             else:
                 params_filename = configLoader._executor_params_filename
 
