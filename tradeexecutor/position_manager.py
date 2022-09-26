@@ -125,6 +125,7 @@ class PositionManager(dict):
                                        'pv_error': self.pv - (previous_pv or 0),
                                        'total_delta_error': sum(delta_error.values())}
                                       for symbol_ in self]
+        self.check_limit()
 
     def check_limit(self):
         absolute_risk = dict()
