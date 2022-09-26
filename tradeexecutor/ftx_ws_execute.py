@@ -27,11 +27,8 @@ from utils.async_utils import *
 
 async def single_coin_routine(order_name, **kwargs):
     parameters = configLoader.get_executor_params(order=order_name,dirname=kwargs['config'])
-    if 'spreaddistribution' not in order_name:
-        order = os.path.join(os.sep, configLoader.get_config_folder_path(config_name=kwargs['config']), "pfoptimizer", order_name)
-        parameters["signal_engine"]['filename'] = order
-    else:
-        parameters["signal_engine"]['coin'] = order_name.replace('spreaddistribution_','')
+    order = os.path.join(os.sep, configLoader.get_config_folder_path(config_name=kwargs['config']), "pfoptimizer", order_name)
+    parameters["signal_engine"]['filename'] = order
 
     strategy = await Strategy.build(parameters)
 

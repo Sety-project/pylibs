@@ -139,9 +139,13 @@ class PositionManager(dict):
         if self.margin.actual_IM < self.pv / 100:
             self.strategy.logger.info(f'IM {self.margin.actual_IM}  < 1%')
 
-    def trim_to_margin(self, mid, size, symbol):
+    def trim_to_margin(self, weights: dict):
         '''trim size to margin allocation (equal for all running symbols)'''
-        marginal_IM = self.margin.order_marginal_cost(symbol, size, mid, 'IM')
+        marginal_IM = sum([self.margin.order_marginal_cost(symbol,
+                                                           size,
+                                                           self.strategy.venue_api.tickers[symbol]['mid'],
+                                                           'IM')
+                           for symbol,size in weights.items()])
         estimated_IM = self.margin.estimate('IM')
         actual_IM = self.margin.actual_IM
 
@@ -155,9 +159,10 @@ class PositionManager(dict):
             trim_factor = np.clip((self.margin.IM_buffer - actual_IM) / marginal_IM,a_min=0,a_max=1)
         else:
             trim_factor = 1.0
-        trimmed_size = size * trim_factor
+        trimmed_size = {symbol: size*trim_factor for symbol, size in weights.items()}
         if trim_factor < 1:
-            self.strategy.logger.info(f'trimmed {size} {symbol} by {trim_factor}')
+            for symbol, size in weights.items():
+                self.strategy.logger.info(f'trimmed {size} {symbol} by {trim_factor}')
         return trimmed_size
 
     def coin_delta(self,symbol):

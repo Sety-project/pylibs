@@ -1,3 +1,4 @@
+import asyncio
 import collections, os
 import json
 from datetime import timedelta, datetime, timezone
@@ -10,7 +11,7 @@ from histfeed.ftx_history import fetch_trades_history, vwap_from_list
 from utils.async_utils import safe_gather
 
 from utils.config_loader import configLoader
-from utils.ftx_utils import sweep_price_atomic
+from tradeexecutor.venue_api import VenueAPI
 from utils.io_utils import NpEncoder, myUtcNow
 
 
@@ -19,35 +20,58 @@ class SignalEngine(dict):
     key/values hold target'''
     def __init__(self, parameters):
         self.parameters = parameters
-        self.strategy = None
+        self.set_weights(parameters['filename'])
 
+        self.strategy = None
         # raw data caches, filled by API. Processed data is in inheriting objects.
         self.orderbook = None
-        self.trades_cache = None
-
+        self.trades = None
+        self.vwap = None
     @staticmethod
     async def build(parameters):
         if not parameters:
             return None
-        elif parameters['signal'] == 'external':
+        elif parameters['type'] == 'external':
             result = ExternalSignal(parameters)
-        elif parameters['signal'] == 'spread_distribution':
+        elif parameters['type'] == 'spread_distribution':
             result = SpreadTradeSignal(parameters)
-        elif parameters['signal'] == 'listen':
-            result = SignalEngine(parameters)
-            result[parameters['symbol']] = 0
-        await result.reconcile()
+
         parameters['symbols'] = list(result.keys())
 
         result.orderbook = {symbol: collections.deque(maxlen=parameters['cache_size'])
                           for symbol in parameters['symbols']}
-        result.trades_cache = {symbol: collections.deque(maxlen=parameters['cache_size'])
-                             for symbol in parameters['symbols']}
+        result.trades = {symbol: collections.deque(maxlen=parameters['cache_size'])
+                         for symbol in parameters['symbols']}
 
         return result
 
+    async def initialize_vwap(self):
+        # initialize vwap_history
+        nowtime = myUtcNow(return_type='datetime')
+        frequency = timedelta(minutes=1)
+        start = nowtime - timedelta(seconds=self.parameters['stdev_window'])
+        vwap_history_list = await safe_gather([fetch_trades_history(
+            self.strategy.venue_api.market(symbol)['id'], self.strategy.venue_api, start, nowtime, frequency=frequency)
+            for symbol in self], semaphore=self.strategy.rest_semaphor)
+        self.vwap = {symbol: data for symbol, data in
+                       zip(self.parameters['symbols'], vwap_history_list)}
+
+    def set_weights(self,filename):
+        with open(filename, 'r') as fp:
+            content = fp.read()
+        weights = json.loads(content)
+        if dict(self) != weights:
+            for symbol, data in weights.items():
+                self[symbol] = data
+            self.timestamp = myUtcNow()
+
     async def reconcile(self):
-        pass
+        await self.read_weights()
+
+        if self.vwap is None:
+            await self.initialize_vwap()
+        self.compile_vwap(frequency=timedelta(minutes=1))
+        await asyncio.sleep(0)
 
     def serialize(self) -> list[dict]:
         return [{'symbol':symbol,'timestamp':self.timestamp} | data for symbol,data in self.items()]
@@ -70,66 +94,31 @@ class SignalEngine(dict):
                         for data in getattr(self, member_data).values():
                             await fp.write(json.dumps(data, cls=NpEncoder))
 
-    def process_order_book_update(self, message):
-        api = self.strategy.venue_api
-        marketId = api.safe_string(message, 'market')
-        if marketId in api.markets_by_id:
-            symbol = api.markets_by_id[marketId]['symbol']
-            item = {'timestamp': api.orderbooks[symbol]['timestamp']}
-            if 'mid' in self.parameters['orderbook_granularity']:
-                item |= {'mid': 0.5 * (api.orderbooks[symbol]['bids'][0][0] +
-                                       api.orderbooks[symbol]['asks'][0][0])}
-            if 'full' in self.parameters['orderbook_granularity']:
-                item |= {key: api.orderbooks[symbol][key] for key in ['timestamp', 'bids', 'asks']}
+    def process_order_book_update(self, symbol, orderbook):
+        item = {'timestamp': orderbook['timestamp']}
+        if 'mid' in self.parameters['orderbook_granularity']:
+            item |= {'mid': 0.5 * (orderbook['bids'][0][0] +
+                                   orderbook['asks'][0][0])}
+        if 'full' in self.parameters['orderbook_granularity']:
+            item |= {key: orderbook[key] for key in ['timestamp', 'bids', 'asks']}
 
-            data = next((data for data in self.parameters['orderbook_granularity'] if
-                        isinstance(data, dict) and ('depth' in data)),None)
-            if data:
-                depth = data['depth']
-                side_px = sweep_price_atomic(api.orderbooks[symbol], depth)
-                opposite_side_px = sweep_price_atomic(api.orderbooks[symbol], -depth)
-                item |= {'depth': depth, 'bid_at_depth': min(side_px, opposite_side_px),
-                         'ask_at_depth': max(side_px, opposite_side_px)}
-            self.orderbook[symbol].append(item)
+        data = next((data for data in self.parameters['orderbook_granularity'] if
+                    isinstance(data, dict) and ('depth' in data)),None)
+        if data:
+            depth = data['depth']
+            side_px = self.strategy.venue_api.sweep_price_atomic(symbol, depth)
+            opposite_side_px = self.strategy.venue_api.sweep_price_atomic(symbol, -depth)
+            item |= {'depth': depth, 'bid_at_depth': min(side_px, opposite_side_px),
+                     'ask_at_depth': max(side_px, opposite_side_px)}
+        self.orderbook[symbol].append(item)
 
-    def process_trades(self, trades):
-        for trade in trades:
-            self.trades_cache[trade['symbol']].append(trade)
-
-class ExternalSignal(SignalEngine):
-    def __init__(self, parameters):
-        if not os.path.isfile(parameters['filename']):
-            raise Exception("{} not found".format(parameters['filename']))
-        super().__init__(parameters)
-        self.timestamp = None
-        self.vwap = None
-
-    async def reconcile(self):
-        async with aiofiles.open(self.parameters['filename'], 'r') as fp:
-            content = await fp.read()
-        weights = json.loads(content)
-
-        if dict(self) != weights:
-            for symbol,data in weights.items():
-                self[symbol] = data
-            self.timestamp = myUtcNow()
-
-    async def initialize_vwap(self):
-        # initialize vwap_history
-        nowtime = myUtcNow(return_type='datetime')
-        frequency = timedelta(minutes=1)
-        start = nowtime - timedelta(seconds=self.parameters['stdev_window'])
-        vwap_history_list = await safe_gather([fetch_trades_history(
-            self.strategy.venue_api.market(symbol)['id'], self.strategy.venue_api, start, nowtime, frequency=frequency)
-            for symbol in self], semaphore=self.strategy.rest_semaphor)
-        self.vwap = {symbol: data for symbol, data in
-                       zip(self.parameters['symbols'], vwap_history_list)}
-
-    def compile_vwap(self, frequency, purge=True):
+    def process_trade(self, trade):
+        self.trades[trade['symbol']].append(trade)
+    def compile_vwap(self, frequency):
         # get times series of target baskets, compute quantile of increments and add to last price
-        for symbol in self.trades_cache:
-            if len(self.trades_cache[symbol]) > 0:
-                data = pd.DataFrame(self.trades_cache[symbol])
+        for symbol in self.trades:
+            if len(self.trades[symbol]) > 0:
+                data = pd.DataFrame(self.trades[symbol])
                 data = data[(data['timestamp'] > self.vwap[symbol]['vwap'].index.max().timestamp() * 1000)]
                 if data.empty: continue
 
@@ -145,75 +134,81 @@ class ExternalSignal(SignalEngine):
                     updated_data = pd.concat([self.vwap[symbol][key],vwap[key]],axis=0)
                     self.vwap[symbol][key] = updated_data[~updated_data.index.duplicated()].sort_index().ffill()
 
-                if purge:
-                    self.trades_cache[symbol].clear()
-
+class ExternalSignal(SignalEngine):
+    def __init__(self, parameters):
+        super().__init__(parameters)
+        if not os.path.isfile(parameters['filename']):
+            raise Exception("{} not found".format(parameters['filename']))
+        self_keys = ['target','benchmark','update_time_delta','entry_level','rush_in_level','rush_out_level','edit_price_depth','edit_trigger_depth','aggressive_edit_price_depth','aggressive_edit_trigger_depth','stop_depth','slice_size']
+        for symbol in self.parameters['symbols']:
+            self[symbol] = dict(zip(self_keys,[None]*len(self_keys)))
 
 class SpreadTradeSignal(SignalEngine):
 
     def __init__(self,parameters):
+        '''parameters has n_paths,distribution_window_trades,quantiles'''
+        if 'n_paths' not in parameters: parameters['n_paths'] = 5
+        if 'distribution_window_trades' not in parameters: parameters['distribution_window_trades'] = 100
+        if 'quantiles' not in parameters: parameters['quantiles'] = [0.1,0.25,0.5,0.75,0.9]
         super().__init__(parameters)
 
-        self.spread_trades = []
-        self.spread_vwap = []
-        self.spread_distribution = []
+        self.spread_trades = collections.deque(maxlen=parameters['cache_size'])
+        self.spread_vwap = collections.deque(maxlen=parameters['cache_size'])
+        self.spread_distribution = collections.deque(maxlen=parameters['cache_size'])
 
-    async def update_quoter_analytics(self):
-        '''specialized to execute externally generated client orders'''
-        raise Exception('not implemented')
-        if os.path.isfile(self.parameters['filename']):
-            await self.signal_engine.reconcile()
-        else:
-            targets = {key: 0 for key in self}
-            spot = self.strategy.venue_api.mid(next(key for key in self if self.strategy.venue_api.market(key)['type'] == 'spot'))
-            timestamp = myUtcNow()
-        self.set_target(self.signal_engine)
-
-        if not self.vwap:
-            await self.initialize_vwap()
-        self.compile_vwap(frequency=timedelta(minutes=1))
-
-    def compile_spread_trades(self, purge=True):
-        '''compute maker/taker spread trades and vwap'''
-        for symbol in self.trades_cache:
-            other_leg = symbol.replace(':USD', '') if ':USD' in symbol else f'{symbol}:USD'
-            for trade in self.trades_cache[symbol]:
-                if len(self.orderbook[other_leg]) == 0: continue
-                current_orderbook = min(self.orderbook[other_leg],
-                                       key=lambda orderbook: abs(orderbook['timestamp'] - trade['timestamp']))
+    def process_trade(self, trade, purge = False):
+        super().process_trade(trade)
+        symbol = trade['symbol']
+        other_leg = symbol.replace(':USD', '') if ':USD' in symbol else f'{symbol}:USD'
+        if other_leg in self.strategy.venue_api.orderbooks:
+            opposite_side_px = self.strategy.venue_api.sweep_price_atomic(other_leg,
+                                                  trade['amount'] * trade['price'] * (1 if trade['side'] == 'buy' else -1))  # if taker bought, we hedge on the ask of the other leg
+            if ':USD' in symbol:
+                rate = (trade['price']/opposite_side_px - 1) * 365.25
+                side = (1 if trade['side'] == 'buy' else -1) # if taker sold perp -> we sold the carry
+            else:
+                rate = (opposite_side_px/trade['price'] - 1) * 365.25
                 side = (-1 if trade['side'] == 'buy' else 1) # if taker bought spot -> we sold the carry
-                if ':USD' in symbol: side = -side # opposite if he bought future
-                opposite_side_px = sweep_price_atomic(current_orderbook,
-                                                      trade['amount'] * trade['price'] * (1 if trade['side'] == 'buy' else -1)) # if taker bought, we hedge on the ask of the other leg
-                price = (opposite_side_px/trade['price']-1)*365.25 # it's actually an annualized rate
-                if ':USD' in symbol: price = -price
-                self.spread_trades.append({'time': trade['datetime'], 'size': trade['amount'] * side, 'price': price,
-                                   'liquidation': trade['info']['liquidation'],'taker_symbol':symbol})
-            if purge:
-                self.orderbook[symbol].clear()
-                self.trades_cache[symbol].clear()
 
-    def compile_spread_vwap(self, frequency, purge=True):
-        vwap = vwap_from_list(frequency=frequency, trades=pd.DataFrame(self.spread_trades))
-        for key in self.spread_vwap:
-            updated_data = pd.concat([self.spread_vwap[key], vwap[key]], axis=0)
-            self.spread_vwap[key] = updated_data[~updated_data.index.duplicated()].sort_index().ffill()
+            self.spread_trades.append({'time': trade['datetime'], 'size': trade['amount'] * side, 'price': rate,# it's actually an annualized rate
+                                       'liquidation': trade['info']['liquidation'],'taker_symbol':symbol})
 
-        if purge:
-            self.spread_trades.clear()
+    async def reconcile(self):
+        await super().reconcile()
 
-    def compile_spread_distribution(self, purge=True):
-        avg_prices= []
-        sizes = np.array([trade['size'] for trade in self.spread_trades])
-        costs = np.array([trade['size']*trade['price'] for trade in self.spread_trades])
+        if 'spread_vwap' in self.parameters['record_set']:
+            self.compile_spread_vwap(self.parameters['stdev_window'])
+        if 'spread_distribution' in self.parameters['record_set']:
+            self.compile_spread_distribution()
+        # if 'spread_trades' not in self.parameters['record_set']:
+        #     self.spread_trades.clear()
+        await asyncio.sleep(0)
+    def set_weights(self,filename):
+        with open(filename, 'r') as fp:
+            content = fp.read()
+        weights = json.loads(content)
+        if dict(self) != weights:
+            for symbol, data in weights.items():
+                self[f'{symbol}/USD'] = data
+                self[f'{symbol}/USD:USD'] = data
+            self.timestamp = myUtcNow()
+    def set_equity(self,pv):
+        for symbol, weight in self.parameters['weights'].items():
+            self[symbol] = weight * pv
+    def serialize(self) -> list[dict]:
+        return sum([attribute for attribute in self.parameters['record_set'] if hasattr(self,attribute)],[])
+    def compile_spread_vwap(self, frequency):
+        vwap = vwap_from_list(frequency=frequency, trades=self.spread_trades).reset_index().to_dict('records')
+        self.spread_vwap.append(vwap)
+    def compile_spread_distribution(self):
+        spread_trades = list(self.spread_trades)[-self.parameters['distribution_window_trades']:-1]
+        if len(spread_trades) < self.parameters['n_paths']:
+            return
+
+        sizes = np.array([trade['size'] for trade in spread_trades])
+        costs = np.array([trade['size']*trade['price'] for trade in spread_trades])
         random_mktshare = np.random.rand(self.parameters['n_paths']*len(sizes),len(sizes))
-        avg_prices.append(np.dot(random_mktshare, costs)/np.dot(random_mktshare, sizes))
-
-        if len(avg_prices) == 0: return
+        avg_prices = np.dot(random_mktshare, costs)/np.dot(random_mktshare, sizes)
 
         quantiles = np.quantile(avg_prices, q=self.parameters['quantiles'], method='normal_unbiased')
-        self.spread_distribution.append({datetime.utcnow().replace(tzinfo=timezone.utc): quantiles})
-        if purge:
-            self.spread_trades.clear()
-
-        return quantiles
+        self.spread_distribution.append({'timestamp': myUtcNow()} | dict(zip(self.parameters['quantiles'], quantiles)))
