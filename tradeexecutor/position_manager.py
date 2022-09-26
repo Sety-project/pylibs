@@ -151,7 +151,7 @@ class PositionManager(dict):
             return 0
 
         marginal_IM = marginal_IM if abs(marginal_IM) > 1e-9 else np.sign(marginal_IM) * 1e-9
-        if actual_IM + marginal_IM < self.margin.IM_buffer:
+        if actual_IM - marginal_IM < self.margin.IM_buffer:
             trim_factor = np.clip((self.margin.IM_buffer - actual_IM) / marginal_IM,a_min=0,a_max=1)
         else:
             trim_factor = 1.0
