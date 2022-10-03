@@ -409,7 +409,7 @@ async def strategy_wrapper(**kwargs):
         slippage_override=slippage_override,
         backtest_start=kwargs['backtest_start'],
         backtest_end=kwargs['backtest_end'],
-        optional_params=['verbose'] if (__debug__ and kwargs['backtest_start']==kwargs['backtest_end']) else [])
+        optional_params=['warm_start'] + (['verbose'] if (__debug__ and kwargs['backtest_start']==kwargs['backtest_end']) else []))
         for concentration_limit in kwargs['concentration_limit']
         for mktshare_limit in kwargs['mktshare_limit']
         for minimum_carry in kwargs['minimum_carry']
