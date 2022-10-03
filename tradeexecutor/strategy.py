@@ -347,11 +347,6 @@ class AlgoStrategy(Strategy):
             self[symbol]['taker_fee'] = self.venue_api.static[symbol]['taker_fee']
             self[symbol]['maker_fee'] = self.venue_api.static[symbol]['maker_fee']
 
-    async def reconcile(self):
-        '''need to verride because signal weights depend on position_manager.pv'''
-        await super().reconcile()
-        self.signal_engine.set_equity(self.position_manager.pv)
-
     @staticmethod
     def get_other_symbol(symbol):
         return symbol.replace(':USD','') if ':USD' in symbol else f'{symbol}:USD'
@@ -377,6 +372,7 @@ class AlgoStrategy(Strategy):
                 data['edit_trigger_depth'] = max(1, self.parameters['edit_trigger_increments']) * priceIncrement
 
                 data['slice_size'] = self.parameters['volume_share'] * min([self.signal_engine.vwap[_symbol]['volume'].mean() for _symbol in self])
+                data['target'] = self.signal_engine[symbol] / mid
 
     def process_order_book_update(self, symbol, orderbook):
         '''
@@ -389,7 +385,7 @@ class AlgoStrategy(Strategy):
         if self[symbol]['spread_level_in']:  # need to wait for enough data
             other_symbol = self.get_other_symbol(symbol)
             if self.venue_api.tickers[symbol]['mid'] < self.venue_api.tickers[other_symbol]['mid']:
-                size = self[symbol]['slice_size']
+                size = self.signal_engine[symbol]/self.venue_api.tickers[symbol]['mid']
                 weights = self.position_manager.trim_to_margin({symbol: size, other_symbol: -size})
                 sweep_bid = self.venue_api.sweep_price_atomic(other_symbol, weights[other_symbol])
                 target = sweep_bid - self[symbol]['spread_level_{}'.format('in' if AlgoStrategy.is_future(other_symbol) else 'out')]
@@ -397,7 +393,7 @@ class AlgoStrategy(Strategy):
                                             edit_trigger_depth=self[symbol]['edit_trigger_depth'],
                                             edit_price_depth=self[symbol]['edit_price_depth'])
             else:
-                size = -self[symbol]['slice_size']
+                size = -self.signal_engine[symbol]/self.venue_api.tickers[symbol]['mid']
                 weights = self.position_manager.trim_to_margin({symbol: size, other_symbol: -size})
                 sweep_ask = self.venue_api.sweep_price_atomic(symbol, weights[other_symbol])
                 target = sweep_ask + self[symbol]['spread_level_{}'.format('in' if AlgoStrategy.is_future(other_symbol) else 'out')]
@@ -409,5 +405,19 @@ class AlgoStrategy(Strategy):
         super().process_fill(fill)
         # only react to limit orders being filled
         if self.order_manager.latest_value(self.order_manager.find_clientID_from_fill(fill),'comment') != 'taker_hedge':
-            other_symbol = AlgoStrategy.get_other_symbol(fill['symbol'])
+            symbol = fill['symbol']
+            other_symbol = AlgoStrategy.get_other_symbol(symbol)
             asyncio.create_task(self.venue_api.create_taker_hedge(other_symbol, -fill['amount']))
+
+            # trade and cancel. trade may be partial and cancel may have failed
+            # the below is really slow...
+            asyncio.create_task(self.reconcile())
+            netDelta = self.position_manager.coin_delta(symbol)
+            while abs(netDelta) > self.parameters['significance_threshold']:
+                self.logger.warning(f'{-netDelta}$ {symbol} mktorder residual')
+                asyncio.create_task(self.venue_api.create_order(symbol, 'market', ('buy' if netDelta < 0 else 'sell'), abs(netDelta)/self.venue_api.mid(symbol),
+                                  params={'postOnly': False,
+                                          'ioc': False,
+                                          'comment': 'residual_market'}))
+                asyncio.create_task(self.reconcile())
+                netDelta = self.position_manager.coin_delta(symbol)

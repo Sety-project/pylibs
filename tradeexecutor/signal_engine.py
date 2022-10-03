@@ -177,18 +177,21 @@ class SpreadTradeSignal(SignalEngine):
         # if 'spread_trades' not in self.parameters['record_set']:
         #     self.spread_trades.clear()
         await asyncio.sleep(0)
-    def set_weights(self,filename):
-        with open(filename, 'r') as fp:
-            content = fp.read()
+    async def set_weights(self,filename):
+        async with aiofiles.open(filename, 'r') as fp:
+            content = await fp.read()
         weights = json.loads(content)
-        if dict(self) != weights:
-            for symbol, data in weights.items():
-                self[f'{symbol}/USD'] = data
-                self[f'{symbol}/USD:USD'] = data
-            self.timestamp = myUtcNow()
-    def set_equity(self,pv):
-        for symbol, weight in self.parameters['weights'].items():
-            self[symbol] = weight * pv
+
+        # clumsily, require position_manager.pv...
+        if self.strategy is not None and self.strategy.position_manager is not None and self.strategy.position_manager.pv is not None:
+            pv = self.strategy.position_manager.pv
+        else:
+            pv = None
+        for coin, data in weights.items():
+            self[f'{coin}/USD'] = (data * pv if pv is not None else None)
+            self[f'{coin}/USD:USD'] = (data * pv if pv is not None else None)
+        self.timestamp = myUtcNow()
+
     def serialize(self) -> list[dict]:
         return sum([attribute for attribute in self.parameters['record_set'] if hasattr(self,attribute)],[])
     def compile_spread_vwap(self, frequency):

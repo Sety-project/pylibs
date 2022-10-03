@@ -498,20 +498,18 @@ class VenueAPI(ccxtpro.ftx):
                                              'comment': comment},
                                      previous_clientOrderId=previous_clientOrderId)
 
-    def create_taker_hedge(self,symbol, size):
-        '''trade first, cancel later'''
-        order_sign = (1 if size>0 else -1)
-        sweep_price = self.sweep_price_atomic(symbol, order_sign * self.tickers[symbol]['mid']) + \
-                      order_sign * self.static[symbol]['takerVsMakerFee']
-        asyncio.create_task(self.venue_api.create_order(symbol, 'limit', ('buy' if size>0 else 'sell'), abs(size), price=sweep_price,
+    async def create_taker_hedge(self,symbol, size):
+        '''trade and cancel. trade may be partial and cancel may have failed !!'''
+        sweep_price = self.sweep_price_atomic(symbol, size * self.tickers[symbol]['mid'])
+        coro = [self.create_order(symbol, 'limit', ('buy' if size>0 else 'sell'), abs(size), price=sweep_price,
                                                         params={'postOnly': False,
-                                                                'ioc': True,
-                                                                'comment': 'taker_hedge'}))
+                                                                'ioc': False,
+                                                                'comment': 'taker_hedge'})]
         cancelable_orders = self.strategy.order_manager.filter_order_histories([symbol],
                                                                          self.strategy.order_manager.cancelableStates)
-        asyncio.create_task(asyncio.gather([self.cancel_order(order[-1]['clientOrderId'], 'cancel_symbol')
-                               for order in cancelable_orders]))
-
+        coro += [self.cancel_order(order[-1]['clientOrderId'], 'cancel_symbol')
+                               for order in cancelable_orders]
+        await asyncio.gather(*coro)
 
     async def create_order(self, symbol, type, side, amount, price=None, params={},previous_clientOrderId=None):
         '''if not new, cancel previous first
