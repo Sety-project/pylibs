@@ -520,7 +520,7 @@ class VenueAPI(ccxtpro.ftx):
         if previous_clientOrderId is not None:
             await self.cancel_order(previous_clientOrderId, 'edit')
 
-        trimmed_size = self.strategy.position_manager.trim_to_margin({symbol:amount})
+        trimmed_size = self.strategy.position_manager.trim_to_margin({symbol:amount})[symbol]
         rounded_amount = self.round_to_increment(self.static[symbol]['sizeIncrement'], trimmed_size)
         if rounded_amount == 0:
             return

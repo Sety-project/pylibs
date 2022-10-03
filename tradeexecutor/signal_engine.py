@@ -1,17 +1,14 @@
-import asyncio
-import collections, os
-import json
+import asyncio, aiofiles
+import collections, os, json
 from datetime import timedelta, datetime, timezone
 
-import aiofiles
 import numpy as np
 import pandas as pd
 
 from histfeed.ftx_history import fetch_trades_history, vwap_from_list
-from utils.async_utils import safe_gather
+from utils.async_utils import safe_gather,async_wrap
 
 from utils.config_loader import configLoader
-from tradeexecutor.venue_api import VenueAPI
 from utils.io_utils import NpEncoder, myUtcNow
 
 
@@ -20,8 +17,6 @@ class SignalEngine(dict):
     key/values hold target'''
     def __init__(self, parameters):
         self.parameters = parameters
-        self.set_weights(parameters['filename'])
-
         self.strategy = None
         # raw data caches, filled by API. Processed data is in inheriting objects.
         self.orderbook = None
@@ -36,6 +31,7 @@ class SignalEngine(dict):
         elif parameters['type'] == 'spread_distribution':
             result = SpreadTradeSignal(parameters)
 
+        await result.set_weights(result.parameters['filename'])
         parameters['symbols'] = list(result.keys())
 
         result.orderbook = {symbol: collections.deque(maxlen=parameters['cache_size'])
@@ -56,9 +52,9 @@ class SignalEngine(dict):
         self.vwap = {symbol: data for symbol, data in
                        zip(self.parameters['symbols'], vwap_history_list)}
 
-    def set_weights(self,filename):
-        with open(filename, 'r') as fp:
-            content = fp.read()
+    async def set_weights(self,filename):
+        async with aiofiles.open(filename, 'r') as fp:
+            content = await fp.read()
         weights = json.loads(content)
         if dict(self) != weights:
             for symbol, data in weights.items():
@@ -66,7 +62,7 @@ class SignalEngine(dict):
             self.timestamp = myUtcNow()
 
     async def reconcile(self):
-        await self.read_weights()
+        await self.set_weights(self.parameters['filename'])
 
         if self.vwap is None:
             await self.initialize_vwap()
@@ -137,11 +133,9 @@ class SignalEngine(dict):
 class ExternalSignal(SignalEngine):
     def __init__(self, parameters):
         super().__init__(parameters)
-        if not os.path.isfile(parameters['filename']):
-            raise Exception("{} not found".format(parameters['filename']))
         self_keys = ['target','benchmark','update_time_delta','entry_level','rush_in_level','rush_out_level','edit_price_depth','edit_trigger_depth','aggressive_edit_price_depth','aggressive_edit_trigger_depth','stop_depth','slice_size']
-        for symbol in self.parameters['symbols']:
-            self[symbol] = dict(zip(self_keys,[None]*len(self_keys)))
+        for data in self.values():
+            data = dict(zip(self_keys,[None]*len(self_keys)))
 
 class SpreadTradeSignal(SignalEngine):
 

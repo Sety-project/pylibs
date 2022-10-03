@@ -1,3 +1,4 @@
+import numpy as np
 import scipy.optimize as opt
 from riskpnl.ftx_margin import BasisMarginCalculator
 from histfeed.ftx_history import *
@@ -428,7 +429,7 @@ def cash_carry_optimizer(exchange, futures,
 
     objective_jac= lambda x: -(
             E_intCarry
-            + (E_intUSDborrow if sum(x)<equity else np.zeros(len(x)))
+            + (E_intUSDborrow if sum(x)<equity else 0) * np.ones(len(x))
             + (0 if ('cost_blind' in optional_params) else
                (np.array( [buy_slippage[i] if (x - xt)[i] > 0
                            else sell_slippage[i] for i in range(len(x - xt))])))

@@ -138,7 +138,7 @@ class Strategy(dict):
     def process_trade(self,trade):
         self.signal_engine.process_trade(trade)
     def process_order(self,order):
-        self.strategy.order_manager.acknowledgment(order | {'comment': 'websocket_acknowledgment'})
+        self.order_manager.acknowledgment(order | {'comment': 'websocket_acknowledgment'})
     def process_fill(self,fill):
         self.position_manager.process_fill(fill)
         self.order_manager.process_fill(fill)
@@ -390,7 +390,7 @@ class AlgoStrategy(Strategy):
             other_symbol = self.get_other_symbol(symbol)
             if self.venue_api.tickers[symbol]['mid'] < self.venue_api.tickers[other_symbol]['mid']:
                 size = self[symbol]['slice_size']
-                weights = self.strategy.position_manager.trim_to_margin({symbol: size, other_symbol: -size})
+                weights = self.position_manager.trim_to_margin({symbol: size, other_symbol: -size})
                 sweep_bid = self.venue_api.sweep_price_atomic(other_symbol, weights[other_symbol])
                 target = sweep_bid - self[symbol]['spread_level_{}'.format('in' if AlgoStrategy.is_future(other_symbol) else 'out')]
                 self.venue_api.peg_to_level(symbol, weights[symbol], target,
@@ -398,7 +398,7 @@ class AlgoStrategy(Strategy):
                                             edit_price_depth=self[symbol]['edit_price_depth'])
             else:
                 size = -self[symbol]['slice_size']
-                weights = self.strategy.position_manager.trim_to_margin({symbol: size, other_symbol: -size})
+                weights = self.position_manager.trim_to_margin({symbol: size, other_symbol: -size})
                 sweep_ask = self.venue_api.sweep_price_atomic(symbol, weights[other_symbol])
                 target = sweep_ask + self[symbol]['spread_level_{}'.format('in' if AlgoStrategy.is_future(other_symbol) else 'out')]
                 self.venue_api.peg_to_level(symbol, weights[symbol], target,
