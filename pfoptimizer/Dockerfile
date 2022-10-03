@@ -20,6 +20,7 @@ ENV PFOPTIMIZER_PATH=$PYLIBS_PATH/pfoptimizer
 ENV RISKPNL_PATH=$PYLIBS_PATH/riskpnl
 ENV UTILS_PATH=$PYLIBS_PATH/utils
 ENV TRADEEXECUTOR_PATH=$PYLIBS_PATH/tradeexecutor
+ENV CCXTPRO_PATH=$PYLIBS_PATH/ccxtpro
 # LOG PATHS
 ENV LOGS_PATH=/tmp/pfoptimizer
 
@@ -31,6 +32,7 @@ RUN mkdir -p $PFOPTIMIZER_PATH
 RUN mkdir -p $RISKPNL_PATH
 RUN mkdir -p $UTILS_PATH
 RUN mkdir -p $TRADEEXECUTOR_PATH
+RUN mkdir -p $CCXTPRO_PATH
 RUN mkdir -p $HOME/mktdata
 RUN mkdir -p $HOME/config
 RUN mkdir -p $LOGS_PATH
@@ -41,6 +43,7 @@ RUN chown -R $USER $PFOPTIMIZER_PATH
 RUN chown -R $USER $RISKPNL_PATH
 RUN chown -R $USER $UTILS_PATH
 RUN chown -R $USER $TRADEEXECUTOR_PATH
+RUN chown -R $USER $CCXTPRO_PATH
 RUN chown -R $USER $HOME/mktdata
 RUN chown -R $USER $HOME/config
 RUN chown -R $USER $LOGS_PATH
@@ -53,6 +56,7 @@ COPY --chown=$USER:$USER /pfoptimizer/requirements.txt $PFOPTIMIZER_PATH
 COPY --chown=$USER:$USER /histfeed/requirements.txt $HISTFEED_PATH
 COPY --chown=$USER:$USER /utils/requirements.txt $UTILS_PATH
 COPY --chown=$USER:$USER /tradeexecutor/requirements.txt $TRADEEXECUTOR_PATH
+COPY --chown=$USER:$USER /ccxtpro $CCXTPRO_PATH
 
 # Install Pip dependencies --> Need to install as root
 RUN pip3 install -Ur $PFOPTIMIZER_PATH/requirements.txt
