@@ -143,7 +143,7 @@ class SpreadTradeSignal(SignalEngine):
         '''parameters has n_paths,distribution_window_trades,quantiles'''
         if 'n_paths' not in parameters: parameters['n_paths'] = 5
         if 'distribution_window_trades' not in parameters: parameters['distribution_window_trades'] = 100
-        if 'quantiles' not in parameters: parameters['quantiles'] = [0.1,0.25,0.5,0.75,0.9]
+        if 'quantiles' not in parameters: parameters['quantiles'] = [0.1, 0.25, 0.5, 0.75, 0.9]
         super().__init__(parameters)
 
         self.spread_trades = collections.deque(maxlen=parameters['cache_size'])
@@ -193,7 +193,7 @@ class SpreadTradeSignal(SignalEngine):
         self.timestamp = myUtcNow()
 
     def serialize(self) -> list[dict]:
-        return sum([attribute for attribute in self.parameters['record_set'] if hasattr(self,attribute)],[])
+        return sum([list(getattr(self,attribute)) for attribute in self.parameters['record_set'] if hasattr(self,attribute)],[])
     def compile_spread_vwap(self, frequency):
         vwap = vwap_from_list(frequency=frequency, trades=self.spread_trades).reset_index().to_dict('records')
         self.spread_vwap.append(vwap)

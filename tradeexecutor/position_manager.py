@@ -152,7 +152,7 @@ class PositionManager(dict):
         if self.margin.actual_IM < self.margin.IM_buffer:
             self.strategy.logger.info(
                 f'actual_IM {self.margin.actual_IM} < IM_buffer {self.margin.IM_buffer} (estimated_IM {estimated_IM} / actual_IM {actual_IM} / marginal_IM {marginal_IM})')
-            return 0
+            return {symbol: 0 for symbol in weights}
 
         marginal_IM = marginal_IM if abs(marginal_IM) > 1e-9 else np.sign(marginal_IM) * 1e-9
         if actual_IM + marginal_IM < self.margin.IM_buffer:
