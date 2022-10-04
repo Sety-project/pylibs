@@ -46,7 +46,7 @@ class Strategy(dict):
 
         self.rest_semaphor = asyncio.Semaphore(safe_gather_limit)
         self.lock = {'reconciling':threading.Lock()}
-        # self.lock |= {symbol: CustomRLock() for symbol in self.parameters['symbols']}
+        self.lock |= {symbol: threading.Lock() for symbol in self.parameters['symbols']}
 
     def serialize(self) -> dict[list[dict]]:
         '''{data type:[dict]}'''
@@ -58,6 +58,7 @@ class Strategy(dict):
 
     @staticmethod
     async def build(parameters):
+        '''symbols come from signal_engine'''
         signal_engine = await SignalEngine.build(parameters['signal_engine'])
         symbols = {'symbols': signal_engine.parameters['symbols']}
         rename_logfile(symbols['symbols'][0].replace(':USD', '').replace('/USD', ''))
@@ -133,15 +134,19 @@ class Strategy(dict):
         if self.order_manager.fill_flag:
             await self.data_logger.write_history(self.serialize())
             self.order_manager.fill_flag = False
-    def process_order_book_update(self,symbol, orderbook):
+    async def process_order_book_update(self,symbol, orderbook):
         self.signal_engine.process_order_book_update(symbol, orderbook)
-    def process_trade(self,trade):
+        await asyncio.sleep(0)
+    async def process_trade(self,trade):
         self.signal_engine.process_trade(trade)
-    def process_order(self,order):
+        await asyncio.sleep(0)
+    async def process_order(self,order):
         self.order_manager.acknowledgment(order | {'comment': 'websocket_acknowledgment'})
-    def process_fill(self,fill):
+        await asyncio.sleep(0)
+    async def process_fill(self,fill):
         self.position_manager.process_fill(fill)
         self.order_manager.process_fill(fill)
+        await asyncio.sleep(0)
 
     def replay_missed_messages(self):
         # replay missed _messages.
@@ -241,14 +246,14 @@ class ExecutionStrategy(Strategy):
                            self.signal_engine.vwap[symbol]['volume'].mean()
             data['slice_size'] = volume_share
 
-    def process_order_book_update(self, symbol, orderbook):
+    async def process_order_book_update(self, symbol, orderbook):
         '''
             leverages orderbook and risk to issue an order
             Critical loop, needs to go quick
-            all executes in one go, no async
+            self.lock[symbol]: careful not to act if another orderbook update triggers again during execution
         '''
-        super().process_order_book_update(symbol,orderbook)
-        strategy = self[symbol]
+        await super().process_order_book_update(symbol,orderbook)
+        data = self[symbol]
         mid = 0.5*(orderbook['bids'][0][0]+orderbook['asks'][0][0])
 
         original_size = self.signal_engine[symbol]['target'] - self.position_manager[symbol]['delta'] / mid
@@ -257,84 +262,86 @@ class ExecutionStrategy(Strategy):
                 or self.lock['reconciling'].locked():
             return
 
-        # size to do:
-        original_size = strategy['target'] - self.position_manager[symbol]['delta'] / mid
+        if self.lock[symbol].locked(): return
+        with self.lock[symbol]:
+            # size to do:
+            original_size = data['target'] - self.position_manager[symbol]['delta'] / mid
 
-        # risk
-        globalDelta = self.position_manager.delta_bounds(symbol)['global_delta']
-        delta_limit = self.position_manager.limit.delta_limit * self.position_manager.pv
-        marginal_risk = np.abs(globalDelta / mid + original_size) - np.abs(globalDelta / mid)
+            # risk
+            globalDelta = self.position_manager.delta_bounds(symbol)['global_delta']
+            delta_limit = self.position_manager.limit.delta_limit * self.position_manager.pv
+            marginal_risk = np.abs(globalDelta / mid + original_size) - np.abs(globalDelta / mid)
 
-        # if increases risk but not out of limit, trim and go passive.
-        if np.sign(original_size) == np.sign(globalDelta):
-            # if (global_delta_plus / mid + original_size) > delta_limit:
-            #     trimmed_size = delta_limit - global_delta_plus / mid
-            #     self.logger.debug(
-            #         f'{original_size * mid} {symbol} would increase risk over {self.limit.delta_limit * 100}% of {self.risk_state.pv} --> trimming to {trimmed_size * mid}')
-            # elif (global_delta_minus / mid + original_size) < -delta_limit:
-            #     trimmed_size = -delta_limit - global_delta_minus / mid
-            #     self.logger.debug(
-            #         f'{original_size * mid} {symbol} would increase risk over {self.limit.delta_limit * 100}% of {self.risk_state.pv} --> trimming to {trimmed_size * mid}')
-            # else:
-            #     trimmed_size = original_size
-            # if np.sign(trimmed_size) != np.sign(original_size):
-            #     self.logger.debug(f'skipping (we don t flip orders)')
-            #     return
-            if abs(globalDelta / mid + original_size) > delta_limit:
-                if (globalDelta / mid + original_size) > delta_limit:
-                    trimmed_size = delta_limit - globalDelta / mid
-                elif (globalDelta / mid + original_size) < -delta_limit:
-                    trimmed_size = -delta_limit - globalDelta / mid
+            # if increases risk but not out of limit, trim and go passive.
+            if np.sign(original_size) == np.sign(globalDelta):
+                # if (global_delta_plus / mid + original_size) > delta_limit:
+                #     trimmed_size = delta_limit - global_delta_plus / mid
+                #     self.logger.debug(
+                #         f'{original_size * mid} {symbol} would increase risk over {self.limit.delta_limit * 100}% of {self.risk_state.pv} --> trimming to {trimmed_size * mid}')
+                # elif (global_delta_minus / mid + original_size) < -delta_limit:
+                #     trimmed_size = -delta_limit - global_delta_minus / mid
+                #     self.logger.debug(
+                #         f'{original_size * mid} {symbol} would increase risk over {self.limit.delta_limit * 100}% of {self.risk_state.pv} --> trimming to {trimmed_size * mid}')
+                # else:
+                #     trimmed_size = original_size
+                # if np.sign(trimmed_size) != np.sign(original_size):
+                #     self.logger.debug(f'skipping (we don t flip orders)')
+                #     return
+                if abs(globalDelta / mid + original_size) > delta_limit:
+                    if (globalDelta / mid + original_size) > delta_limit:
+                        trimmed_size = delta_limit - globalDelta / mid
+                    elif (globalDelta / mid + original_size) < -delta_limit:
+                        trimmed_size = -delta_limit - globalDelta / mid
+                    else:
+                        raise Exception('what??')
+                    if np.sign(trimmed_size) != np.sign(original_size):
+                        self.logger.debug(
+                            f'{original_size * mid} {symbol} would increase risk over {self.position_manager.limit.delta_limit * 100}% of {self.position_manager.pv} --> skipping (we don t flip orders)')
+                        return
+                    else:
+                        self.logger.debug(
+                            f'{original_size * mid} {symbol} would increase risk over {self.position_manager.limit.delta_limit * 100}% of {self.position_manager.pv} --> trimming to {trimmed_size * mid}')
                 else:
-                    raise Exception('what??')
-                if np.sign(trimmed_size) != np.sign(original_size):
-                    self.logger.debug(
-                        f'{original_size * mid} {symbol} would increase risk over {self.position_manager.limit.delta_limit * 100}% of {self.position_manager.pv} --> skipping (we don t flip orders)')
+                    trimmed_size = original_size
+
+                size = np.clip(trimmed_size, a_min=-data['slice_size'], a_max=data['slice_size'])
+
+                current_basket_price = sum(self.venue_api.mid(_symbol) * self[_symbol]['update_time_delta']
+                                           for _symbol in self.keys())
+                # mkt order if target reached.
+                # TODO: pray for the other coin to hit the same condition...
+                if current_basket_price + 2 * abs(data['update_time_delta']) * self.venue_api.static[symbol]['takerVsMakerFee'] * mid < \
+                        data['rush_in_level']:
+                    # TODO: could replace current_basket_price by two way sweep after if
+                    await self.venue_api.peg_or_stopout(symbol, size,
+                                                  edit_trigger_depth=data['edit_trigger_depth'],
+                                                  edit_price_depth='rush_in', stop_depth=None)
                     return
+                elif current_basket_price - 2 * abs(data['update_time_delta']) * self.venue_api.static[symbol]['takerVsMakerFee'] * mid > \
+                        data['rush_out_level']:
+                    # go all in as this decreases margin
+                    size = - self.position_manager[symbol]['delta'] / mid
+                    if abs(size) > 0:
+                        await self.venue_api.peg_or_stopout(symbol, size,
+                                                      edit_trigger_depth=data['edit_trigger_depth'],
+                                                      edit_price_depth='rush_out', stop_depth=None)
+                    return
+                # limit order if level is acceptable (saves margin compared to faraway order)
+                elif current_basket_price < data['entry_level']:
+                    edit_trigger_depth = data['edit_trigger_depth']
+                    edit_price_depth = data['edit_price_depth']
+                    stop_depth = None
+                # hold off to save margin, if level is bad-ish
                 else:
-                    self.logger.debug(
-                        f'{original_size * mid} {symbol} would increase risk over {self.position_manager.limit.delta_limit * 100}% of {self.position_manager.pv} --> trimming to {trimmed_size * mid}')
+                    return
+            # if decrease risk, go aggressive without flipping delta
             else:
-                trimmed_size = original_size
-
-            size = np.clip(trimmed_size, a_min=-strategy['slice_size'], a_max=strategy['slice_size'])
-
-            current_basket_price = sum(self.venue_api.mid(_symbol) * self[_symbol]['update_time_delta']
-                                       for _symbol in self.keys())
-            # mkt order if target reached.
-            # TODO: pray for the other coin to hit the same condition...
-            if current_basket_price + 2 * abs(strategy['update_time_delta']) * self.venue_api.static[symbol]['takerVsMakerFee'] * mid < \
-                    strategy['rush_in_level']:
-                # TODO: could replace current_basket_price by two way sweep after if
-                self.venue_api.peg_or_stopout(symbol, size,
-                                              edit_trigger_depth=strategy['edit_trigger_depth'],
-                                              edit_price_depth='rush_in', stop_depth=None)
-                return
-            elif current_basket_price - 2 * abs(strategy['update_time_delta']) * self.venue_api.static[symbol]['takerVsMakerFee'] * mid > \
-                    strategy['rush_out_level']:
-                # go all in as this decreases margin
-                size = - self.position_manager[symbol]['delta'] / mid
-                if abs(size) > 0:
-                    self.venue_api.peg_or_stopout(symbol, size,
-                                                  edit_trigger_depth=strategy['edit_trigger_depth'],
-                                                  edit_price_depth='rush_out', stop_depth=None)
-                return
-            # limit order if level is acceptable (saves margin compared to faraway order)
-            elif current_basket_price < strategy['entry_level']:
-                edit_trigger_depth = strategy['edit_trigger_depth']
-                edit_price_depth = strategy['edit_price_depth']
-                stop_depth = None
-            # hold off to save margin, if level is bad-ish
-            else:
-                return
-        # if decrease risk, go aggressive without flipping delta
-        else:
-            size = np.sign(original_size) * min(abs(- globalDelta / mid), abs(original_size))
-            edit_trigger_depth = strategy['aggressive_edit_trigger_depth']
-            edit_price_depth = strategy['aggressive_edit_price_depth']
-            stop_depth = strategy['stop_depth']
-        self.venue_api.peg_or_stopout(symbol, size, edit_trigger_depth=edit_trigger_depth,
-                                      edit_price_depth=edit_price_depth, stop_depth=stop_depth)
+                size = np.sign(original_size) * min(abs(- globalDelta / mid), abs(original_size))
+                edit_trigger_depth = data['aggressive_edit_trigger_depth']
+                edit_price_depth = data['aggressive_edit_price_depth']
+                stop_depth = data['stop_depth']
+            await self.venue_api.peg_or_stopout(symbol, size, edit_trigger_depth=edit_trigger_depth,
+                                          edit_price_depth=edit_price_depth, stop_depth=stop_depth)
 
 class AlgoStrategy(Strategy):
     def __init__(self, *args):
@@ -358,66 +365,67 @@ class AlgoStrategy(Strategy):
         '''updates quoter inputs
         reads file if present. If not: if no risk then shutdown bot, else unwind.
         '''
-        if len(self.signal_engine.spread_distribution)>0: # need to wait for enough data
-            rate_in = self.signal_engine.spread_distribution[-1][self.parameters['rate_quantile_in']]
-            rate_out = self.signal_engine.spread_distribution[-1][self.parameters['rate_quantile_out']]
-            for symbol, data in self.items():
-                priceIncrement = self.venue_api.static[symbol]['priceIncrement']
-                mid = self.venue_api.mid(symbol)
+        for symbol, data in self.items():
+            priceIncrement = self.venue_api.static[symbol]['priceIncrement']
+            mid = self.venue_api.mid(symbol)
 
+            if len(self.signal_engine.spread_distribution) > 0:  # need to wait for enough data
+                rate_in = self.signal_engine.spread_distribution[-1][self.parameters['rate_quantile_in']]
+                rate_out = self.signal_engine.spread_distribution[-1][self.parameters['rate_quantile_out']]
                 data['spread_level_in'] = rate_in * mid / 365.25
                 data['spread_level_out'] = rate_out * mid / 365.25
 
-                data['edit_price_depth'] = max(1, self.parameters['edit_price_increments']) * priceIncrement
-                data['edit_trigger_depth'] = max(1, self.parameters['edit_trigger_increments']) * priceIncrement
+            data['edit_price_depth'] = max(1, self.parameters['edit_price_increments']) * priceIncrement
+            data['edit_trigger_depth'] = max(1, self.parameters['edit_trigger_increments']) * priceIncrement
 
-                data['slice_size'] = self.parameters['volume_share'] * min([self.signal_engine.vwap[_symbol]['volume'].mean() for _symbol in self])
-                data['target'] = self.signal_engine[symbol] / mid
+            data['slice_size'] = self.parameters['volume_share'] * min([self.signal_engine.vwap[_symbol]['volume'].mean() for _symbol in self])
+            data['target'] = self.signal_engine[symbol] / mid if self.signal_engine[symbol] is not None else None
 
-    def process_order_book_update(self, symbol, orderbook):
+    async def process_order_book_update(self, symbol, orderbook):
         '''
             only runs on lower_volume
             aggressive limit spread outside quantiles
             Critical loop, needs to go quick
-            all executes in one go, no async
+            self.lock[symbol]: careful not to act if another orderbook update triggers again during execution
         '''
-        super().process_order_book_update(symbol, orderbook)
-        if self[symbol]['spread_level_in']:  # need to wait for enough data
-            other_symbol = self.get_other_symbol(symbol)
-            if self.venue_api.tickers[symbol]['mid'] < self.venue_api.tickers[other_symbol]['mid']:
-                size = self.signal_engine[symbol]/self.venue_api.tickers[symbol]['mid']
-                weights = self.position_manager.trim_to_margin({symbol: size, other_symbol: -size})
-                sweep_bid = self.venue_api.sweep_price_atomic(other_symbol, weights[other_symbol])
-                target = sweep_bid - self[symbol]['spread_level_{}'.format('in' if AlgoStrategy.is_future(other_symbol) else 'out')]
-                self.venue_api.peg_to_level(symbol, weights[symbol], target,
-                                            edit_trigger_depth=self[symbol]['edit_trigger_depth'],
-                                            edit_price_depth=self[symbol]['edit_price_depth'])
-            else:
-                size = -self.signal_engine[symbol]/self.venue_api.tickers[symbol]['mid']
-                weights = self.position_manager.trim_to_margin({symbol: size, other_symbol: -size})
-                sweep_ask = self.venue_api.sweep_price_atomic(symbol, weights[other_symbol])
-                target = sweep_ask + self[symbol]['spread_level_{}'.format('in' if AlgoStrategy.is_future(other_symbol) else 'out')]
-                self.venue_api.peg_to_level(symbol, weights[symbol], target,
-                                            edit_trigger_depth=self[symbol]['edit_trigger_depth'],
-                                            edit_price_depth=self[symbol]['edit_price_depth'])
+        await super().process_order_book_update(symbol, orderbook)
 
-    def process_fill(self, fill):
-        super().process_fill(fill)
+        if self.lock[symbol].locked(): return
+        with self.lock[symbol]:
+            # flatten delta if any
+            coinDelta = self.position_manager.coin_delta(symbol)
+            if abs(coinDelta) > self.position_manager.limit.delta_limit * self.position_manager.pv \
+                and abs(self.position_manager[symbol]['delta']) > abs(self.position_manager[self.get_other_symbol(symbol)]['delta']):
+                size = - coinDelta / self.venue_api.tickers[symbol]['mid']
+                await self.venue_api.create_taker_hedge(symbol, size, 'residual_market')
+            # need to wait for enough data for entry / exit
+            elif self[symbol]['spread_level_in']:
+                other_symbol = self.get_other_symbol(symbol)
+                mid = self.venue_api.tickers[symbol]['mid']
+                other_mid = self.venue_api.tickers[other_symbol]['mid']
+                if mid < other_mid:
+                    size = self.signal_engine[symbol]/mid
+                    weights = self.position_manager.trim_to_margin({symbol: size, other_symbol: -size})
+                    sweep_bid = self.venue_api.sweep_price_atomic(other_symbol, weights[other_symbol])
+                    target = sweep_bid - self[symbol]['spread_level_{}'.format('in' if AlgoStrategy.is_future(other_symbol) else 'out')]
+                    await self.venue_api.peg_to_level(symbol, weights[symbol], target,
+                                                edit_trigger_depth=self[symbol]['edit_trigger_depth'],
+                                                edit_price_depth=self[symbol]['edit_price_depth'])
+                else:
+                    size = -self.signal_engine[symbol]/mid
+                    weights = self.position_manager.trim_to_margin({symbol: size, other_symbol: -size})
+                    sweep_ask = self.venue_api.sweep_price_atomic(symbol, weights[other_symbol])
+                    target = sweep_ask + self[symbol]['spread_level_{}'.format('in' if AlgoStrategy.is_future(other_symbol) else 'out')]
+                    await self.venue_api.peg_to_level(symbol, weights[symbol], target,
+                                                edit_trigger_depth=self[symbol]['edit_trigger_depth'],
+                                                edit_price_depth=self[symbol]['edit_price_depth'])
+
+    async def process_fill(self, fill):
+        '''self.lock[symbol]: not necessary here ?'''
+        await super().process_fill(fill)
         # only react to limit orders being filled
-        if self.order_manager.latest_value(self.order_manager.find_clientID_from_fill(fill),'comment') != 'taker_hedge':
-            symbol = fill['symbol']
+        symbol = fill['symbol']
+        if symbol in self \
+                and self.order_manager.latest_value(self.order_manager.find_clientID_from_fill(fill),'comment') != 'taker_hedge':
             other_symbol = AlgoStrategy.get_other_symbol(symbol)
-            asyncio.create_task(self.venue_api.create_taker_hedge(other_symbol, -fill['amount']))
-
-            # trade and cancel. trade may be partial and cancel may have failed
-            # the below is really slow...
-            asyncio.create_task(self.reconcile())
-            netDelta = self.position_manager.coin_delta(symbol)
-            while abs(netDelta) > self.parameters['significance_threshold']:
-                self.logger.warning(f'{-netDelta}$ {symbol} mktorder residual')
-                asyncio.create_task(self.venue_api.create_order(symbol, 'market', ('buy' if netDelta < 0 else 'sell'), abs(netDelta)/self.venue_api.mid(symbol),
-                                  params={'postOnly': False,
-                                          'ioc': False,
-                                          'comment': 'residual_market'}))
-                asyncio.create_task(self.reconcile())
-                netDelta = self.position_manager.coin_delta(symbol)
+            await self.venue_api.create_taker_hedge(other_symbol, -fill['amount'])
