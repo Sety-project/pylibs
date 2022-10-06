@@ -2,13 +2,10 @@ import asyncio
 import collections
 import functools
 from datetime import timezone, datetime
-
 import dateutil
-import numpy
 
 import numpy as np
 import pandas as pd
-from ccxt import async_support
 
 import ccxtpro
 from utils.async_utils import safe_gather
@@ -47,6 +44,37 @@ def intercept_message_during_reconciliation(wrapped):
             return wrapped(*args, **kwargs)
     return _wrapper
 
+
+class PegRule:
+    Actions = set(['repeg','stopout'])
+    def __call__(self, input):
+        raise NotImplementedError
+
+class Chase(PegRule):
+    def __init__(self,low,high):
+        self.low = low
+        self.high = high
+    def __call__(self, input):
+        if self.low < input < self.high:
+            return None
+        else:
+            return 'repeg'
+
+class PegOrStop(PegRule):
+    def __init__(self,direction,chase,stop):
+        self.direction = direction
+        self.chase = chase
+        self.stop = stop
+    def __call__(self, input):
+        if self.direction == 'buy':
+            if input > self.stop: return 'stop'
+            elif input > self.chase: return 'repeg'
+            else: return None
+        else:
+            if input < self.stop: return 'stop'
+            elif input < self.chase: return 'repeg'
+            else: return None
+
 class VenueAPI(ccxtpro.ftx):
     '''VenueAPI implements rest calls and websocket loops to observe raw market data / order events and place orders
     send events for Strategy to action
@@ -68,12 +96,12 @@ class VenueAPI(ccxtpro.ftx):
                         'priceIncrement': float(exchange.markets[symbol]['info']['priceIncrement']),
                         'sizeIncrement': float(exchange.markets[symbol]['info']['minProvideSize']),
                         'taker_fee': trading_fees[symbol]['taker'],
-                        'maker_fee': trading_fees[symbol]['taker'],
+                        'maker_fee': trading_fees[symbol]['maker'],
                         'takerVsMakerFee': trading_fees[symbol]['taker'] - trading_fees[symbol]['maker']
                     }
             return result
 
-        ### get all static fields TODO: could just append coindetails if it wasn't for index,imf factor,positionLimitWeight
+       ### get all static fields TODO: could just append coindetails if it wasn't for index,imf factor,positionLimitWeight
         @staticmethod
         async def fetch_futures(exchange):
             if 'fetch_futures' in VenueAPI.Static._cache:
@@ -225,6 +253,8 @@ class VenueAPI(ccxtpro.ftx):
         self.message_missed = collections.deque(maxlen=parameters['cache_size'])
         self.options['tradesLimit'] = parameters['cache_size'] # TODO: shoud be in signalengine with a different name. inherited from ccxt....
 
+        self.peg_rules: dict[str, PegRule] = dict()
+
     @staticmethod
     async def build(parameters):
         if parameters['exchange'] not in ['ftx']:
@@ -249,7 +279,7 @@ class VenueAPI(ccxtpro.ftx):
         data = self.tickers[symbol] if symbol in self.tickers else self.markets[symbol]['info']
         return 0.5*(float(data['bid'])+float(data['ask']))
 
-    def sweep_price_atomic(self, symbol, sizeUSD):
+    def sweep_price_atomic(self, symbol, sizeUSD, include_taker_vs_maker_fee = False):
         ''' fast version of mkt_at_size for use in executer
         slippage of a mkt order: https://www.sciencedirect.com/science/article/pii/S0378426620303022
         :param symbol: '''
@@ -259,8 +289,10 @@ class VenueAPI(ccxtpro.ftx):
             depth += pair[0] * pair[1]
             if depth > sizeUSD:
                 break
-
-        return pair[0]
+        res = pair[0]
+        if include_taker_vs_maker_fee:
+            res += res * self.static[symbol]['takerVsMakerFee'] * (1 if sizeUSD > 0 else -1)
+        return res
     # --------------------------------------------------------------------------------------------
     # ---------------------------------- WS loops, processors and message handlers ---------------
     # --------------------------------------------------------------------------------------------
@@ -426,77 +458,57 @@ class VenueAPI(ccxtpro.ftx):
                                                         'comment':'chase'},
                                                 previous_clientOrderId = order['clientOrderId'])
 
-    async def peg_to_level(self, symbol, size, target, edit_trigger_depth=None, edit_price_depth=None):
+    async def peg_to_level(self, symbol, size, target, edit_trigger_depth=None):
         size = self.round_to_increment(self.static[symbol]['sizeIncrement'], size)
         if abs(size) == 0:
             return
 
-        #TODO: https://help.ftx.com/hc/en-us/articles/360052595091-Ratelimits-on-FTX
-        priceIncrement = self.static[symbol]['priceIncrement']
-        sizeIncrement = self.static[symbol]['sizeIncrement']
-
         #TODO: use orderbook to place before cliff; volume matters too.
-        edit_trigger = float(self.price_to_precision(symbol, edit_trigger_depth))
-
-        # remove open order dupes is any (shouldn't happen)
-        event_histories = self.strategy.order_manager.filter_order_histories([symbol], self.strategy.order_manager.openStates)
-        if len(event_histories) > 1:
-            first_pending_new = np.argmin(np.array([data[0]['timestamp'] for data in event_histories]))
-            for i,event_history in enumerate(self.strategy.order_manager.filter_order_histories([symbol], self.strategy.order_manager.cancelableStates)):
-                if i != first_pending_new:
-                    await self.cancel_order(event_history[-1]['clientOrderId'],'duplicates')
-                    self.strategy.logger.info('canceled duplicate {} order {}'.format(symbol,event_history[-1]['clientOrderId']))
-
-        # skip if there is inflight on the spread
-        # if self.pending_new_histories(coin) != []:#TODO: rather incorporate orders_pending_new in risk, rather than block
-        #     if self.pending_new_histories(coin,symbol) != []:
-        #         self.strategy.logger.info('orders {} should not be in flight'.format([order['clientOrderId'] for order in self.pending_new_histories(coin,symbol)[-1]]))
-        #     else:
-        #         # this happens mostly between pending_new and create_order on the other leg. not a big deal...
-        #         self.strategy.logger.info('orders {} still in flight. holding off {}'.format(
-        #             [order['clientOrderId'] for order in self.pending_new_histories(coin)[-1]],symbol))
-        #     return
         pending_new_histories = self.strategy.order_manager.filter_order_histories(self.parameters['symbols'],
                                                                           ['pending_new'])
         if pending_new_histories != []:
             self.strategy.logger.info('orders {} should not be in flight'.format([order[-1]['clientOrderId'] for order in pending_new_histories]))
             return
 
+        event_histories = self.strategy.order_manager.filter_order_histories([symbol], self.strategy.order_manager.openStates)
         # if no open order, create an order
         if len(event_histories)==0:
-            await self.create_mkt_or_limit(symbol, size, target, 'new')
-        # if only one and it's editable, stopout or peg or wait
-        elif len(event_histories)==1 \
-                and (self.strategy.order_manager.latest_value(event_histories[0][-1]['clientOrderId'], 'remaining') >= sizeIncrement) \
-                and event_histories[0][-1]['state'] in self.strategy.order_manager.acknowledgedStates:
-            order = event_histories[0][-1]
-            order_distance = (1 if order['side'] == 'buy' else -1) * (target - order['price'])
-            repeg_gap = abs(target - order['price'])
-            if (repeg_gap >= priceIncrement) and order_distance > edit_trigger or order_distance < 0 : # if existing order too conservative or aggressive, re-peg
-                await self.create_mkt_or_limit(symbol, size, target, 'chase', order['clientOrderId'])
+            await self.create_mkt_or_limit(symbol, size, target, 'new', edit_trigger_depth=edit_trigger_depth)
+        # editables: stopout or peg
+        for order in [history[-1] for history in event_histories
+                      if self.strategy.order_manager.latest_value(history[-1]['clientOrderId'], 'remaining') >= self.static[symbol]['sizeIncrement']
+                         and history[-1]['state'] in self.strategy.order_manager.cancelableStates
+                         and history[-1]['clientOrderId'] in self.peg_rules]:
+            if self.peg_rules[order['clientOrderId']](target) == 'repeg':
+                if await self.cancel_order(order['clientOrderId'], 'edit'):
+                    size = self.strategy.order_manager.latest_value(order['clientOrderId'], 'remaining')
+                    await self.create_mkt_or_limit(symbol, size * (1 if order['side'] == 'buy' else -1), target, 'chase', edit_trigger_depth=edit_trigger_depth)
 
     # ---------------------------------- low level
 
-    async def create_mkt_or_limit(self,symbol, size, target, comment, previous_clientOrderId = None):
+    async def create_mkt_or_limit(self,symbol, size, target, comment, edit_trigger_depth=None):
         '''mkt if price good enough, incl slippage and fees
         limit otherwise. Mind not crossing.'''
         order_side = 'buy' if size > 0 else 'sell'
         opposite_side = self.tickers[symbol]['ask' if size > 0 else 'bid']
-        sweep_price = self.sweep_price_atomic(symbol, size * self.tickers[symbol]['mid']) + self.static[symbol][
-            'takerVsMakerFee'] * (1 if size > 0 else -1)
-        order_distance = (1 if size > 0 else -1) * (target - sweep_price)
-        if order_distance > 0:
+        sweep_price = self.sweep_price_atomic(symbol, size * self.tickers[symbol]['mid'], include_taker_vs_maker_fee=True)
+        sweep_it = (sweep_price < target) if (size > 0) else (target < sweep_price)
+        if sweep_it:
             await self.create_order(symbol, 'limit', order_side, abs(size), price=sweep_price,
                                      params={'postOnly': False,
                                              'ioc': True,
-                                             'comment': comment},
-                                     previous_clientOrderId=previous_clientOrderId)
+                                             'comment': comment})
         else:
-            await self.create_order(symbol, 'limit', order_side, abs(size), price=target if size * (target - opposite_side) <= 0 else opposite_side,
-                                     params={'postOnly': True,
-                                             'ioc': False,
-                                             'comment': comment},
-                                     previous_clientOrderId=previous_clientOrderId)
+            price = target if size * (target - opposite_side) <= 0 else opposite_side
+            if size > 0:
+                peg_rule = Chase(price - self.static[symbol]['priceIncrement'], price + edit_trigger_depth)
+            else:
+                peg_rule = Chase(price - edit_trigger_depth, price + self.static[symbol]['priceIncrement'])
+            await self.create_order(symbol, 'limit', order_side, abs(size), price=price,
+                                    params={'postOnly': True,
+                                            'ioc': False,
+                                            'comment': comment},
+                                    peg_rule=peg_rule)
 
     async def create_taker_hedge(self,symbol, size, comment='taker_hedge'):
         '''trade and cancel. trade may be partial and cancel may have failed !!'''
@@ -511,16 +523,16 @@ class VenueAPI(ccxtpro.ftx):
                                for order in cancelable_orders]
         await asyncio.gather(*coro)
 
-    async def create_order(self, symbol, type, side, amount, price=None, params={},previous_clientOrderId=None):
+    async def create_order(self, symbol, type, side, amount, price=None, params={},previous_clientOrderId=None,peg_rule: PegRule=None):
         '''if not new, cancel previous first
         if acknowledged, place order. otherwise just reconcile
         orders_pending_new is blocking'''
         if previous_clientOrderId is not None:
             await self.cancel_order(previous_clientOrderId, 'edit')
 
-        trimmed_size = self.strategy.position_manager.trim_to_margin({symbol:amount})[symbol]
+        trimmed_size = self.strategy.position_manager.trim_to_margin({symbol:amount * (1 if side == 'buy' else -1)})[symbol]
         rounded_amount = self.round_to_increment(self.static[symbol]['sizeIncrement'], trimmed_size)
-        if rounded_amount == 0:
+        if rounded_amount < self.static[symbol]['sizeIncrement']:
             return
         # set pending_new -> send rest -> if success, leave pending_new and give id. Pls note it may have been caught by handle_order by then.
         clientOrderId = self.strategy.order_manager.pending_new({'symbol': symbol,
@@ -549,6 +561,8 @@ class VenueAPI(ccxtpro.ftx):
                 raise e
         else:
             self.strategy.order_manager.sent(order)
+            if peg_rule is not None:
+                self.peg_rules[clientOrderId] = peg_rule
 
     async def cancel_order(self, clientOrderId, trigger):
         '''set in flight, send cancel, set as pending cancel, set as canceled or insist'''
@@ -563,7 +577,6 @@ class VenueAPI(ccxtpro.ftx):
                                         'symbol':symbol,
                                         'status':status,
                                         'comment':trigger})
-            return True
         except ccxtpro.CancelPending as e:
             self.strategy.order_manager.cancel_sent({'clientOrderId': clientOrderId,
                                         'symbol': symbol,
@@ -579,7 +592,9 @@ class VenueAPI(ccxtpro.ftx):
         except Exception as e:
             self.strategy.logger.info(f'{clientOrderId} failed to cancel: {str(e)} --> retrying')
             await asyncio.sleep(.1)
-            return await self.strategy.order_manager.cancel_order(clientOrderId, trigger+'+')
+            return await self.cancel_order(clientOrderId, trigger+'+')
+        else:
+            return True
 
     async def close_dust(self):
         data = await safe_gather([self.fetch_balance(),self.fetch_markets()],semaphore=self.strategy.rest_semaphor)

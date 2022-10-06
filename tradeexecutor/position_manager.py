@@ -63,7 +63,7 @@ class PositionManager(dict):
 
         if 'verbose' in self.strategy.parameters['options'] and symbol in self.strategy:
             current = self[symbol]['delta']
-            target = self.strategy[symbol]['target'] * px
+            target = self.strategy[symbol]['target'] * px if 'target' in self.strategy[symbol] else None
             self.strategy.logger.warning('{} risk at {} ms: [current {}, target {}]'.format(
                 symbol,
                 self[symbol]['delta_timestamp'],
@@ -149,7 +149,7 @@ class PositionManager(dict):
         estimated_IM = self.margin.estimate('IM')
         actual_IM = self.margin.actual_IM
 
-        if self.margin.actual_IM < self.margin.IM_buffer:
+        if self.margin.actual_IM + marginal_IM < self.margin.IM_buffer:
             self.strategy.logger.info(
                 f'actual_IM {self.margin.actual_IM} < IM_buffer {self.margin.IM_buffer} (estimated_IM {estimated_IM} / actual_IM {actual_IM} / marginal_IM {marginal_IM})')
             return {symbol: 0 for symbol in weights}
@@ -160,9 +160,6 @@ class PositionManager(dict):
         else:
             trim_factor = 1.0
         trimmed_size = {symbol: size*trim_factor for symbol, size in weights.items()}
-        if trim_factor < 1:
-            for symbol, size in weights.items():
-                self.strategy.logger.info(f'trimmed {size} {symbol} by {trim_factor}')
         return trimmed_size
 
     def coin_delta(self,symbol):

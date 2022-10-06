@@ -27,6 +27,8 @@ class Strategy(dict):
     def __init__(self,parameters,signal_engine,venue_api,order_manager,position_manager):
         '''Strategy contructor also opens channels btw objects (a simple member data for now)'''
         super().__init__()
+        for symbol in parameters['symbols']:
+            self[symbol] = dict()
         self.parameters = parameters
         self.timestamp = None
 
@@ -48,7 +50,7 @@ class Strategy(dict):
         self.lock = {'reconciling':threading.Lock()}
         self.lock |= {symbol: threading.Lock() for symbol in self.parameters['symbols']}
 
-    def serialize(self) -> dict[list[dict]]:
+    def serialize(self) -> dict[str,list[dict]]:
         '''{data type:[dict]}'''
         return {'parameters': [{'timestamp':self.timestamp} | self.parameters],
                 'strategy': [{'symbol': symbol, 'timestamp':self.timestamp} | data for symbol,data in self.items()],
@@ -96,7 +98,7 @@ class Strategy(dict):
 
         await safe_gather(coros,semaphore=self.rest_semaphor)
     async def update_quoter_parameters(self):
-        raise Exception("must be implemented below this abstract class")
+        raise NotImplementedError
 
     async def periodic_reconcile(self):
         '''redundant minutely risk check'''
@@ -124,9 +126,9 @@ class Strategy(dict):
 
         # or reconcile, and lock until done. We don't want to place orders while recon is running
         with self.lock['reconciling']:
-            await self.signal_engine.reconcile()
-            await self.order_manager.reconcile()
             await self.position_manager.reconcile()
+            await self.signal_engine.reconcile() # needs pv...
+            await self.order_manager.reconcile()
             await self.update_quoter_parameters()
             self.replay_missed_messages()
 
@@ -134,6 +136,8 @@ class Strategy(dict):
         if self.order_manager.fill_flag:
             await self.data_logger.write_history(self.serialize())
             self.order_manager.fill_flag = False
+        await self.signal_engine.to_json()
+
     async def process_order_book_update(self,symbol, orderbook):
         self.signal_engine.process_order_book_update(symbol, orderbook)
         await asyncio.sleep(0)
@@ -344,22 +348,19 @@ class ExecutionStrategy(Strategy):
                                           edit_price_depth=edit_price_depth, stop_depth=stop_depth)
 
 class AlgoStrategy(Strategy):
-    def __init__(self, *args):
-        super().__init__(*args)
-        # TODO: is this necessary ?
-        self_keys = ['spread_level_in', 'spread_level_out', 'edit_price_depth', 'edit_trigger_depth', 'slice_size',
-                     'maker_fee', 'taker_fee']
-        for symbol in self.parameters['symbols']:
-            self[symbol] = dict(zip(self_keys, [None] * len(self_keys)))
-            self[symbol]['taker_fee'] = self.venue_api.static[symbol]['taker_fee']
-            self[symbol]['maker_fee'] = self.venue_api.static[symbol]['maker_fee']
+    # def __init__(self, *args):
+    #     super().__init__(*args)
+    #     # TODO: is this necessary ?
+    #     self_keys = ['spread_level_in', 'spread_level_out', 'edit_price_depth', 'edit_trigger_depth', 'slice_size',
+    #                  'maker_fee', 'taker_fee']
+    #     for symbol in self.parameters['symbols']:
+    #         #self[symbol] = dict(zip(self_keys, [None] * len(self_keys)))
+    #         self[symbol] = {'taker_fee': self.venue_api.static[symbol]['taker_fee'],
+    #                         'maker_fee': self.venue_api.static[symbol]['maker_fee']}
 
     @staticmethod
     def get_other_symbol(symbol):
         return symbol.replace(':USD','') if ':USD' in symbol else f'{symbol}:USD'
-    @staticmethod
-    def is_future(symbol):
-        return ':USD' in symbol
     
     async def update_quoter_parameters(self):
         '''updates quoter inputs
@@ -369,17 +370,18 @@ class AlgoStrategy(Strategy):
             priceIncrement = self.venue_api.static[symbol]['priceIncrement']
             mid = self.venue_api.mid(symbol)
 
-            if len(self.signal_engine.spread_distribution) > 0:  # need to wait for enough data
-                rate_in = self.signal_engine.spread_distribution[-1][self.parameters['rate_quantile_in']]
-                rate_out = self.signal_engine.spread_distribution[-1][self.parameters['rate_quantile_out']]
-                data['spread_level_in'] = rate_in * mid / 365.25
-                data['spread_level_out'] = rate_out * mid / 365.25
-
             data['edit_price_depth'] = max(1, self.parameters['edit_price_increments']) * priceIncrement
             data['edit_trigger_depth'] = max(1, self.parameters['edit_trigger_increments']) * priceIncrement
 
             data['slice_size'] = self.parameters['volume_share'] * min([self.signal_engine.vwap[_symbol]['volume'].mean() for _symbol in self])
             data['target'] = self.signal_engine[symbol] / mid if self.signal_engine[symbol] is not None else None
+
+            for direction in ['buy','sell']:
+                try:
+                    data[direction] = self.signal_engine.spread_distribution[symbol][direction][-1]['level'] * mid / 365.25
+                except:
+                    return
+
 
     async def process_order_book_update(self, symbol, orderbook):
         '''
@@ -398,27 +400,27 @@ class AlgoStrategy(Strategy):
                 and abs(self.position_manager[symbol]['delta']) > abs(self.position_manager[self.get_other_symbol(symbol)]['delta']):
                 size = - coinDelta / self.venue_api.tickers[symbol]['mid']
                 await self.venue_api.create_taker_hedge(symbol, size, 'residual_market')
-            # need to wait for enough data for entry / exit
-            elif self[symbol]['spread_level_in']:
-                other_symbol = self.get_other_symbol(symbol)
+            # limit on spot only for now. Need to wait for enough data for entry / exit
+            elif ':USD' not in symbol:
                 mid = self.venue_api.tickers[symbol]['mid']
-                other_mid = self.venue_api.tickers[other_symbol]['mid']
-                if mid < other_mid:
-                    size = self.signal_engine[symbol]/mid
-                    weights = self.position_manager.trim_to_margin({symbol: size, other_symbol: -size})
-                    sweep_bid = self.venue_api.sweep_price_atomic(other_symbol, weights[other_symbol])
-                    target = sweep_bid - self[symbol]['spread_level_{}'.format('in' if AlgoStrategy.is_future(other_symbol) else 'out')]
-                    await self.venue_api.peg_to_level(symbol, weights[symbol], target,
-                                                edit_trigger_depth=self[symbol]['edit_trigger_depth'],
-                                                edit_price_depth=self[symbol]['edit_price_depth'])
-                else:
-                    size = -self.signal_engine[symbol]/mid
-                    weights = self.position_manager.trim_to_margin({symbol: size, other_symbol: -size})
-                    sweep_ask = self.venue_api.sweep_price_atomic(symbol, weights[other_symbol])
-                    target = sweep_ask + self[symbol]['spread_level_{}'.format('in' if AlgoStrategy.is_future(other_symbol) else 'out')]
-                    await self.venue_api.peg_to_level(symbol, weights[symbol], target,
-                                                edit_trigger_depth=self[symbol]['edit_trigger_depth'],
-                                                edit_price_depth=self[symbol]['edit_price_depth'])
+                other_symbol = self.get_other_symbol(symbol)
+                amount = self.signal_engine[symbol]/mid
+
+                for direction,level in self.signal_engine.spread_distribution[symbol].items():
+                    if len(level)>0:
+                        eps = 1 if direction else -1
+                        delta = self.position_manager[symbol]['delta']/mid
+                        if abs(eps * amount + delta) > amount:
+                            amount = eps * amount - delta
+                        weights = self.position_manager.trim_to_margin({symbol: amount, other_symbol: -amount})
+                        other_sweep = self.venue_api.sweep_price_atomic(other_symbol, weights[other_symbol], include_taker_vs_maker_fee=True)
+                        # floor carry only if risk increasing
+                        if abs(delta + amount) > abs(delta):
+                            target = other_sweep - eps * max(self.parameters['min_carry']*mid/365.25,abs(level[-1]['level']))
+                        else:
+                            target = other_sweep - level[-1]['level']
+                        await self.venue_api.peg_to_level(symbol, weights[symbol], target,
+                                                          edit_trigger_depth=self[symbol]['edit_trigger_depth'])
 
     async def process_fill(self, fill):
         '''self.lock[symbol]: not necessary here ?'''
