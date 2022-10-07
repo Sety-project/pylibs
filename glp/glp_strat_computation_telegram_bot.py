@@ -1,8 +1,9 @@
 import os, time, json, schedule
 from web3 import Web3
 from utils.api_utils import api
+from utils.io_utils import *
 
-from constants import NullAddress, USDC_ABI, PositionRouterABI, PositionRouter, RewardRouter, RewardRouterABI, VaultUtilsABI, VaultUtils, GLPVault, MIM, WETH, WBTC, WAVAX, USDC, USDC_E, GLPSC, GLP, GLPManagerABI, GLPManagerAdd, ReaderABI, ReaderAdd, VaultAdd, VaultABI, Account, fsGLP
+from constants import NullAddress, USDC_ABI, PositionRouterABI, PositionRouter, RewardRouter, RewardRouterABI, VaultUtilsABI, VaultUtils, GLPVault, MIM, WETH, WBTC, WAVAX, USDC, USDC_E, GLPSC, GLP, GLPManagerABI, GLPManagerAdd, ReaderABI, ReaderAdd, VaultAdd, VaultABI, Amine_Account, fsGLP
 import urllib.request
 import requests
 import asyncio
@@ -44,15 +45,15 @@ def compute_strat(new_usdc=0,return_data=False):
   amount_token_usdc_e = contract_.functions.poolAmounts(USDC_E).call()/10**6
 
 
-  output_avax = contract_position.functions.getPositions(VaultAdd, Account, [USDC], [WAVAX], [False]).call()
-  output_btc = contract_position.functions.getPositions(VaultAdd, Account, [USDC], [WBTC], [False]).call()
-  output_eth = contract_position.functions.getPositions(VaultAdd, Account, [USDC], [WETH], [False]).call()
+  output_avax = contract_position.functions.getPositions(VaultAdd, Amine_Account, [USDC], [WAVAX], [False]).call()
+  output_btc = contract_position.functions.getPositions(VaultAdd, Amine_Account, [USDC], [WBTC], [False]).call()
+  output_eth = contract_position.functions.getPositions(VaultAdd, Amine_Account, [USDC], [WETH], [False]).call()
 
 
   fees_sell_GLP = contract_vault_utils.functions.getSellUsdgFeeBasisPoints(USDC, 100).call()
   fees_buy_GLP = contract_vault_utils.functions.getBuyUsdgFeeBasisPoints(USDC, 100).call()
 
-  quantity_fsglp = contract_position.functions.getTokenBalances(Account, [fsGLP]).call()[0]/10**18
+  quantity_fsglp = contract_position.functions.getTokenBalances(Amine_Account, [fsGLP]).call()[0] / 10 ** 18
 
 
   fees_trade = 0.1/100
@@ -77,9 +78,9 @@ def compute_strat(new_usdc=0,return_data=False):
   entryFundingRate_btc = int(output_btc[3])
   entryFundingRate_eth = int(output_eth[3])
 
-  borrow_fee_avax = float(contract_vault.functions.getFundingFee(Account, USDC, WAVAX, False, size_avax, entryFundingRate_avax).call())
-  borrow_fee_eth = float(contract_vault.functions.getFundingFee(Account, USDC, WETH, False, size_eth, entryFundingRate_eth).call())
-  borrow_fee_btc = float(contract_vault.functions.getFundingFee(Account, USDC, WBTC, False, size_btc, entryFundingRate_btc).call())
+  borrow_fee_avax = float(contract_vault.functions.getFundingFee(Amine_Account, USDC, WAVAX, False, size_avax, entryFundingRate_avax).call())
+  borrow_fee_eth = float(contract_vault.functions.getFundingFee(Amine_Account, USDC, WETH, False, size_eth, entryFundingRate_eth).call())
+  borrow_fee_btc = float(contract_vault.functions.getFundingFee(Amine_Account, USDC, WBTC, False, size_btc, entryFundingRate_btc).call())
 
 
 
@@ -239,18 +240,27 @@ def compute_strat(new_usdc=0,return_data=False):
   return output
 
 def save_data():
-    print("loading data")
-    with open(os.path.join(os.getcwd(), "data", "data.json"), "r") as f:
-        data = json.load(f)
+    dir_name = configLoader.get_mktdata_folder_for_exchange('glp')
+    if not os.path.exists(dir_name):
+        os.umask(0)
+        os.makedirs(dir_name, mode=0o777)
+
+    filename = os.path.join(os.sep,dir_name, "backtest.json")
+    try:
+        with open(filename, "r") as f:
+            data = json.load(f)
+    except:
+        data = dict()
+
     new_data = compute_strat(return_data=True)
     data[int(time.time())] = new_data
     print(new_data)
-    with open("data/data.json", "w") as f:
+    with open(filename, "w") as f:
         json.dump(data, f, indent=1)
 
 @api
 def main(*args, **kwargs):
-    schedule.every(30).seconds.do(save_data)
+    schedule.every(5).minutes.do(save_data)
     while True:
         try:
             schedule.run_pending()

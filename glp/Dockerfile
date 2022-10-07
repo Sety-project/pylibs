@@ -24,6 +24,7 @@ RUN mkdir -p $PYLIBS_PATH
 RUN mkdir -p $GLP_PATH
 RUN mkdir -p $UTILS_PATH
 RUN mkdir -p $HOME/mktdata
+RUN mkdir -p $HOME/mktdata/glp
 RUN mkdir -p $HOME/config
 RUN mkdir -p $LOGS_PATH
 

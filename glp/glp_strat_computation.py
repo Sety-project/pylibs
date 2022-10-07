@@ -1,7 +1,7 @@
 from web3 import Web3
 import json
 
-from constants import NullAddress, USDC_ABI, PositionRouterABI, PositionRouter, RewardRouter, RewardRouterABI, VaultUtilsABI, VaultUtils, GLPVault, MIM, WETH, WBTC, WAVAX, USDC, USDC_E, GLPSC, GLP, GLPManagerABI, GLPManagerAdd, ReaderABI, ReaderAdd, VaultAdd, VaultABI, Account, fsGLP
+from constants import NullAddress, USDC_ABI, PositionRouterABI, PositionRouter, RewardRouter, RewardRouterABI, VaultUtilsABI, VaultUtils, GLPVault, MIM, WETH, WBTC, WAVAX, USDC, USDC_E, GLPSC, GLP, GLPManagerABI, GLPManagerAdd, ReaderABI, ReaderAdd, VaultAdd, VaultABI, Amine_Account, fsGLP
 import urllib.request
 import requests
 
@@ -38,15 +38,15 @@ amount_token_usdc = contract_.functions.poolAmounts(USDC).call()/10**6
 amount_token_usdc_e = contract_.functions.poolAmounts(USDC_E).call()/10**6
 
 
-output_avax = contract_position.functions.getPositions(VaultAdd, Account, [USDC], [WAVAX], [False]).call()
-output_btc = contract_position.functions.getPositions(VaultAdd, Account, [USDC], [WBTC], [False]).call()
-output_eth = contract_position.functions.getPositions(VaultAdd, Account, [USDC], [WETH], [False]).call()
+output_avax = contract_position.functions.getPositions(VaultAdd, Amine_Account, [USDC], [WAVAX], [False]).call()
+output_btc = contract_position.functions.getPositions(VaultAdd, Amine_Account, [USDC], [WBTC], [False]).call()
+output_eth = contract_position.functions.getPositions(VaultAdd, Amine_Account, [USDC], [WETH], [False]).call()
 
 
 fees_sell_GLP = contract_vault_utils.functions.getSellUsdgFeeBasisPoints(USDC, 100).call()
 fees_buy_GLP = contract_vault_utils.functions.getBuyUsdgFeeBasisPoints(USDC, 100).call()
 
-quantity_fsglp = contract_position.functions.getTokenBalances(Account, [fsGLP]).call()[0]/10**18
+quantity_fsglp = contract_position.functions.getTokenBalances(Amine_Account, [fsGLP]).call()[0] / 10 ** 18
 
 
 fees_trade = 0.1/100
@@ -71,9 +71,9 @@ entryFundingRate_avax = int(output_avax[3])
 entryFundingRate_btc = int(output_btc[3])
 entryFundingRate_eth = int(output_eth[3])
 
-borrow_fee_avax = float(contract_vault.functions.getFundingFee(Account, USDC, WAVAX, False, size_avax, entryFundingRate_avax).call())
-borrow_fee_eth = float(contract_vault.functions.getFundingFee(Account, USDC, WETH, False, size_eth, entryFundingRate_eth).call())
-borrow_fee_btc = float(contract_vault.functions.getFundingFee(Account, USDC, WBTC, False, size_btc, entryFundingRate_btc).call())
+borrow_fee_avax = float(contract_vault.functions.getFundingFee(Amine_Account, USDC, WAVAX, False, size_avax, entryFundingRate_avax).call())
+borrow_fee_eth = float(contract_vault.functions.getFundingFee(Amine_Account, USDC, WETH, False, size_eth, entryFundingRate_eth).call())
+borrow_fee_btc = float(contract_vault.functions.getFundingFee(Amine_Account, USDC, WBTC, False, size_btc, entryFundingRate_btc).call())
 
 
 
@@ -192,9 +192,9 @@ print("************** Update ************** \n",
 
 avax_fees_no_basis = 0.02 
 avax_fees = int(avax_fees_no_basis *10**18)
-print(avax_fees_no_basis, [USDC], WAVAX, int(abs(delta_avax_short*10**30)/2), int(abs(delta_avax_short*10**30)), False, Account, int(price_tokens[WAVAX]*(1+slippage)*10**30), 0, avax_fees , False)
-print([USDC], WETH, int(abs(delta_eth_short*10**30)/2), int(abs(delta_eth_short*10**30)), False, Account, int(price_tokens[WETH]*(1+slippage)*10**30), 0, avax_fees , False)
-print([USDC], WBTC, int(abs(delta_btc_short*10**30)/2), int(abs(delta_btc_short*10**30)), False, Account, int(price_tokens[WBTC]*(1+slippage)*10**30), 0, avax_fees , False)
+print(avax_fees_no_basis, [USDC], WAVAX, int(abs(delta_avax_short*10**30)/2), int(abs(delta_avax_short*10**30)), False, Amine_Account, int(price_tokens[WAVAX] * (1 + slippage) * 10 ** 30), 0, avax_fees, False)
+print([USDC], WETH, int(abs(delta_eth_short*10**30)/2), int(abs(delta_eth_short*10**30)), False, Amine_Account, int(price_tokens[WETH] * (1 + slippage) * 10 ** 30), 0, avax_fees, False)
+print([USDC], WBTC, int(abs(delta_btc_short*10**30)/2), int(abs(delta_btc_short*10**30)), False, Amine_Account, int(price_tokens[WBTC] * (1 + slippage) * 10 ** 30), 0, avax_fees, False)
 print(USDC,int(delta_glp*10**6), 0, int(10**18*delta_glp*(1-fees_buy_GLP/10000)/price_glp))
 
 """print(USDC, int(abs(delta_glp)*10**18), int(abs(delta_glp)*price_glp*(1-fees_glp_balance/10000)*10**6*(1-slippage_glp)), Account)
