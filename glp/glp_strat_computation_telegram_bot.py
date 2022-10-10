@@ -1,9 +1,10 @@
+import datetime
 import os, time, json, schedule
 from web3 import Web3
 from utils.api_utils import api
 from utils.io_utils import *
 
-from constants import NullAddress, USDC_ABI, PositionRouterABI, PositionRouter, RewardRouter, RewardRouterABI, VaultUtilsABI, VaultUtils, GLPVault, MIM, WETH, WBTC, WAVAX, USDC, USDC_E, GLPSC, GLP, GLPManagerABI, GLPManagerAdd, ReaderABI, ReaderAdd, VaultAdd, VaultABI, Amine_Account, fsGLP
+from constants import NullAddress, USDC_ABI, PositionRouterABI, PositionRouter, RewardRouter, RewardRouterABI, VaultUtilsABI, VaultUtils, GLPVault, MIM, WETH, WBTC, WAVAX, USDC, USDC_E, BTC_E, GLPSC, GLP, GLPManagerABI, GLPManagerAdd, ReaderABI, ReaderAdd, VaultAdd, VaultABI, Amine_Account, fsGLP
 import urllib.request
 import requests
 import asyncio
@@ -32,29 +33,173 @@ contract_reward_router = w3.eth.contract(abi=RewardRouterABI, address=RewardRout
 contract_position_router = w3.eth.contract(abi=PositionRouterABI, address=PositionRouter)
 contract_USDC = w3.eth.contract(abi=USDC_ABI, address=USDC)
 
+class GLPState:
+    tokensAdresses = {'MIM': {'adress': "0x130966628846BFd36ff31a822705796e8cb8C18D",'decimal':1e18},
+              'WETH': {'adress': "0x49D5c2BdFfac6CE2BFdB6640F4F80f226bc10bAB",'decimal':1e18},
+              'WBTC': {'adress': "0x50b7545627a5162F82A992c33b87aDc75187B218",'decimal':1e8},
+              'WAVAX': {'adress': "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",'decimal':1e18},
+              'USDC': {'adress': "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",'decimal':1e6},
+              'USDC_E': {'adress': "0xA7D7079b0FEaD91F3e65f86E8915Cb59c1a4C664",'decimal':1e6},
+              'BTC_E': {'adress': "0x152b9d0FdC40C096757F570A51E494bd4b943E50",'decimal':1e8}}
+    sillyMapping = {'MIM':'MIM',
+                    'BTC.b': 'BTC_E',
+                    'ETH': 'WETH',
+                    'BTC': 'WBTC',
+                    'USDC.e': 'USDC_E',
+                    'AVAX': 'WAVAX',
+                    'USDC': 'USDC'}
+    allTokens = list(tokensAdresses.keys())
+    volatileTokens = ['WETH', 'WBTC', 'WAVAX', 'BTC_E']
+
+    class Position:
+        def __init__(self,collateral,entryFundingRate,size,lastIncreasedTime):
+            self.collateral = collateral
+            self.entryFundingRate = entryFundingRate
+            self.size = size
+            self.lastIncreasedTime = lastIncreasedTime
+
+    def __init__(self):
+        self.poolAmount = {key: 0 for key in GLPState.allTokens}
+        self.guaranteedUsd = {key: 0 for key in GLPState.volatileTokens}
+        self.reservedAmounts = {key: 0 for key in GLPState.volatileTokens}
+        self.globalShortSizes = {key: 0 for key in GLPState.volatileTokens}
+        self.prices = {key: None for key in GLPState.allTokens}
+        self.globalShortAveragePrices = {key: None for key in GLPState.volatileTokens}
+        self.positions: list[GLPState.Position] = []
+        self.fee = 0.001
+        self.estimatedAum = None
+        self.actualAum = None
+        self.check = dict(GLPState.tokensAdresses) # just for the keys...
+
+    def to_dict(self) -> dict:
+        return dict(self.__dict__.items())
+
+    @staticmethod
+    def build():
+        result: GLPState = GLPState()
+
+        for name, token in GLPState.tokensAdresses.items():
+            result.poolAmount[name] = float(contract_vault.functions.poolAmounts(token['adress']).call())/token['decimal']
+            result.prices[name] = {'up':contract_vault.functions.getMaxPrice(token['adress']).call()/1e30,
+                                   'down':contract_vault.functions.getMinPrice(token['adress']).call()/1e30}
+            if name in GLPState.volatileTokens:
+                result.guaranteedUsd[name] = float(contract_vault.functions.guaranteedUsd(token['adress']).call())/1e30
+                result.reservedAmounts[name] = float(contract_vault.functions.reservedAmounts(token['adress']).call())/token['decimal']
+                result.globalShortSizes[name] = float(contract_vault.functions.globalShortSizes(token['adress']).call())/1e30/1e30*token['decimal']
+                result.globalShortAveragePrices[name] = float(contract_vault.functions.globalShortAveragePrices(token['adress']).call())/1e30
+
+        result.positions: list[GLPState.Position] = []
+        result.fee = 0.001
+        totalSupply = contract_glp.functions.totalSupply().call()/1e18
+        result.estimatedAum = result.estimate()/totalSupply
+        result.actualAum = contract_glp_manager.functions.getAumInUsdg(False).call()/1e18/totalSupply
+
+        return result
+
+    def estimate(self) -> float:
+        '''=  (incl long collateral) - shorts size + pnl positions
+        mintAndStakeGlp: 0x006ac9fb77641150b1e4333025cb92d0993a878839bb22008c0f354dfdcaf5e7
+        unstakeAndRedeemGlpETH: 0xe5004b114abd13b32267514808e663c456d1803ace40c0a4ae7421571155fdd3'''
+        aum = 0
+        for token in GLPState.allTokens:
+            aum += self.poolAmount[token] * self.prices[token]['down']
+            if token in GLPState.volatileTokens:
+                aum += self.guaranteedUsd[token] - self.reservedAmounts[token] * self.prices[token]['down']
+                # add pnl from shorts
+                aum += (self.prices[token]['down']/self.globalShortAveragePrices[token]-1)*self.globalShortSizes[token]
+        return aum
+
+    def check_add_weights(self) -> None:
+        weight_contents = urllib.request.urlopen("https://gmx-avax-server.uc.r.appspot.com/tokens").read()
+        weight_json = json.loads(weight_contents)
+        weight_tokens = {}
+        price_tokens = {}
+        cum_usdg = 0
+        for cur_contents in weight_json:
+            token = GLPState.sillyMapping[cur_contents['data']['symbol']]
+            self.check[token]['weight'] = float(cur_contents["data"]["usdgAmount"]) / float(cur_contents["data"]["maxPrice"])
+            for attribute in ['fundingRate','poolAmount','reservedAmount','redemptionAmount','globalShortSize','guaranteedUsd']:
+                self.check[token][attribute] = float(cur_contents['data'][attribute])
+
+    def increasePosition(self,_collateralToken: str,collateral:float, token: str,_sizeDelta: float,_isLong: bool):
+        '''
+        createIncreasePositionETH (short): 0x0fe07013cca821bcea7bae4d013ab8fd288dbc3a26ed9dfbd10334561d3ffa91
+        setPricesWithBitsAndExecute: 0x8782436fd0f365aeef20fc8fbf9fa01524401ea35a8d37ad7c70c96332ce912b
+        '''
+        price = self.prices[token]
+        fee = self.fee
+        #self.positions += GLPSimulator.Position(collateral - fee, price, _sizeDelta, myUtcNow())
+        self.reservedAmounts[token] += _sizeDelta
+        if _isLong:
+            self.guaranteedUsd[token] += _sizeDelta + fee - collateral
+            self.poolAmount[token] += collateral - fee
+        else:
+            self.globalShortAveragePrices[token] = (price*_sizeDelta + self.globalShortAveragePrices[token]*self.globalShortSizes)/(_sizeDelta+self.globalShortSizes[token])
+            self.globalShortSizes += _sizeDelta
+
+class GLPTimeSeries:
+    def __init__(self):
+        self.series: list[dict[datetime, GLPState]]= []
+        self.past_data, self.output_filename = initialize_output_file('granular_history.json')
+    
+    def increment(self,updateTime: float = datetime.now().timestamp()) -> None:
+        current = GLPState.build()
+        current.check_add_weights()
+
+        self.past_data[updateTime] = {updateTime:current.to_dict()}
+        with open(self.output_filename, "w") as f:
+            json.dump(self.past_data, f, indent=1)
+
+
+###### glp redemption
+
+
+###### variable list
+
+### guaranteedUsd = longs exposure to 100% fall (size-collateral)
+## upon increasePosition
+# guaranteedUsd += (_sizeDelta - (collateralDeltaUsd+fee)) if _isLong else 0
+## upon decrease
+# guaranteedUsd -= (deltacollateral - _sizeDelta) if _isLong else 0
+# emit IncreaseGuaranteedUsd(_token, _usdAmount);
+# emit DecreaseGuaranteedUsd(_token, _usdAmount);
+
+### reserved = gross exposure
+## upon increasePosition
+# reservedAmounts[_token] += _sizeDelta/priceMin
+## upon decrease
+# emit IncreaseReservedAmount(_token, _amount);
+# emit DecreaseReservedAmount(_token, _amount);
+
+### collateral
+
+
+### poolAmounts[_token]
+## upon directPoolDeposit, buyUSDG, swap...
+## upon increasePosition
+# poolAmounts[_token] += (collateralDelta - fee/priceMax) if _isLong else 0 --> fees go to feeReserves[_collateralToken] not pool
+## upon _decreasePosition
+# _reduceCollateral: poolAmounts[_token] -= pnl if short + fee if long
+#                    returns (pnl if profit else 0) + max(0,_collateralDelta)
+# if long: poolAmounts[_token] -= (pnl if profit else 0) + max(0,_collateralDelta) + fee
+# if short: poolAmounts[_token] -= pnl if short
+
+# emit IncreasePoolAmount(_token, _amount);
+# emit DecreasePoolAmount(_token, _amount);
+
 def compute_strat(new_usdc=0,return_data=False):
   aums_down = contract_glp_manager.functions.getAumInUsdg(False).call()
   aums_up = contract_glp_manager.functions.getAumInUsdg(True).call()
   glp_total_supply = contract_glp.functions.totalSupply().call()/10**18
 
-  amount_token_mim = contract_.functions.poolAmounts(MIM).call()/10**18
-  amount_token_btc = contract_.functions.poolAmounts(WBTC).call()/10**8
-  amount_token_eth = contract_.functions.poolAmounts(WETH).call()/10**18
-  amount_token_avax = contract_.functions.poolAmounts(WAVAX).call()/10**18
-  amount_token_usdc = contract_.functions.poolAmounts(USDC).call()/10**6
-  amount_token_usdc_e = contract_.functions.poolAmounts(USDC_E).call()/10**6
-
-
-  output_avax = contract_position.functions.getPositions(VaultAdd, Amine_Account, [USDC], [WAVAX], [False]).call()
-  output_btc = contract_position.functions.getPositions(VaultAdd, Amine_Account, [USDC], [WBTC], [False]).call()
-  output_eth = contract_position.functions.getPositions(VaultAdd, Amine_Account, [USDC], [WETH], [False]).call()
-
+  hedge_avax = contract_position.functions.getPositions(VaultAdd, Amine_Account, [USDC], [WAVAX], [False]).call()
+  hedge_btc = contract_position.functions.getPositions(VaultAdd, Amine_Account, [USDC], [WBTC], [False]).call()
+  hedge_eth = contract_position.functions.getPositions(VaultAdd, Amine_Account, [USDC], [WETH], [False]).call()
 
   fees_sell_GLP = contract_vault_utils.functions.getSellUsdgFeeBasisPoints(USDC, 100).call()
   fees_buy_GLP = contract_vault_utils.functions.getBuyUsdgFeeBasisPoints(USDC, 100).call()
 
   quantity_fsglp = contract_position.functions.getTokenBalances(Amine_Account, [fsGLP]).call()[0] / 10 ** 18
-
 
   fees_trade = 0.1/100
   slippage = 0.2/100
@@ -62,35 +207,33 @@ def compute_strat(new_usdc=0,return_data=False):
 
   liquidation_fee = int(5*10**30)
 
-  collateral_avax = output_avax[1]
-  collateral_btc = output_btc[1]
-  collateral_eth = output_eth[1]
+  collateral_avax = hedge_avax[1]
+  collateral_btc = hedge_btc[1]
+  collateral_eth = hedge_eth[1]
 
-  size_avax = output_avax[0]
-  size_btc = output_btc[0]
-  size_eth = output_eth[0]
+  size_avax = hedge_avax[0]
+  size_btc = hedge_btc[0]
+  size_eth = hedge_eth[0]
 
-  average_price_avax = output_avax[2]
-  average_price_eth = output_eth[2]
-  average_price_btc = output_btc[2]
+  average_price_avax = hedge_avax[2]
+  average_price_eth = hedge_eth[2]
+  average_price_btc = hedge_btc[2]
 
-  entryFundingRate_avax = int(output_avax[3])
-  entryFundingRate_btc = int(output_btc[3])
-  entryFundingRate_eth = int(output_eth[3])
+  entryFundingRate_avax = int(hedge_avax[3])
+  entryFundingRate_btc = int(hedge_btc[3])
+  entryFundingRate_eth = int(hedge_eth[3])
 
   borrow_fee_avax = float(contract_vault.functions.getFundingFee(Amine_Account, USDC, WAVAX, False, size_avax, entryFundingRate_avax).call())
   borrow_fee_eth = float(contract_vault.functions.getFundingFee(Amine_Account, USDC, WETH, False, size_eth, entryFundingRate_eth).call())
   borrow_fee_btc = float(contract_vault.functions.getFundingFee(Amine_Account, USDC, WBTC, False, size_btc, entryFundingRate_btc).call())
 
+  sign_avax = 1 if hedge_avax[7]>0 else -1
+  sign_btc = 1 if hedge_btc[7]>0 else -1
+  sign_eth = 1 if hedge_eth[7]>0 else -1
 
-
-  sign_avax = 1 if output_avax[7]>0 else -1
-  sign_btc = 1 if output_btc[7]>0 else -1
-  sign_eth = 1 if output_eth[7]>0 else -1
-
-  pnl_avax = sign_avax*output_avax[8]-borrow_fee_avax-fees_trade*size_avax
-  pnl_btc = sign_btc*output_btc[8]-borrow_fee_btc-fees_trade*size_btc
-  pnl_eth = sign_eth*output_eth[8]-borrow_fee_eth-fees_trade*size_eth
+  pnl_avax = sign_avax*hedge_avax[8]-borrow_fee_avax-fees_trade*size_avax
+  pnl_btc = sign_btc*hedge_btc[8]-borrow_fee_btc-fees_trade*size_btc
+  pnl_eth = sign_eth*hedge_eth[8]-borrow_fee_eth-fees_trade*size_eth
 
 
 
@@ -129,11 +272,9 @@ def compute_strat(new_usdc=0,return_data=False):
   for cur_token, cur_usdg in weight_tokens.items():
     weight_tokens[cur_token] /= cum_usdg
 
-
-
   #print(float(prices[WBTC])/10**30, float(prices[WETH])/10**30, float(prices[WAVAX])/10**30)
 
-  volatile_token_weight = weight_tokens[WAVAX] + weight_tokens[WETH]+ weight_tokens[WBTC]
+  volatile_token_weight = weight_tokens[WAVAX] + weight_tokens[WETH]+ weight_tokens[WBTC]+ weight_tokens[BTC_E]
 
   price_glp = (aums_down+aums_up)/(2*glp_total_supply)/10**18
 
@@ -240,17 +381,7 @@ def compute_strat(new_usdc=0,return_data=False):
   return output
 
 def save_data():
-    dir_name = configLoader.get_mktdata_folder_for_exchange('glp')
-    if not os.path.exists(dir_name):
-        os.umask(0)
-        os.makedirs(dir_name, mode=0o777)
-
-    filename = os.path.join(os.sep,dir_name, "backtest.json")
-    try:
-        with open(filename, "r") as f:
-            data = json.load(f)
-    except:
-        data = dict()
+    data, filename = initialize_output_file('backtest.json')
 
     new_data = compute_strat(return_data=True)
     data[int(time.time())] = new_data
@@ -258,9 +389,24 @@ def save_data():
     with open(filename, "w") as f:
         json.dump(data, f, indent=1)
 
+
+def initialize_output_file(filename: str):
+    dir_name = configLoader.get_mktdata_folder_for_exchange('glp')
+    if not os.path.exists(dir_name):
+        os.umask(0)
+        os.makedirs(dir_name, mode=0o777)
+    filename = os.path.join(os.sep, dir_name, filename)
+    try:
+        with open(filename, "r") as f:
+            data = json.load(f)
+    except:
+        data = dict()
+    return data, filename
+
 @api
 def main(*args, **kwargs):
-    schedule.every(5).minutes.do(save_data)
+    time_series: GLPTimeSeries = GLPTimeSeries()
+    schedule.every(1).minutes.do(time_series.increment)
     while True:
         try:
             schedule.run_pending()
