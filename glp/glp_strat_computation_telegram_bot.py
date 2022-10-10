@@ -1,4 +1,5 @@
 import datetime
+import logging
 import time, schedule
 from web3 import Web3
 from utils.api_utils import api
@@ -122,13 +123,15 @@ class GLPTimeSeries:
         self.series: list[dict[datetime, GLPState]]= []
         self.past_data, self.output_filename = initialize_output_file('granular_history.json')
     
-    def increment(self,updateTime: float = datetime.now().timestamp()) -> None:
+    def increment(self) -> None:
         current = GLPState.build()
         current.check_add_weights()
 
+        updateTime = datetime.now().timestamp()
         self.past_data[updateTime] = current.to_dict()
         with open(self.output_filename, "w") as f:
             json.dump(self.past_data, f, indent=1)
+            logging.getLogger('glp').info(f'wrote to {self.output_filename} at {updateTime}')
 
 def initialize_output_file(filename: str):
     dir_name = configLoader.get_mktdata_folder_for_exchange('glp')
