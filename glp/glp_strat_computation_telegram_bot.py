@@ -146,7 +146,7 @@ def initialize_output_file(filename: str):
 @api
 def main(*args, **kwargs):
     time_series: GLPTimeSeries = GLPTimeSeries()
-    schedule.every(1).seconds.do(time_series.increment)
+    schedule.every(5).minutes.do(time_series.increment)
     while True:
         try:
             schedule.run_pending()
