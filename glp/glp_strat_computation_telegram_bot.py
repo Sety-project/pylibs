@@ -31,38 +31,41 @@ class GLPState:
 
     def __init__(self):
         self.poolAmount = {key: 0 for key in GLPState.static}
-        self.prices = {key: None for key in GLPState.static}
+        self.tokenBalances = {key: 0 for key in GLPState.static}
+        self.pricesUp = {key: None for key in GLPState.static}
+        self.pricesDown = {key: None for key in GLPState.static}
 
         self.guaranteedUsd = {key: 0 for key,data in GLPState.static.items() if data['volatile']}
         self.reservedAmounts = {key: 0 for key,data in GLPState.static.items() if data['volatile']}
         self.globalShortSizes = {key: 0 for key,data in GLPState.static.items() if data['volatile']}
         self.globalShortAveragePrices = {key: None for key,data in GLPState.static.items() if data['volatile']}
-
-        self.positions: list[GLPState.Position] = []
-        self.feeReserves: dict[str,dict] = dict(GLPState.static) # just for the keys...
+        self.feeReserves: dict[str,dict] = {key:0 for key in GLPState.static}
 
         self.fee = 0.001
         self.estimatedAum = None
         self.actualAum = None
-        self.check = dict(GLPState.static) # just for the keys...
+        self.check = {key:dict() for key in GLPState.static}
 
     def to_dict(self) -> dict:
-        return dict(self.__dict__)
+        result = dict(self.__dict__)
+        result.pop('check')
+        return result
 
     @staticmethod
     def build():
         result: GLPState = GLPState()
 
         for key, data in GLPState.static.items():
+            result.tokenBalances[key] = float(contract_vault.functions.tokenBalances(data['address']).call()) / data['decimal']
             result.poolAmount[key] = float(contract_vault.functions.poolAmounts(data['address']).call())/data['decimal']
-            result.prices[key] = {'up':contract_vault.functions.getMaxPrice(data['address']).call()/1e30,
-                                   'down':contract_vault.functions.getMinPrice(data['address']).call()/1e30}
+            result.pricesUp[key] = contract_vault.functions.getMaxPrice(data['address']).call()/1e30
+            result.pricesDown[key] = contract_vault.functions.getMinPrice(data['address']).call()/1e30
             if data['volatile']:
                 result.guaranteedUsd[key] = float(contract_vault.functions.guaranteedUsd(data['address']).call())/1e30
                 result.reservedAmounts[key] = float(contract_vault.functions.reservedAmounts(data['address']).call())/data['decimal']
                 result.globalShortSizes[key] = float(contract_vault.functions.globalShortSizes(data['address']).call())/1e30
                 result.globalShortAveragePrices[key] = float(contract_vault.functions.globalShortAveragePrices(data['address']).call())/1e30
-                result.feeReserves[key] = float(contract_vault.functions.feeReserves(data['address']).call())/1e30
+                result.feeReserves[key] = float(contract_vault.functions.feeReserves(data['address']).call())/data['decimal']
 
         # result.positions = contract_vault.functions.positions().call()
         result.fee = 0.001
@@ -73,16 +76,16 @@ class GLPState:
         return result
 
     def estimate(self) -> float:
-        '''=  (incl long collateral) - shorts size + pnl positions
+        '''so delta =  poolAmount - reservedAmounts + globalShortSizes/globalShortAveragePrices ~ pool - longs
         mintAndStakeGlp: 0x006ac9fb77641150b1e4333025cb92d0993a878839bb22008c0f354dfdcaf5e7
         unstakeAndRedeemGlpETH: 0xe5004b114abd13b32267514808e663c456d1803ace40c0a4ae7421571155fdd3'''
         aum = 0
         for key,data in GLPState.static.items():
-            aum += self.poolAmount[key] * self.prices[key]['down']
+            aum += self.poolAmount[key] * self.pricesDown[key]
             if data['volatile']:
-                aum += self.guaranteedUsd[key] - self.reservedAmounts[key] * self.prices[key]['down']
+                aum += self.guaranteedUsd[key] - self.reservedAmounts[key] * self.pricesDown[key]
                 # add pnl from shorts
-                aum += (self.prices[key]['down']/self.globalShortAveragePrices[key]-1)*self.globalShortSizes[key]
+                aum += (self.pricesDown[key]/self.globalShortAveragePrices[key]-1)*self.globalShortSizes[key]
         return aum
 
     def check_add_weights(self) -> None:
@@ -107,16 +110,23 @@ class GLPState:
         createIncreasePositionETH (short): 0x0fe07013cca821bcea7bae4d013ab8fd288dbc3a26ed9dfbd10334561d3ffa91
         setPricesWithBitsAndExecute: 0x8782436fd0f365aeef20fc8fbf9fa01524401ea35a8d37ad7c70c96332ce912b
         '''
-        price = self.prices[token]
         fee = self.fee
         #self.positions += GLPSimulator.Position(collateral - fee, price, _sizeDelta, myUtcNow())
-        self.reservedAmounts[token] += _sizeDelta
+        self.reservedAmounts[token] += _sizeDelta / self.pricesDown[token]
         if _isLong:
-            self.guaranteedUsd[token] += _sizeDelta + fee - collateral
-            self.poolAmount[token] += collateral - fee
+            self.guaranteedUsd[token] += _sizeDelta + fee - collateral * self.pricesDown[token]
+            self.poolAmount[token] += collateral - fee / self.pricesDown[token]
         else:
-            self.globalShortAveragePrices[token] = (price*_sizeDelta + self.globalShortAveragePrices[token]*self.globalShortSizes)/(_sizeDelta+self.globalShortSizes[token])
+            self.globalShortAveragePrices[token] = (self.pricesDown[token]*_sizeDelta + self.globalShortAveragePrices[token]*self.globalShortSizes)/(_sizeDelta + self.globalShortSizes[token])
             self.globalShortSizes += _sizeDelta
+
+    def decreasePosition(self, _collateralToken: str, collateral: float, token: str, _sizeDelta: float, _isLong: bool):
+        self.reservedAmounts[token] = 0
+        if _isLong:
+            self.guaranteedUsd[token] -= _sizeDelta - collateral * oringnalPx
+            self.poolAmount[token] -= collateral + max(0,pnl)
+        else:
+            self.poolAmount[token] -= pnl
 
 class GLPTimeSeries:
     def __init__(self):
@@ -149,11 +159,11 @@ def initialize_output_file(filename: str):
 @api
 def main(*args, **kwargs):
     time_series: GLPTimeSeries = GLPTimeSeries()
-    schedule.every(5).minutes.do(time_series.increment)
+    schedule.every(5).seconds.do(time_series.increment)
     while True:
         try:
             schedule.run_pending()
             time.sleep(1)
-        except Exception as E:
-            print(E)
-            pass
+        except Exception as e:
+            logging.getLogger('glp').critical(e)
+            raise e
