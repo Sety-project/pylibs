@@ -32,6 +32,7 @@ class GLPState:
     def __init__(self):
         self.poolAmount = {key: 0 for key in GLPState.static}
         self.tokenBalances = {key: 0 for key in GLPState.static}
+        self.usdgAmounts = {key: 0 for key in GLPState.static}
         self.pricesUp = {key: None for key in GLPState.static}
         self.pricesDown = {key: None for key in GLPState.static}
 
@@ -49,6 +50,7 @@ class GLPState:
     def to_dict(self) -> dict:
         result = dict(self.__dict__)
         result.pop('check')
+        result.pop('usdgAmounts')
         return result
 
     @staticmethod
@@ -58,6 +60,7 @@ class GLPState:
         for key, data in GLPState.static.items():
             result.tokenBalances[key] = float(contract_vault.functions.tokenBalances(data['address']).call()) / data['decimal']
             result.poolAmount[key] = float(contract_vault.functions.poolAmounts(data['address']).call())/data['decimal']
+            result.usdgAmount[key] = float(contract_vault.functions.usdgAmount(data['address']).call()) / data['decimal']
             result.pricesUp[key] = contract_vault.functions.getMaxPrice(data['address']).call()/1e30
             result.pricesDown[key] = contract_vault.functions.getMinPrice(data['address']).call()/1e30
             if data['volatile']:
@@ -70,14 +73,25 @@ class GLPState:
         # result.positions = contract_vault.functions.positions().call()
         result.fee = 0.001
         totalSupply = contract_glp.functions.totalSupply().call()/1e18
-        result.estimatedAum = result.estimate()/totalSupply
+        result.estimatedAum = result.unstakeAndRedeemGlpETH() / totalSupply
         result.actualAum = contract_glp_manager.functions.getAumInUsdg(False).call()/1e18/totalSupply
 
         return result
 
-    def estimate(self) -> float:
+    '''
+    the below is only for documentation
+    '''
+
+    def mintAndStakeGlpETH(self,_token,tokenAmount) -> None:
+        '''mintAndStakeGlp: 0x006ac9fb77641150b1e4333025cb92d0993a878839bb22008c0f354dfdcaf5e7'''
+        usdgAmount = tokenAmount*self.pricesDown[_token]
+        fee = vaultUtils.getBuyUsdgFeeBasisPoints(_token, usdgAmount)*usdgAmount
+        self.feeReserves[_token] += fee
+        self.usdgAmount[_token] += (usdgAmount - fee) * self.pricesDown[_token]
+        self.poolAmount[_token] += (usdgAmount - fee)
+
+    def unstakeAndRedeemGlpETH(self) -> float:
         '''so delta =  poolAmount - reservedAmounts + globalShortSizes/globalShortAveragePrices ~ pool - longs
-        mintAndStakeGlp: 0x006ac9fb77641150b1e4333025cb92d0993a878839bb22008c0f354dfdcaf5e7
         unstakeAndRedeemGlpETH: 0xe5004b114abd13b32267514808e663c456d1803ace40c0a4ae7421571155fdd3'''
         aum = 0
         for key,data in GLPState.static.items():
@@ -105,28 +119,52 @@ class GLPState:
             for attribute in ['fundingRate','poolAmount','reservedAmount','redemptionAmount','globalShortSize','guaranteedUsd']:
                 self.check[token][attribute] = float(cur_contents['data'][attribute])
 
-    def increasePosition(self,_collateralToken: str,collateral:float, token: str,_sizeDelta: float,_isLong: bool):
+    def increasePosition(self, collateral:float, _indexToken: str, _collateralToken: str, _sizeDelta: float, _isLong: bool):
         '''
+        for longs only:
+          poolAmounts = coll - fee
+          guaranteedUsd = _sizeDelta + fee + collateralUsd
         createIncreasePositionETH (short): 0x0fe07013cca821bcea7bae4d013ab8fd288dbc3a26ed9dfbd10334561d3ffa91
         setPricesWithBitsAndExecute: 0x8782436fd0f365aeef20fc8fbf9fa01524401ea35a8d37ad7c70c96332ce912b
         '''
         fee = self.fee
         #self.positions += GLPSimulator.Position(collateral - fee, price, _sizeDelta, myUtcNow())
-        self.reservedAmounts[token] += _sizeDelta / self.pricesDown[token]
+        self.reservedAmounts[_collateralToken] += _sizeDelta / self.pricesDown[_collateralToken]
         if _isLong:
-            self.guaranteedUsd[token] += _sizeDelta + fee - collateral * self.pricesDown[token]
-            self.poolAmount[token] += collateral - fee / self.pricesDown[token]
+            self.guaranteedUsd[_collateralToken] += _sizeDelta + fee - collateral * self.pricesDown[_collateralToken]
+            self.poolAmount[_collateralToken] += collateral - fee / self.pricesDown[_collateralToken]
         else:
-            self.globalShortAveragePrices[token] = (self.pricesDown[token]*_sizeDelta + self.globalShortAveragePrices[token]*self.globalShortSizes)/(_sizeDelta + self.globalShortSizes[token])
+            self.globalShortAveragePrices[_indexToken] = (self.pricesDown[_indexToken] * _sizeDelta + self.globalShortAveragePrices[_indexToken] * self.globalShortSizes) / (_sizeDelta + self.globalShortSizes[_collateralToken])
             self.globalShortSizes += _sizeDelta
 
     def decreasePosition(self, _collateralToken: str, collateral: float, token: str, _sizeDelta: float, _isLong: bool):
         self.reservedAmounts[token] = 0
+        self.poolAmount[token] -= pnl
         if _isLong:
-            self.guaranteedUsd[token] -= _sizeDelta - collateral * oringnalPx
-            self.poolAmount[token] -= collateral + max(0,pnl)
-        else:
-            self.poolAmount[token] -= pnl
+            self.guaranteedUsd[token] -= _sizeDelta - collateral * originalPx
+            self.poolAmount[token] -= collateral
+
+'''
+relevant topics
+
+- called everywhere
+emit IncreasePoolAmount(_token, _amount) 0x976177fbe09a15e5e43f848844963a42b41ef919ef17ff21a17a5421de8f4737
+emit DecreasePoolAmount(_token, _amount) 0x112726233fbeaeed0f5b1dba5cb0b2b81883dee49fb35ff99fd98ed9f6d31eb0
+
+- only called on position increase
+emit IncreaseReservedAmount(_token, _amount); 0xaa5649d82f5462be9d19b0f2b31a59b2259950a6076550bac9f3a1c07db9f66d
+emit DecreaseReservedAmount(_token, _amount); 0x533cb5ed32be6a90284e96b5747a1bfc2d38fdb5768a6b5f67ff7d62144ed67b
+
+- globalShortSize has no emit, so need following
+emit IncreasePosition(key, _account, _collateralToken, _indexToken, _collateralDelta, _sizeDelta, _isLong, price, usdOut.sub(usdOutAfterFee)); 0x2fe68525253654c21998f35787a8d0f361905ef647c854092430ab65f2f15022
+emit DecreasePosition(key, _account, _collateralToken, _indexToken, _collateralDelta, _sizeDelta, _isLong, price, usdOut.sub(usdOutAfterFee)); 0x93d75d64d1f84fc6f430a64fc578bdd4c1e090e90ea2d51773e626d19de56d30
+
+- and for tracking usd value:
+emit IncreaseGuaranteedUsd(_token, _usdAmount); 0xd9d4761f75e0d0103b5cbeab941eeb443d7a56a35b5baf2a0787c03f03f4e474
+emit DecreaseGuaranteedUsd(_token, _usdAmount); 0x34e07158b9db50df5613e591c44ea2ebc82834eff4a4dc3a46e000e608261d68
+
+'''
+
 
 class GLPTimeSeries:
     def __init__(self):
