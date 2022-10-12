@@ -13,6 +13,7 @@ import pandas as pd
 import numpy as np
 from datetime import timedelta, datetime, timezone
 import pyarrow, pyarrow.parquet,s3fs
+from typing import Any
 
 # this is for jupyter
 # import cufflinks as cf
@@ -175,3 +176,18 @@ def ignore_error(func):
             logger.warning(e,exc_info=True)
     return wrapper_ignore_error
 
+def nested_dict_to_tuple(nested: dict) -> dict[tuple,Any]:
+    '''function to convert nest dict into dict of tuples.
+    Useful to create dataframes from nested dict'''
+    result = dict()
+    for key, data in nested.items():
+        if isinstance(data, dict):
+            innerDict = nested_dict_to_tuple(data)
+            result |= {(key,) + index: value for index, value in innerDict.items()}
+        else:
+            result |= {(key,): data}
+    return result
+#
+# d={'a':0,'b': {'c':5,'d':4}}
+# res = nested_dict_to_dataframe(d)
+# print(res)
