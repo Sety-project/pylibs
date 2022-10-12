@@ -43,7 +43,7 @@ class GLPState:
         self.feeReserves: dict[str,dict] = {key:0 for key in GLPState.static}
 
         self.fee = 0.001
-        self.estimatedAum = None
+        self.totalSupply = None
         self.actualAum = None
         self.check = {key:dict() for key in GLPState.static}
 
@@ -60,7 +60,7 @@ class GLPState:
         for key, data in GLPState.static.items():
             result.tokenBalances[key] = float(contract_vault.functions.tokenBalances(data['address']).call()) / data['decimal']
             result.poolAmount[key] = float(contract_vault.functions.poolAmounts(data['address']).call())/data['decimal']
-            result.usdgAmount[key] = float(contract_vault.functions.usdgAmount(data['address']).call()) / data['decimal']
+            result.usdgAmounts[key] = float(contract_vault.functions.usdgAmounts(data['address']).call()) / data['decimal']
             result.pricesUp[key] = contract_vault.functions.getMaxPrice(data['address']).call()/1e30
             result.pricesDown[key] = contract_vault.functions.getMinPrice(data['address']).call()/1e30
             if data['volatile']:
@@ -72,9 +72,8 @@ class GLPState:
 
         # result.positions = contract_vault.functions.positions().call()
         result.fee = 0.001
-        totalSupply = contract_glp.functions.totalSupply().call()/1e18
-        result.estimatedAum = result.unstakeAndRedeemGlpETH() / totalSupply
-        result.actualAum = contract_glp_manager.functions.getAumInUsdg(False).call()/1e18/totalSupply
+        result.totalSupply = contract_glp.functions.totalSupply().call()/1e18
+        result.actualAum = contract_glp_manager.functions.getAumInUsdg(False).call()/1e18/result.totalSupply
 
         return result
 
@@ -90,19 +89,28 @@ class GLPState:
         self.usdgAmount[_token] += (usdgAmount - fee) * self.pricesDown[_token]
         self.poolAmount[_token] += (usdgAmount - fee)
 
-    def unstakeAndRedeemGlpETH(self) -> float:
-        '''so delta =  poolAmount - reservedAmounts + globalShortSizes/globalShortAveragePrices ~ pool - longs
-        unstakeAndRedeemGlpETH: 0xe5004b114abd13b32267514808e663c456d1803ace40c0a4ae7421571155fdd3'''
-        aum = 0
-        for key,data in GLPState.static.items():
-            aum += self.poolAmount[key] * self.pricesDown[key]
-            if data['volatile']:
+    def valuation(self, key = None) -> float:
+        '''unstakeAndRedeemGlpETH: 0xe5004b114abd13b32267514808e663c456d1803ace40c0a4ae7421571155fdd3
+        total is key is None'''
+        if key is None:
+            return sum(self.valuation(key) for key in GLPState.static)
+        else:
+            aum = self.poolAmount[key] * self.pricesDown[key]
+            if GLPState.static[key]['volatile']:
                 aum += self.guaranteedUsd[key] - self.reservedAmounts[key] * self.pricesDown[key]
                 # add pnl from shorts
                 aum += (self.pricesDown[key]/self.globalShortAveragePrices[key]-1)*self.globalShortSizes[key]
-        return aum
+            return aum
 
-    def check_add_weights(self) -> None:
+    def partial_delta(self,key: str) -> float:
+        '''so delta =  poolAmount - reservedAmounts + globalShortSizes/globalShortAveragePrices
+        ~ what's ours + (collateral - N)^{longs}'''
+        result = self.poolAmount[key]
+        if GLPState.static[key]['volatile']:
+            result += (- self.reservedAmounts[key] + self.globalShortSizes[key]/self.globalShortAveragePrices[key])
+        return result
+
+    def add_weights(self) -> None:
         weight_contents = urllib.request.urlopen("https://gmx-avax-server.uc.r.appspot.com/tokens").read()
         weight_json = json.loads(weight_contents)
         sillyMapping = {'MIM': 'MIM',
@@ -118,6 +126,11 @@ class GLPState:
             self.check[token]['weight'] = float(cur_contents["data"]["usdgAmount"]) / float(cur_contents["data"]["maxPrice"])
             for attribute in ['fundingRate','poolAmount','reservedAmount','redemptionAmount','globalShortSize','guaranteedUsd']:
                 self.check[token][attribute] = float(cur_contents['data'][attribute])
+
+    def sanity_check(self):
+        logger = logging.getLogger('glp')
+        if abs(self.valuation()/self.totalSupply/self.actualAum -1) > GLPState.check_tolerance:
+            logger.warning(f'val {self.valuation()} vs actual {self.actualAum/self.totalSupply}')
 
     def increasePosition(self, collateral:float, _indexToken: str, _collateralToken: str, _sizeDelta: float, _isLong: bool):
         '''
@@ -165,39 +178,68 @@ emit DecreaseGuaranteedUsd(_token, _usdAmount); 0x34e07158b9db50df5613e591c44ea2
 
 '''
 
-
 class GLPTimeSeries:
     def __init__(self):
-        self.series: list[dict[datetime, GLPState]]= []
-        self.past_data, self.output_filename = initialize_output_file('granular_history.json')
+        dir_name = configLoader.get_mktdata_folder_for_exchange('glp')
+        if not os.path.exists(dir_name):
+            os.umask(0)
+            os.makedirs(dir_name, mode=0o777)
+        self.output_filename = os.path.join(os.sep, dir_name,
+                                            'granular_history_{}.json'.format(datetime.now().strftime("%Y%m%d_%H%M%S")))
+        try:
+            with open(self.output_filename, "r") as f:
+                self.series = json.load(f)
+        except:
+            self.series = [dict()]
     
     def increment(self) -> None:
-        current = GLPState.build()
-        current.check_add_weights()
+        current_state = GLPState.build()
+        #current_state.add_weights()
+        current_state.sanity_check()
 
+        # compute plex fields
         updateTime = datetime.now().timestamp()
-        self.past_data[updateTime] = current.to_dict()
+        previous = self.series[-1]
+        current = current_state.to_dict()
+        # compute risk
+        current |= {'timestamp': updateTime,
+                    'delta': {key: current_state.partial_delta(key) for key in GLPState.static},
+                    'valuation': {key: current_state.valuation(key) for key in GLPState.static}}
+        if len(previous) > 0:
+            # compute plex
+            current |= {'delta_pnl': {key: previous['delta'][key] * (current['pricesDown'][key] - previous['pricesDown'][key])
+                                      for key in GLPState.static}}
+            current |= {'other_pnl': {key: current['valuation'][key]-previous['valuation'][key]-current['delta_pnl'][key] for key in GLPState.static}}
+
+            # compute totals
+            for label in ['delta_pnl','valuation','other_pnl']:
+                current[label]['total'] = sum(current[label].values())
+            current['unexplained'] = (current['actualAum']-previous['actualAum']) - (current['valuation']-previous['valuation'])
+
+        self.series.append(current)
         with open(self.output_filename, "w") as f:
-            json.dump(self.past_data, f, indent=1)
+            json.dump([{json.dumps(k): v for k, v in nested_dict_to_tuple(item).items()} for item in self.series], f, indent=1, cls=NpEncoder)
             logging.getLogger('glp').info(f'wrote to {self.output_filename} at {updateTime}')
 
-def initialize_output_file(filename: str):
+def initialize_output_file(filename) -> list[dict[datetime, GLPState]]:
     dir_name = configLoader.get_mktdata_folder_for_exchange('glp')
     if not os.path.exists(dir_name):
         os.umask(0)
         os.makedirs(dir_name, mode=0o777)
-    filename = os.path.join(os.sep, dir_name, filename)
     try:
         with open(filename, "r") as f:
-            data = json.load(f)
+            series = json.load(f)
     except:
-        data = dict()
-    return data, filename
+        series = [dict()]
+    return series, filename
+
+def outputfile_to_dataframe(self,filename):
+
 
 @api
 def main(*args, **kwargs):
     time_series: GLPTimeSeries = GLPTimeSeries()
-    schedule.every(5).seconds.do(time_series.increment)
+    schedule.every(1).minutes.do(time_series.increment)
     while True:
         try:
             schedule.run_pending()
