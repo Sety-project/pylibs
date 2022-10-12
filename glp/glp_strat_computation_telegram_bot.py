@@ -233,8 +233,17 @@ def initialize_output_file(filename) -> list[dict[datetime, GLPState]]:
         series = [dict()]
     return series, filename
 
-def outputfile_to_dataframe(self,filename):
-
+def outputfile_to_dataframe(filename):
+    '''to read GLPTimeSeries .json output'''
+    with open(filename, 'r') as f:
+        list_input = json.load(f)
+    data = [{tuple(json.loads(k)): v for k, v in mapping.items()} for mapping in list_input]
+    df = pd.DataFrame(data)
+    df.columns = pd.MultiIndex.from_tuples(list(df.columns))
+    # df.rename(columns={('timestamp',np.nan):'timestamp'})
+    df.set_index(('timestamp', np.nan), inplace=True)
+    df = df.swaplevel(axis=1).sort_index(axis=1)
+    df.to_csv(filename.replace('.json', '.csv'))
 
 @api
 def main(*args, **kwargs):
