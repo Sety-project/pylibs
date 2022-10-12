@@ -21,7 +21,9 @@ class GLPState:
               'USDC': {'address': "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",'decimal':1e6,'volatile': False},
               'USDC_E': {'address': "0xA7D7079b0FEaD91F3e65f86E8915Cb59c1a4C664",'decimal':1e6,'volatile': False},
               'BTC_E': {'address': "0x152b9d0FdC40C096757F570A51E494bd4b943E50",'decimal':1e8,'volatile': True}}
-
+    check_tolerance = 1e-4
+    fee = 0.001
+    
     class Position:
         def __init__(self,collateral,entryFundingRate,size,lastIncreasedTime):
             self.collateral = collateral
@@ -40,14 +42,13 @@ class GLPState:
         self.reservedAmounts = {key: 0 for key,data in GLPState.static.items() if data['volatile']}
         self.globalShortSizes = {key: 0 for key,data in GLPState.static.items() if data['volatile']}
         self.globalShortAveragePrices = {key: None for key,data in GLPState.static.items() if data['volatile']}
-        self.feeReserves: dict[str,dict] = {key:0 for key in GLPState.static}
+        self.feeReserves = {key:0 for key in GLPState.static}
 
-        self.fee = 0.001
         self.totalSupply = None
         self.actualAum = None
         self.check = {key:dict() for key in GLPState.static}
 
-    def to_dict(self) -> dict:
+    def serialize(self) -> dict:
         result = dict(self.__dict__)
         result.pop('check')
         result.pop('usdgAmounts')
@@ -71,7 +72,6 @@ class GLPState:
                 result.feeReserves[key] = float(contract_vault.functions.feeReserves(data['address']).call())/data['decimal']
 
         # result.positions = contract_vault.functions.positions().call()
-        result.fee = 0.001
         result.totalSupply = contract_glp.functions.totalSupply().call()/1e18
         result.actualAum = contract_glp_manager.functions.getAumInUsdg(False).call()/1e18/result.totalSupply
 
@@ -140,7 +140,7 @@ class GLPState:
         createIncreasePositionETH (short): 0x0fe07013cca821bcea7bae4d013ab8fd288dbc3a26ed9dfbd10334561d3ffa91
         setPricesWithBitsAndExecute: 0x8782436fd0f365aeef20fc8fbf9fa01524401ea35a8d37ad7c70c96332ce912b
         '''
-        fee = self.fee
+        fee = GLPState.fee
         #self.positions += GLPSimulator.Position(collateral - fee, price, _sizeDelta, myUtcNow())
         self.reservedAmounts[_collateralToken] += _sizeDelta / self.pricesDown[_collateralToken]
         if _isLong:
@@ -200,21 +200,27 @@ class GLPTimeSeries:
         # compute plex fields
         updateTime = datetime.now().timestamp()
         previous = self.series[-1]
-        current = current_state.to_dict()
+        current = current_state.serialize()
         # compute risk
         current |= {'timestamp': updateTime,
                     'delta': {key: current_state.partial_delta(key) for key in GLPState.static},
                     'valuation': {key: current_state.valuation(key) for key in GLPState.static}}
+        current['delta']['total'] = sum(current['delta'].values())
+        current['valuation']['total'] = sum(current['valuation'].values())
+        
         if len(previous) > 0:
             # compute plex
             current |= {'delta_pnl': {key: previous['delta'][key] * (current['pricesDown'][key] - previous['pricesDown'][key])
                                       for key in GLPState.static}}
+            current['delta_pnl']['total'] = sum(current['delta_pnl'].values())
+            
             current |= {'other_pnl': {key: current['valuation'][key]-previous['valuation'][key]-current['delta_pnl'][key] for key in GLPState.static}}
+            current['other_pnl']['total'] = sum(current['other_pnl'].values())
 
             # compute totals
             for label in ['delta_pnl','valuation','other_pnl']:
                 current[label]['total'] = sum(current[label].values())
-            current['unexplained'] = (current['actualAum']-previous['actualAum']) - (current['valuation']-previous['valuation'])
+            current['unexplained'] = {'total':(current['actualAum']-previous['actualAum']) - (current['valuation']-previous['valuation'])}
 
         self.series.append(current)
         with open(self.output_filename, "w") as f:
@@ -248,7 +254,7 @@ def outputfile_to_dataframe(filename):
 @api
 def main(*args, **kwargs):
     time_series: GLPTimeSeries = GLPTimeSeries()
-    schedule.every(1).minutes.do(time_series.increment)
+    schedule.every(1).seconds.do(time_series.increment)
     while True:
         try:
             schedule.run_pending()
