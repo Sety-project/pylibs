@@ -523,7 +523,7 @@ class VenueAPI(ccxtpro.ftx):
                                                                          self.strategy.order_manager.cancelableStates)
         coro += [self.cancel_order(order[-1]['clientOrderId'], 'cancel_symbol')
                                for order in cancelable_orders]
-        await asyncio.gather(*coro)
+        await safe_gather(coro,semaphore=self.strategy.rest_semaphor)
 
     async def create_order(self, symbol, type, side, amount, price=None, params={},previous_clientOrderId=None,peg_rule: PegRule=None):
         '''if not new, cancel previous first

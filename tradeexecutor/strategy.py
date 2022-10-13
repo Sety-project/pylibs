@@ -46,7 +46,7 @@ class Strategy(dict):
         self.logger = logging.getLogger('tradeexecutor')
         self.data_logger = ExecutionLogger(exchange_name=venue_api.id)
 
-        self.rest_semaphor = asyncio.Semaphore(safe_gather_limit)
+        self.rest_semaphor = asyncio.Semaphore(parameters['rest_semaphore'] if 'rest_semaphore' in parameters else safe_gather_limit)
         self.lock = {'reconciling':threading.Lock()}
         self.lock |= {symbol: threading.Lock() for symbol in self.parameters['symbols']}
 

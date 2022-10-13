@@ -37,7 +37,7 @@ async def main_coroutine(order_name, **kwargs):
     except Exception as e:
         logger = logging.getLogger('tradeexecutor')
         logger.critical(str(e), exc_info=True)
-        await asyncio.gather(*[strategy.venue_api.cancel_all_orders(symbol) for symbol in strategy.parameters['symbols']])
+        await safe_gather([strategy.venue_api.cancel_all_orders(symbol) for symbol in strategy.parameters['symbols']],semaphore=strategy.rest_semaphor)
         logger.warning(f'cancelled orders')
         # await strategy.close_dust()  # Commenting out until bug fixed
         await strategy.venue_api.close()
