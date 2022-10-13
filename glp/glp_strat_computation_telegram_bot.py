@@ -44,8 +44,8 @@ class GLPState:
         self.globalShortAveragePrices = {key: None for key,data in GLPState.static.items() if data['volatile']}
         self.feeReserves = {key:0 for key in GLPState.static}
 
-        self.totalSupply = None
-        self.actualAum = None
+        self.totalSupply = {key: None for key in GLPState.static}
+        self.actualAum = {key: None for key in GLPState.static}
         self.check = {key:dict() for key in GLPState.static}
 
     def serialize(self) -> dict:
@@ -72,8 +72,8 @@ class GLPState:
                 result.feeReserves[key] = float(contract_vault.functions.feeReserves(data['address']).call())/data['decimal']
 
         # result.positions = contract_vault.functions.positions().call()
-        result.totalSupply = contract_glp.functions.totalSupply().call()/1e18
-        result.actualAum = contract_glp_manager.functions.getAumInUsdg(False).call()/1e18/result.totalSupply
+        result.totalSupply = {'total': contract_glp.functions.totalSupply().call()/1e18}
+        result.actualAum = {'total': contract_glp_manager.functions.getAumInUsdg(False).call()/1e18/result.totalSupply['total']}
 
         return result
 
@@ -129,8 +129,9 @@ class GLPState:
 
     def sanity_check(self):
         logger = logging.getLogger('glp')
-        if abs(self.valuation()/self.totalSupply/self.actualAum -1) > GLPState.check_tolerance:
-            logger.warning(f'val {self.valuation()} vs actual {self.actualAum/self.totalSupply}')
+        if abs(self.valuation()/self.totalSupply['total']/self.actualAum['total'] -1) > GLPState.check_tolerance:
+            actualPx = self.actualAum['total']/self.totalSupply['total']
+            logger.warning(f'val {self.valuation()} vs actual {actualPx}')
 
     def increasePosition(self, collateral:float, _indexToken: str, _collateralToken: str, _sizeDelta: float, _isLong: bool):
         '''
@@ -220,7 +221,7 @@ class GLPTimeSeries:
             # compute totals
             for label in ['delta_pnl','valuation','other_pnl']:
                 current[label]['total'] = sum(current[label].values())
-            current['unexplained'] = {'total':(current['actualAum']-previous['actualAum']) - (current['valuation']-previous['valuation'])}
+            current['unexplained'] = {'total':(current['actualAum']['total']-previous['actualAum']['total']) - (current['valuation']['total']-previous['valuation']['total'])}
 
         self.series.append(current)
         with open(self.output_filename, "w") as f:
