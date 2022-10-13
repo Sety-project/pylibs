@@ -25,7 +25,7 @@ from utils.async_utils import *
 # 'check_frequency': risk recon frequency. in seconds
 # 'delta_limit': in % of pv
 
-async def single_coin_routine(order_name, **kwargs):
+async def main_coroutine(order_name, **kwargs):
     parameters = configLoader.get_executor_params(order=order_name,dirname=kwargs['config'])
     order = os.path.join(os.sep, configLoader.get_config_folder_path(config_name=kwargs['config']), "pfoptimizer", order_name)
     parameters["signal_engine"]['filename'] = order
@@ -43,18 +43,6 @@ async def single_coin_routine(order_name, **kwargs):
         await strategy.venue_api.close()
         if not isinstance(e, Strategy.ReadyToShutdown):
             raise e
-
-async def listen(order_name,**kwargs):
-
-    config = configLoader.get_executor_params(order=order_name, dirname=kwargs['config'])
-    strategy = await Strategy.build_listener(order_name, config | {'comment': order_name})
-    await strategy.run()
-
-    coros = [strategy.broadcast_analytics()] + \
-            sum([[strategy.monitor_order_book(symbol),
-                  strategy.monitor_trades(symbol)]
-                 for symbol in exchange.strategy.parameters['symbols']], [])
-    await asyncio.gather(*coros)
 
 @api
 def main(*args,**kwargs):
@@ -77,9 +65,6 @@ def main(*args,**kwargs):
     if 'config' not in kwargs:
         kwargs['config'] = None
 
-    if 'listen' in order_name:
-        asyncio.run(listen(order_name, **kwargs))
-    else:
-        asyncio.run(single_coin_routine(order_name, **kwargs)) # --> I am filled or I timed out and I have flattened position
+    asyncio.run(main_coroutine(order_name, **kwargs)) # --> I am filled or I timed out and I have flattened position
 
  
