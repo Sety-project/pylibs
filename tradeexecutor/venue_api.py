@@ -240,12 +240,14 @@ class VenueAPI(ccxtpro.ftx):
 
             return all
 
-    def __init__(self, parameters):
-        super().__init__(config={  ## David personnal
-                'enableRateLimit': True,
-                'apiKey': 'ZUWyqADqpXYFBjzzCQeUTSsxBZaMHeufPFgWYgQU',
-                'secret': api_params['ftx']['key'],
-                'newUpdates': True})
+    def __init__(self, parameters, private_endpoints=True):
+        config = {
+            'enableRateLimit': True,
+            'newUpdates': True}
+        if private_endpoints:  ## David personnal
+            config |= {'apiKey': 'ZUWyqADqpXYFBjzzCQeUTSsxBZaMHeufPFgWYgQU',
+            'secret': api_params['ftx']['key']}
+        super().__init__(config=config)
         self.parameters = parameters
         self.strategy = None
         self.static = None
