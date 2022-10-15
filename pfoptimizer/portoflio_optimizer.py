@@ -4,7 +4,7 @@ import datetime
 from pfoptimizer.ftx_snap_basis import *
 from riskpnl.ftx_risk_pnl import *
 from utils.ftx_utils import find_spot_ticker
-from tradeexecutor.venue_api import VenueAPI
+from tradeexecutor.venue_api import FtxAPI
 from utils.config_loader import *
 from histfeed.ftx_history import get_history
 from utils.ccxt_utilities import open_exchange
@@ -21,7 +21,7 @@ async def refresh_universe(exchange, universe_filter):
         universe = configLoader.get_bases(universe_filter)
         return universe
     except FileNotFoundError as e:
-        futures = pd.DataFrame(await VenueAPI.Static.fetch_futures(exchange)).set_index('name')
+        futures = pd.DataFrame(await FtxAPI.Static.fetch_futures(exchange)).set_index('name')
         markets = await exchange.fetch_markets()
 
         universe_start = datetime(2021, 12, 1).replace(tzinfo=timezone.utc)
@@ -133,7 +133,7 @@ async def perp_vs_cash(
     # Qualitative filtering
     param_type_allowed = config['TYPE_ALLOWED']['value']
     param_universe = config['UNIVERSE']['value']
-    futures = pd.DataFrame(await VenueAPI.Static.fetch_futures(exchange)).set_index('name')
+    futures = pd.DataFrame(await FtxAPI.Static.fetch_futures(exchange)).set_index('name')
 
     universe = await refresh_universe(exchange, param_universe)
     universe = [instrument_name for instrument_name in universe if instrument_name.split("-")[0] not in exclusion_list]

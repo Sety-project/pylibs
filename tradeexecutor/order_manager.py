@@ -302,6 +302,9 @@ class OrderManager(dict):
 
     '''reconciliations to an exchange'''
     async def reconcile(self):
+        '''only runs for ftx. Didn't implement '''
+        if self.strategy.venue_api.get_id() != 'ftx':
+            return
         await safe_gather([self.reconcile_orders(),self.reconcile_fills()],semaphore=self.strategy.rest_semaphor)
 
     async def reconcile_fills(self):

@@ -1,6 +1,5 @@
-import asyncio
-import collections
-import functools
+import asyncio, urllib
+import collections, itertools, functools, json
 from datetime import timezone, datetime
 import dateutil
 
@@ -8,7 +7,8 @@ import numpy as np
 import pandas as pd
 
 import ccxtpro
-from utils.async_utils import safe_gather
+from web3 import Web3
+from utils.async_utils import safe_gather,async_wrap,safe_gather_limit
 from utils.ccxt_utilities import api_params, calc_basis
 from utils.config_loader import configLoader
 from utils.ftx_utils import getUnderlyingType
@@ -75,20 +75,48 @@ class PegOrStop(PegRule):
             elif input < self.chase: return 'repeg'
             else: return None
 
-class VenueAPI(ccxtpro.ftx):
+class VenueAPI:
+    cache_size = 100000
+
+    def __init__(self,parameters):
+        self.parameters = parameters
+        self.strategy = None
+        self.static = None
+        self.message_missed = collections.deque(maxlen=VenueAPI.cache_size)
+    def get_id(self):
+        raise NotImplementedError
+
+    @staticmethod
+    async def build(parameters):
+        if parameters['exchange'] == 'ftx':
+            exchange = FtxAPI(parameters)
+            exchange.verbose = False
+            if 'subaccount' in parameters: exchange.headers = {'FTX-SUBACCOUNT': parameters['subaccount']}
+            exchange.authenticate()
+            await exchange.load_markets()
+            symbols = parameters['symbols']
+            exchange.static = await FtxAPI.Static.build(exchange,symbols)
+        elif parameters['exchange'] == 'gmx':
+            exchange = GmxAPI(parameters)
+        else:
+            raise NotImplementedError
+
+        return exchange
+
+class FtxAPI(VenueAPI,ccxtpro.ftx):
     '''VenueAPI implements rest calls and websocket loops to observe raw market data / order events and place orders
     send events for Strategy to action
     send events to SignalEngine for further processing'''
 
+    def get_id(self):
+        return "ftx"
+
     class Static(dict):
         _cache = dict()  # {function_name: result}
 
-        def __init__(self):
-            super().__init__()
-
         @staticmethod
         async def build(exchange, symbols):
-            result = VenueAPI.Static()
+            result = FtxAPI.Static()
             trading_fees = await exchange.fetch_trading_fees()
             for symbol in symbols:
                 result[symbol] = \
@@ -104,16 +132,15 @@ class VenueAPI(ccxtpro.ftx):
        ### get all static fields TODO: could just append coindetails if it wasn't for index,imf factor,positionLimitWeight
         @staticmethod
         async def fetch_futures(exchange):
-            if 'fetch_futures' in VenueAPI.Static._cache:
-                return VenueAPI.Static._cache['fetch_futures']
+            if 'fetch_futures' in FtxAPI.Static._cache:
+                return FtxAPI.Static._cache['fetch_futures']
 
             includeExpired = True
             includeIndex = False
 
             response = await exchange.publicGetFutures()
-            fetched = await exchange.fetch_markets()
             expired = await exchange.publicGetExpiredFutures() if includeExpired == True else []
-            coin_details = await VenueAPI.Static.fetch_coin_details(exchange)
+            coin_details = await FtxAPI.Static.fetch_coin_details(exchange)
 
             otc_file = configLoader.get_static_params_used()
 
@@ -213,8 +240,8 @@ class VenueAPI(ccxtpro.ftx):
 
         @staticmethod
         async def fetch_coin_details(exchange):
-            if 'fetch_coin_details' in VenueAPI.Static._cache:
-                return VenueAPI.Static._cache['fetch_coin_details']
+            if 'fetch_coin_details' in FtxAPI.Static._cache:
+                return FtxAPI.Static._cache['fetch_coin_details']
 
             coin_details = pd.DataFrame((await exchange.publicGetWalletCoins())['result']).astype(
                 dtype={'collateralWeight': 'float', 'indexPrice': 'float'}).set_index('id')
@@ -247,30 +274,12 @@ class VenueAPI(ccxtpro.ftx):
         if private_endpoints:  ## David personnal
             config |= {'apiKey': 'ZUWyqADqpXYFBjzzCQeUTSsxBZaMHeufPFgWYgQU',
             'secret': api_params['ftx']['key']}
-        super().__init__(config=config)
-        self.parameters = parameters
-        self.strategy = None
-        self.static = None
+        super().__init__(parameters)
+        super(ccxtpro.ftx,self).__init__(config=config)
 
-        self.message_missed = collections.deque(maxlen=parameters['cache_size'])
-        self.options['tradesLimit'] = parameters['cache_size'] # TODO: shoud be in signalengine with a different name. inherited from ccxt....
+        self.options['tradesLimit'] = VenueAPI.cache_size # TODO: shoud be in signalengine with a different name. inherited from ccxt....
 
         self.peg_rules: dict[str, PegRule] = dict()
-
-    @staticmethod
-    async def build(parameters):
-        if parameters['exchange'] not in ['ftx']:
-            raise Exception(f'exchange not implemented')
-        else:
-            exchange = VenueAPI(parameters)
-            exchange.verbose = False
-            if 'subaccount' in parameters: exchange.headers = {'FTX-SUBACCOUNT': parameters['subaccount']}
-            exchange.authenticate()
-            await exchange.load_markets()
-            symbols = parameters['symbols'] if 'symbols' in parameters else list(exchange.markets.keys())
-            exchange.static = await VenueAPI.Static.build(exchange,symbols)
-
-        return exchange
 
     # --------------------------------------------------------------------------------------------
     # ---------------------------------- various helpers -----------------------------------------
@@ -346,7 +355,7 @@ class VenueAPI(ccxtpro.ftx):
 
     # ---------------------------------- misc
 
-    async def watch_ticker(self, symbol, params={}):
+    async def watch_ticker(self, symbol, params=dict()):
         '''watch_order_book is faster than watch_tickers so we DON'T LISTEN TO TICKERS. Dirty...'''
         raise Exception("watch_order_book is faster than watch_tickers so we DON'T LISTEN TO TICKERS. Dirty...")
 
@@ -525,7 +534,7 @@ class VenueAPI(ccxtpro.ftx):
                                for order in cancelable_orders]
         await safe_gather(coro,semaphore=self.strategy.rest_semaphor)
 
-    async def create_order(self, symbol, type, side, amount, price=None, params={},previous_clientOrderId=None,peg_rule: PegRule=None):
+    async def create_order(self, symbol, type, side, amount, price=None, params=dict(),previous_clientOrderId=None,peg_rule: PegRule=None):
         '''if not new, cancel previous first
         if acknowledged, place order. otherwise just reconcile
         orders_pending_new is blocking'''
@@ -620,3 +629,258 @@ class VenueAPI(ccxtpro.ftx):
         await safe_gather([self.privatePostOtcQuotesQuoteIdAccept({'quoteId': int(quoteId['result']['quoteId'])},semaphore=self.strategy.rest_semaphor)
         for quoteId in quoteId_list
         if quoteId['success']],semaphore=self.strategy.rest_semaphor)
+
+
+class GmxAPI(VenueAPI):
+    GLPAdd = "0x01234181085565ed162a948b6a5e88758CD7c7b8"
+    GLPABI = """[{"inputs":[],"stateMutability":"nonpayable","type":"constructor"},{"anonymous":false,"inputs":[{"indexed":true,"internalType":"address","name":"owner","type":"address"},{"indexed":true,"internalType":"address","name":"spender","type":"address"},{"indexed":false,"internalType":"uint256","name":"value","type":"uint256"}],"name":"Approval","type":"event"},{"anonymous":false,"inputs":[{"indexed":true,"internalType":"address","name":"from","type":"address"},{"indexed":true,"internalType":"address","name":"to","type":"address"},{"indexed":false,"internalType":"uint256","name":"value","type":"uint256"}],"name":"Transfer","type":"event"},{"inputs":[{"internalType":"address","name":"_account","type":"address"}],"name":"addAdmin","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_account","type":"address"}],"name":"addNonStakingAccount","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"admins","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_owner","type":"address"},{"internalType":"address","name":"_spender","type":"address"}],"name":"allowance","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"},{"internalType":"address","name":"","type":"address"}],"name":"allowances","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_spender","type":"address"},{"internalType":"uint256","name":"_amount","type":"uint256"}],"name":"approve","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_account","type":"address"}],"name":"balanceOf","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"balances","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_account","type":"address"},{"internalType":"uint256","name":"_amount","type":"uint256"}],"name":"burn","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_receiver","type":"address"}],"name":"claim","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"decimals","outputs":[{"internalType":"uint8","name":"","type":"uint8"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"gov","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"id","outputs":[{"internalType":"string","name":"_name","type":"string"}],"stateMutability":"pure","type":"function"},{"inputs":[],"name":"inPrivateTransferMode","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"isHandler","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"isMinter","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_account","type":"address"},{"internalType":"uint256","name":"_amount","type":"uint256"}],"name":"mint","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"name","outputs":[{"internalType":"string","name":"","type":"string"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"nonStakingAccounts","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"nonStakingSupply","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_account","type":"address"},{"internalType":"address","name":"_receiver","type":"address"}],"name":"recoverClaim","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_account","type":"address"}],"name":"removeAdmin","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_account","type":"address"}],"name":"removeNonStakingAccount","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_gov","type":"address"}],"name":"setGov","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_handler","type":"address"},{"internalType":"bool","name":"_isActive","type":"bool"}],"name":"setHandler","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"bool","name":"_inPrivateTransferMode","type":"bool"}],"name":"setInPrivateTransferMode","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"string","name":"_name","type":"string"},{"internalType":"string","name":"_symbol","type":"string"}],"name":"setInfo","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_minter","type":"address"},{"internalType":"bool","name":"_isActive","type":"bool"}],"name":"setMinter","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address[]","name":"_yieldTrackers","type":"address[]"}],"name":"setYieldTrackers","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_account","type":"address"}],"name":"stakedBalance","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"symbol","outputs":[{"internalType":"string","name":"","type":"string"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"totalStaked","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"totalSupply","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_recipient","type":"address"},{"internalType":"uint256","name":"_amount","type":"uint256"}],"name":"transfer","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_sender","type":"address"},{"internalType":"address","name":"_recipient","type":"address"},{"internalType":"uint256","name":"_amount","type":"uint256"}],"name":"transferFrom","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_token","type":"address"},{"internalType":"address","name":"_account","type":"address"},{"internalType":"uint256","name":"_amount","type":"uint256"}],"name":"withdrawToken","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"uint256","name":"","type":"uint256"}],"name":"yieldTrackers","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"}]"""
+    VaultAdd = "0x9ab2De34A33fB459b538c43f251eB825645e8595"
+    VaultABI = """[{"inputs":[],"stateMutability":"nonpayable","type":"constructor"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"address","name":"account","type":"address"},{"indexed":false,"internalType":"address","name":"token","type":"address"},{"indexed":false,"internalType":"uint256","name":"tokenAmount","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"usdgAmount","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"feeBasisPoints","type":"uint256"}],"name":"BuyUSDG","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"bytes32","name":"key","type":"bytes32"},{"indexed":false,"internalType":"uint256","name":"size","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"collateral","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"averagePrice","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"entryFundingRate","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"reserveAmount","type":"uint256"},{"indexed":false,"internalType":"int256","name":"realisedPnl","type":"int256"}],"name":"ClosePosition","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"address","name":"token","type":"address"},{"indexed":false,"internalType":"uint256","name":"feeUsd","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"feeTokens","type":"uint256"}],"name":"CollectMarginFees","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"address","name":"token","type":"address"},{"indexed":false,"internalType":"uint256","name":"feeUsd","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"feeTokens","type":"uint256"}],"name":"CollectSwapFees","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"address","name":"token","type":"address"},{"indexed":false,"internalType":"uint256","name":"amount","type":"uint256"}],"name":"DecreaseGuaranteedUsd","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"address","name":"token","type":"address"},{"indexed":false,"internalType":"uint256","name":"amount","type":"uint256"}],"name":"DecreasePoolAmount","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"bytes32","name":"key","type":"bytes32"},{"indexed":false,"internalType":"address","name":"account","type":"address"},{"indexed":false,"internalType":"address","name":"collateralToken","type":"address"},{"indexed":false,"internalType":"address","name":"indexToken","type":"address"},{"indexed":false,"internalType":"uint256","name":"collateralDelta","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"sizeDelta","type":"uint256"},{"indexed":false,"internalType":"bool","name":"isLong","type":"bool"},{"indexed":false,"internalType":"uint256","name":"price","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"fee","type":"uint256"}],"name":"DecreasePosition","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"address","name":"token","type":"address"},{"indexed":false,"internalType":"uint256","name":"amount","type":"uint256"}],"name":"DecreaseReservedAmount","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"address","name":"token","type":"address"},{"indexed":false,"internalType":"uint256","name":"amount","type":"uint256"}],"name":"DecreaseUsdgAmount","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"address","name":"token","type":"address"},{"indexed":false,"internalType":"uint256","name":"amount","type":"uint256"}],"name":"DirectPoolDeposit","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"address","name":"token","type":"address"},{"indexed":false,"internalType":"uint256","name":"amount","type":"uint256"}],"name":"IncreaseGuaranteedUsd","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"address","name":"token","type":"address"},{"indexed":false,"internalType":"uint256","name":"amount","type":"uint256"}],"name":"IncreasePoolAmount","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"bytes32","name":"key","type":"bytes32"},{"indexed":false,"internalType":"address","name":"account","type":"address"},{"indexed":false,"internalType":"address","name":"collateralToken","type":"address"},{"indexed":false,"internalType":"address","name":"indexToken","type":"address"},{"indexed":false,"internalType":"uint256","name":"collateralDelta","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"sizeDelta","type":"uint256"},{"indexed":false,"internalType":"bool","name":"isLong","type":"bool"},{"indexed":false,"internalType":"uint256","name":"price","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"fee","type":"uint256"}],"name":"IncreasePosition","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"address","name":"token","type":"address"},{"indexed":false,"internalType":"uint256","name":"amount","type":"uint256"}],"name":"IncreaseReservedAmount","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"address","name":"token","type":"address"},{"indexed":false,"internalType":"uint256","name":"amount","type":"uint256"}],"name":"IncreaseUsdgAmount","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"bytes32","name":"key","type":"bytes32"},{"indexed":false,"internalType":"address","name":"account","type":"address"},{"indexed":false,"internalType":"address","name":"collateralToken","type":"address"},{"indexed":false,"internalType":"address","name":"indexToken","type":"address"},{"indexed":false,"internalType":"bool","name":"isLong","type":"bool"},{"indexed":false,"internalType":"uint256","name":"size","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"collateral","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"reserveAmount","type":"uint256"},{"indexed":false,"internalType":"int256","name":"realisedPnl","type":"int256"},{"indexed":false,"internalType":"uint256","name":"markPrice","type":"uint256"}],"name":"LiquidatePosition","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"address","name":"account","type":"address"},{"indexed":false,"internalType":"address","name":"token","type":"address"},{"indexed":false,"internalType":"uint256","name":"usdgAmount","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"tokenAmount","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"feeBasisPoints","type":"uint256"}],"name":"SellUSDG","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"address","name":"account","type":"address"},{"indexed":false,"internalType":"address","name":"tokenIn","type":"address"},{"indexed":false,"internalType":"address","name":"tokenOut","type":"address"},{"indexed":false,"internalType":"uint256","name":"amountIn","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"amountOut","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"amountOutAfterFees","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"feeBasisPoints","type":"uint256"}],"name":"Swap","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"address","name":"token","type":"address"},{"indexed":false,"internalType":"uint256","name":"fundingRate","type":"uint256"}],"name":"UpdateFundingRate","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"bytes32","name":"key","type":"bytes32"},{"indexed":false,"internalType":"bool","name":"hasProfit","type":"bool"},{"indexed":false,"internalType":"uint256","name":"delta","type":"uint256"}],"name":"UpdatePnl","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"bytes32","name":"key","type":"bytes32"},{"indexed":false,"internalType":"uint256","name":"size","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"collateral","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"averagePrice","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"entryFundingRate","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"reserveAmount","type":"uint256"},{"indexed":false,"internalType":"int256","name":"realisedPnl","type":"int256"},{"indexed":false,"internalType":"uint256","name":"markPrice","type":"uint256"}],"name":"UpdatePosition","type":"event"},{"inputs":[],"name":"BASIS_POINTS_DIVISOR","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"FUNDING_RATE_PRECISION","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"MAX_FEE_BASIS_POINTS","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"MAX_FUNDING_RATE_FACTOR","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"MAX_LIQUIDATION_FEE_USD","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"MIN_FUNDING_RATE_INTERVAL","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"MIN_LEVERAGE","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"PRICE_PRECISION","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"USDG_DECIMALS","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_router","type":"address"}],"name":"addRouter","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"uint256","name":"_amount","type":"uint256"},{"internalType":"address","name":"_tokenDiv","type":"address"},{"internalType":"address","name":"_tokenMul","type":"address"}],"name":"adjustForDecimals","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"uint256","name":"","type":"uint256"}],"name":"allWhitelistedTokens","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"allWhitelistedTokensLength","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"},{"internalType":"address","name":"","type":"address"}],"name":"approvedRouters","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"bufferAmounts","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_token","type":"address"},{"internalType":"address","name":"_receiver","type":"address"}],"name":"buyUSDG","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_token","type":"address"}],"name":"clearTokenConfig","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"cumulativeFundingRates","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_account","type":"address"},{"internalType":"address","name":"_collateralToken","type":"address"},{"internalType":"address","name":"_indexToken","type":"address"},{"internalType":"uint256","name":"_collateralDelta","type":"uint256"},{"internalType":"uint256","name":"_sizeDelta","type":"uint256"},{"internalType":"bool","name":"_isLong","type":"bool"},{"internalType":"address","name":"_receiver","type":"address"}],"name":"decreasePosition","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_token","type":"address"}],"name":"directPoolDeposit","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"errorController","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"uint256","name":"","type":"uint256"}],"name":"errors","outputs":[{"internalType":"string","name":"","type":"string"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"feeReserves","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"fundingInterval","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"fundingRateFactor","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_indexToken","type":"address"},{"internalType":"uint256","name":"_size","type":"uint256"},{"internalType":"uint256","name":"_averagePrice","type":"uint256"},{"internalType":"bool","name":"_isLong","type":"bool"},{"internalType":"uint256","name":"_lastIncreasedTime","type":"uint256"}],"name":"getDelta","outputs":[{"internalType":"bool","name":"","type":"bool"},{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_collateralToken","type":"address"},{"internalType":"address","name":"_indexToken","type":"address"},{"internalType":"bool","name":"_isLong","type":"bool"}],"name":"getEntryFundingRate","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_token","type":"address"},{"internalType":"uint256","name":"_usdgDelta","type":"uint256"},{"internalType":"uint256","name":"_feeBasisPoints","type":"uint256"},{"internalType":"uint256","name":"_taxBasisPoints","type":"uint256"},{"internalType":"bool","name":"_increment","type":"bool"}],"name":"getFeeBasisPoints","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_account","type":"address"},{"internalType":"address","name":"_collateralToken","type":"address"},{"internalType":"address","name":"_indexToken","type":"address"},{"internalType":"bool","name":"_isLong","type":"bool"},{"internalType":"uint256","name":"_size","type":"uint256"},{"internalType":"uint256","name":"_entryFundingRate","type":"uint256"}],"name":"getFundingFee","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_token","type":"address"}],"name":"getGlobalShortDelta","outputs":[{"internalType":"bool","name":"","type":"bool"},{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_token","type":"address"}],"name":"getMaxPrice","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_token","type":"address"}],"name":"getMinPrice","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_indexToken","type":"address"},{"internalType":"uint256","name":"_size","type":"uint256"},{"internalType":"uint256","name":"_averagePrice","type":"uint256"},{"internalType":"bool","name":"_isLong","type":"bool"},{"internalType":"uint256","name":"_nextPrice","type":"uint256"},{"internalType":"uint256","name":"_sizeDelta","type":"uint256"},{"internalType":"uint256","name":"_lastIncreasedTime","type":"uint256"}],"name":"getNextAveragePrice","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_token","type":"address"}],"name":"getNextFundingRate","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_indexToken","type":"address"},{"internalType":"uint256","name":"_nextPrice","type":"uint256"},{"internalType":"uint256","name":"_sizeDelta","type":"uint256"}],"name":"getNextGlobalShortAveragePrice","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_account","type":"address"},{"internalType":"address","name":"_collateralToken","type":"address"},{"internalType":"address","name":"_indexToken","type":"address"},{"internalType":"bool","name":"_isLong","type":"bool"}],"name":"getPosition","outputs":[{"internalType":"uint256","name":"","type":"uint256"},{"internalType":"uint256","name":"","type":"uint256"},{"internalType":"uint256","name":"","type":"uint256"},{"internalType":"uint256","name":"","type":"uint256"},{"internalType":"uint256","name":"","type":"uint256"},{"internalType":"uint256","name":"","type":"uint256"},{"internalType":"bool","name":"","type":"bool"},{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_account","type":"address"},{"internalType":"address","name":"_collateralToken","type":"address"},{"internalType":"address","name":"_indexToken","type":"address"},{"internalType":"bool","name":"_isLong","type":"bool"}],"name":"getPositionDelta","outputs":[{"internalType":"bool","name":"","type":"bool"},{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_account","type":"address"},{"internalType":"address","name":"_collateralToken","type":"address"},{"internalType":"address","name":"_indexToken","type":"address"},{"internalType":"bool","name":"_isLong","type":"bool"},{"internalType":"uint256","name":"_sizeDelta","type":"uint256"}],"name":"getPositionFee","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_account","type":"address"},{"internalType":"address","name":"_collateralToken","type":"address"},{"internalType":"address","name":"_indexToken","type":"address"},{"internalType":"bool","name":"_isLong","type":"bool"}],"name":"getPositionKey","outputs":[{"internalType":"bytes32","name":"","type":"bytes32"}],"stateMutability":"pure","type":"function"},{"inputs":[{"internalType":"address","name":"_account","type":"address"},{"internalType":"address","name":"_collateralToken","type":"address"},{"internalType":"address","name":"_indexToken","type":"address"},{"internalType":"bool","name":"_isLong","type":"bool"}],"name":"getPositionLeverage","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_token","type":"address"},{"internalType":"uint256","name":"_usdgAmount","type":"uint256"}],"name":"getRedemptionAmount","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_token","type":"address"}],"name":"getRedemptionCollateral","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_token","type":"address"}],"name":"getRedemptionCollateralUsd","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_token","type":"address"}],"name":"getTargetUsdgAmount","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_token","type":"address"}],"name":"getUtilisation","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"globalShortAveragePrices","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"globalShortSizes","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"gov","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"guaranteedUsd","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"hasDynamicFees","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"inManagerMode","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"inPrivateLiquidationMode","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"includeAmmPrice","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_account","type":"address"},{"internalType":"address","name":"_collateralToken","type":"address"},{"internalType":"address","name":"_indexToken","type":"address"},{"internalType":"uint256","name":"_sizeDelta","type":"uint256"},{"internalType":"bool","name":"_isLong","type":"bool"}],"name":"increasePosition","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_router","type":"address"},{"internalType":"address","name":"_usdg","type":"address"},{"internalType":"address","name":"_priceFeed","type":"address"},{"internalType":"uint256","name":"_liquidationFeeUsd","type":"uint256"},{"internalType":"uint256","name":"_fundingRateFactor","type":"uint256"},{"internalType":"uint256","name":"_stableFundingRateFactor","type":"uint256"}],"name":"initialize","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"isInitialized","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"isLeverageEnabled","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"isLiquidator","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"isManager","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"isSwapEnabled","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"lastFundingTimes","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_account","type":"address"},{"internalType":"address","name":"_collateralToken","type":"address"},{"internalType":"address","name":"_indexToken","type":"address"},{"internalType":"bool","name":"_isLong","type":"bool"},{"internalType":"address","name":"_feeReceiver","type":"address"}],"name":"liquidatePosition","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"liquidationFeeUsd","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"marginFeeBasisPoints","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"maxGasPrice","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"maxGlobalShortSizes","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"maxLeverage","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"maxUsdgAmounts","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"minProfitBasisPoints","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"minProfitTime","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"mintBurnFeeBasisPoints","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"poolAmounts","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"bytes32","name":"","type":"bytes32"}],"name":"positions","outputs":[{"internalType":"uint256","name":"size","type":"uint256"},{"internalType":"uint256","name":"collateral","type":"uint256"},{"internalType":"uint256","name":"averagePrice","type":"uint256"},{"internalType":"uint256","name":"entryFundingRate","type":"uint256"},{"internalType":"uint256","name":"reserveAmount","type":"uint256"},{"internalType":"int256","name":"realisedPnl","type":"int256"},{"internalType":"uint256","name":"lastIncreasedTime","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"priceFeed","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_router","type":"address"}],"name":"removeRouter","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"reservedAmounts","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"router","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_token","type":"address"},{"internalType":"address","name":"_receiver","type":"address"}],"name":"sellUSDG","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_token","type":"address"},{"internalType":"uint256","name":"_amount","type":"uint256"}],"name":"setBufferAmount","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"uint256","name":"_errorCode","type":"uint256"},{"internalType":"string","name":"_error","type":"string"}],"name":"setError","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_errorController","type":"address"}],"name":"setErrorController","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"uint256","name":"_taxBasisPoints","type":"uint256"},{"internalType":"uint256","name":"_stableTaxBasisPoints","type":"uint256"},{"internalType":"uint256","name":"_mintBurnFeeBasisPoints","type":"uint256"},{"internalType":"uint256","name":"_swapFeeBasisPoints","type":"uint256"},{"internalType":"uint256","name":"_stableSwapFeeBasisPoints","type":"uint256"},{"internalType":"uint256","name":"_marginFeeBasisPoints","type":"uint256"},{"internalType":"uint256","name":"_liquidationFeeUsd","type":"uint256"},{"internalType":"uint256","name":"_minProfitTime","type":"uint256"},{"internalType":"bool","name":"_hasDynamicFees","type":"bool"}],"name":"setFees","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"uint256","name":"_fundingInterval","type":"uint256"},{"internalType":"uint256","name":"_fundingRateFactor","type":"uint256"},{"internalType":"uint256","name":"_stableFundingRateFactor","type":"uint256"}],"name":"setFundingRate","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_gov","type":"address"}],"name":"setGov","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"bool","name":"_inManagerMode","type":"bool"}],"name":"setInManagerMode","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"bool","name":"_inPrivateLiquidationMode","type":"bool"}],"name":"setInPrivateLiquidationMode","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"bool","name":"_isLeverageEnabled","type":"bool"}],"name":"setIsLeverageEnabled","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"bool","name":"_isSwapEnabled","type":"bool"}],"name":"setIsSwapEnabled","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_liquidator","type":"address"},{"internalType":"bool","name":"_isActive","type":"bool"}],"name":"setLiquidator","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_manager","type":"address"},{"internalType":"bool","name":"_isManager","type":"bool"}],"name":"setManager","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"uint256","name":"_maxGasPrice","type":"uint256"}],"name":"setMaxGasPrice","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_token","type":"address"},{"internalType":"uint256","name":"_amount","type":"uint256"}],"name":"setMaxGlobalShortSize","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"uint256","name":"_maxLeverage","type":"uint256"}],"name":"setMaxLeverage","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_priceFeed","type":"address"}],"name":"setPriceFeed","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_token","type":"address"},{"internalType":"uint256","name":"_tokenDecimals","type":"uint256"},{"internalType":"uint256","name":"_tokenWeight","type":"uint256"},{"internalType":"uint256","name":"_minProfitBps","type":"uint256"},{"internalType":"uint256","name":"_maxUsdgAmount","type":"uint256"},{"internalType":"bool","name":"_isStable","type":"bool"},{"internalType":"bool","name":"_isShortable","type":"bool"}],"name":"setTokenConfig","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_token","type":"address"},{"internalType":"uint256","name":"_amount","type":"uint256"}],"name":"setUsdgAmount","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"contract IVaultUtils","name":"_vaultUtils","type":"address"}],"name":"setVaultUtils","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"shortableTokens","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"stableFundingRateFactor","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"stableSwapFeeBasisPoints","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"stableTaxBasisPoints","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"stableTokens","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_tokenIn","type":"address"},{"internalType":"address","name":"_tokenOut","type":"address"},{"internalType":"address","name":"_receiver","type":"address"}],"name":"swap","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"swapFeeBasisPoints","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"taxBasisPoints","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"tokenBalances","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"tokenDecimals","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_token","type":"address"},{"internalType":"uint256","name":"_tokenAmount","type":"uint256"}],"name":"tokenToUsdMin","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"tokenWeights","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"totalTokenWeights","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_collateralToken","type":"address"},{"internalType":"address","name":"_indexToken","type":"address"}],"name":"updateCumulativeFundingRate","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_newVault","type":"address"},{"internalType":"address","name":"_token","type":"address"},{"internalType":"uint256","name":"_amount","type":"uint256"}],"name":"upgradeVault","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_token","type":"address"},{"internalType":"uint256","name":"_usdAmount","type":"uint256"},{"internalType":"uint256","name":"_price","type":"uint256"}],"name":"usdToToken","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_token","type":"address"},{"internalType":"uint256","name":"_usdAmount","type":"uint256"}],"name":"usdToTokenMax","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_token","type":"address"},{"internalType":"uint256","name":"_usdAmount","type":"uint256"}],"name":"usdToTokenMin","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"usdg","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"usdgAmounts","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"useSwapPricing","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_account","type":"address"},{"internalType":"address","name":"_collateralToken","type":"address"},{"internalType":"address","name":"_indexToken","type":"address"},{"internalType":"bool","name":"_isLong","type":"bool"},{"internalType":"bool","name":"_raise","type":"bool"}],"name":"validateLiquidation","outputs":[{"internalType":"uint256","name":"","type":"uint256"},{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"vaultUtils","outputs":[{"internalType":"contract IVaultUtils","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"whitelistedTokenCount","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"whitelistedTokens","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_token","type":"address"},{"internalType":"address","name":"_receiver","type":"address"}],"name":"withdrawFees","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"nonpayable","type":"function"}]"""
+    GLPManagerAdd = "0xe1ae4d4b06A5Fe1fc288f6B4CD72f9F8323B107F"
+    GLPManagerABI = """[{"inputs":[{"internalType":"address","name":"_vault","type":"address"},{"internalType":"address","name":"_usdg","type":"address"},{"internalType":"address","name":"_glp","type":"address"},{"internalType":"uint256","name":"_cooldownDuration","type":"uint256"}],"stateMutability":"nonpayable","type":"constructor"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"address","name":"account","type":"address"},{"indexed":false,"internalType":"address","name":"token","type":"address"},{"indexed":false,"internalType":"uint256","name":"amount","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"aumInUsdg","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"glpSupply","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"usdgAmount","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"mintAmount","type":"uint256"}],"name":"AddLiquidity","type":"event"},{"anonymous":false,"inputs":[{"indexed":false,"internalType":"address","name":"account","type":"address"},{"indexed":false,"internalType":"address","name":"token","type":"address"},{"indexed":false,"internalType":"uint256","name":"glpAmount","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"aumInUsdg","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"glpSupply","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"usdgAmount","type":"uint256"},{"indexed":false,"internalType":"uint256","name":"amountOut","type":"uint256"}],"name":"RemoveLiquidity","type":"event"},{"inputs":[],"name":"MAX_COOLDOWN_DURATION","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"PRICE_PRECISION","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"USDG_DECIMALS","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_token","type":"address"},{"internalType":"uint256","name":"_amount","type":"uint256"},{"internalType":"uint256","name":"_minUsdg","type":"uint256"},{"internalType":"uint256","name":"_minGlp","type":"uint256"}],"name":"addLiquidity","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_fundingAccount","type":"address"},{"internalType":"address","name":"_account","type":"address"},{"internalType":"address","name":"_token","type":"address"},{"internalType":"uint256","name":"_amount","type":"uint256"},{"internalType":"uint256","name":"_minUsdg","type":"uint256"},{"internalType":"uint256","name":"_minGlp","type":"uint256"}],"name":"addLiquidityForAccount","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"aumAddition","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"aumDeduction","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"cooldownDuration","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"bool","name":"maximise","type":"bool"}],"name":"getAum","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"bool","name":"maximise","type":"bool"}],"name":"getAumInUsdg","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"getAums","outputs":[{"internalType":"uint256[]","name":"","type":"uint256[]"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"glp","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"gov","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"inPrivateMode","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"isHandler","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"","type":"address"}],"name":"lastAddedAt","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"internalType":"address","name":"_tokenOut","type":"address"},{"internalType":"uint256","name":"_glpAmount","type":"uint256"},{"internalType":"uint256","name":"_minOut","type":"uint256"},{"internalType":"address","name":"_receiver","type":"address"}],"name":"removeLiquidity","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_account","type":"address"},{"internalType":"address","name":"_tokenOut","type":"address"},{"internalType":"uint256","name":"_glpAmount","type":"uint256"},{"internalType":"uint256","name":"_minOut","type":"uint256"},{"internalType":"address","name":"_receiver","type":"address"}],"name":"removeLiquidityForAccount","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"uint256","name":"_aumAddition","type":"uint256"},{"internalType":"uint256","name":"_aumDeduction","type":"uint256"}],"name":"setAumAdjustment","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"uint256","name":"_cooldownDuration","type":"uint256"}],"name":"setCooldownDuration","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_gov","type":"address"}],"name":"setGov","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"_handler","type":"address"},{"internalType":"bool","name":"_isActive","type":"bool"}],"name":"setHandler","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"bool","name":"_inPrivateMode","type":"bool"}],"name":"setInPrivateMode","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"usdg","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"vault","outputs":[{"internalType":"contract IVault","name":"","type":"address"}],"stateMutability":"view","type":"function"}]"""
+    w3 = Web3(Web3.HTTPProvider("https://api.avax.network/ext/bc/C/rpc"))
+    vault = w3.eth.contract(abi=VaultABI, address=VaultAdd).functions
+    glp = w3.eth.contract(abi=GLPABI, address=GLPAdd).functions
+    glp_manager = w3.eth.contract(abi=GLPManagerABI, address=GLPManagerAdd).functions
+
+    static = {'MIM': {'address': "0x130966628846BFd36ff31a822705796e8cb8C18D",      'decimal': 1e18, 'volatile': False, 'normalized_symbol': 'MIM/USD:USD'},
+              'WETH': {'address': "0x49D5c2BdFfac6CE2BFdB6640F4F80f226bc10bAB",     'decimal': 1e18, 'volatile': True, 'normalized_symbol': 'ETH/USD:USD'},
+              'WBTC': {'address': "0x50b7545627a5162F82A992c33b87aDc75187B218",     'decimal': 1e8, 'volatile': True, 'normalized_symbol': 'BTC/USD:USD'},
+              'WAVAX': {'address': "0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7",    'decimal': 1e18, 'volatile': True, 'normalized_symbol': 'AVAX/USD:USD'},
+              'USDC': {'address': "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E",     'decimal': 1e6, 'volatile': False, 'normalized_symbol': 'USDC/USD:USD'},
+              'USDC_E': {'address': "0xA7D7079b0FEaD91F3e65f86E8915Cb59c1a4C664",   'decimal': 1e6, 'volatile': False, 'normalized_symbol': 'USDC/USD:USD'},
+              'BTC_E': {'address': "0x152b9d0FdC40C096757F570A51E494bd4b943E50",    'decimal': 1e8, 'volatile': True, 'normalized_symbol': 'BTC/USD:USD'}}
+    check_tolerance = 1e-4
+    fee = 0.001
+    tx_cost = 0.005
+
+    # class Position:
+    #     def __init__(self, collateral, entryFundingRate, size, lastIncreasedTime):
+    #         self.collateral = collateral
+    #         self.entryFundingRate = entryFundingRate
+    #         self.size = size
+    #         self.lastIncreasedTime = lastIncreasedTime
+
+    def __init__(self, parameters, semaphore: asyncio.Semaphore=None):
+        super().__init__(parameters)
+        self.timestamp = None
+
+        self.poolAmounts = {key: 0 for key in GmxAPI.static}
+        self.tokenBalances = {key: 0 for key in GmxAPI.static}
+        self.usdgAmounts = {key: 0 for key in GmxAPI.static}
+        self.pricesUp = {key: None for key in GmxAPI.static}
+        self.pricesDown = {key: None for key in GmxAPI.static}
+
+        self.guaranteedUsd = {key: 0 for key, data in GmxAPI.static.items() if data['volatile']}
+        self.reservedAmounts = {key: 0 for key, data in GmxAPI.static.items() if data['volatile']}
+        self.globalShortSizes = {key: 0 for key, data in GmxAPI.static.items() if data['volatile']}
+        self.globalShortAveragePrices = {key: None for key, data in GmxAPI.static.items() if data['volatile']}
+        self.feeReserves = {key: 0 for key in GmxAPI.static}
+
+        self.totalSupply = {'total': None}
+        self.actualAum = {'total': None}
+        self.check = {key: dict() for key in GmxAPI.static}
+        self.semaphore = semaphore if semaphore else asyncio.Semaphore(safe_gather_limit)
+
+    def get_id(self):
+        return "gmx"
+
+    def serialize(self) -> dict:
+        result = {key: getattr(self,key)
+                  for key in ['timestamp','tokenBalances', 'poolAmounts', 'usdgAmounts', 'pricesUp', 'pricesDown', 'guaranteedUsd',
+                      'reservedAmounts', 'globalShortSizes', 'globalShortAveragePrices', 'feeReserves','actualAum','totalSupply']}
+        return result
+
+    def valuation(self, key=None) -> float:
+        '''unstakeAndRedeemGlpETH: 0xe5004b114abd13b32267514808e663c456d1803ace40c0a4ae7421571155fdd3
+        total is key is None'''
+        if key is None:
+            return sum(self.valuation(key) for key in GmxAPI.static)
+        else:
+            aum = self.poolAmounts[key] * self.pricesDown[key]
+            if GmxAPI.static[key]['volatile']:
+                aum += self.guaranteedUsd[key] - self.reservedAmounts[key] * self.pricesDown[key]
+                # add pnl from shorts
+                aum += (self.pricesDown[key] / self.globalShortAveragePrices[key] - 1) * self.globalShortSizes[key]
+            return aum
+
+    def partial_delta(self, key: str) -> float:
+        '''so delta =  poolAmount - reservedAmounts + globalShortSizes/globalShortAveragePrices
+        ~ what's ours + (collateral - N)^{longs}'''
+        result = self.poolAmounts[key]
+        if GmxAPI.static[key]['volatile']:
+            result += (- self.reservedAmounts[key] + self.globalShortSizes[key] / self.globalShortAveragePrices[key])
+        return result
+
+    # def add_weights(self) -> None:
+    #     weight_contents = urllib.request.urlopen("https://gmx-avax-server.uc.r.appspot.com/tokens").read()
+    #     weight_json = json.loads(weight_contents)
+    #     sillyMapping = {'MIM': 'MIM',
+    #                     'BTC.b': 'BTC_E',
+    #                     'ETH': 'WETH',
+    #                     'BTC': 'WBTC',
+    #                     'USDC.e': 'USDC_E',
+    #                     'AVAX': 'WAVAX',
+    #                     'USDC': 'USDC'}
+    #
+    #     for cur_contents in weight_json:
+    #         token = sillyMapping[cur_contents['data']['symbol']]
+    #         self.check[token]['weight'] = float(cur_contents["data"]["usdgAmount"]) / float(
+    #             cur_contents["data"]["maxPrice"])
+    #         for attribute in ['fundingRate', 'poolAmounts', 'reservedAmount', 'redemptionAmount', 'globalShortSize',
+    #                           'guaranteedUsd']:
+    #             self.check[token][attribute] = float(cur_contents['data'][attribute])
+
+    def add_weights(self) -> None:
+        weight_contents = urllib.request.urlopen("https://gmx-avax-server.uc.r.appspot.com/tokens").read()
+        weight_json = json.loads(weight_contents)
+        sillyMapping = {'MIM': 'MIM',
+                        'BTC.b': 'BTC_E',
+                        'ETH': 'WETH',
+                        'BTC': 'WBTC',
+                        'USDC.e': 'USDC_E',
+                        'AVAX': 'WAVAX',
+                        'USDC': 'USDC'}
+
+        for cur_contents in weight_json:
+            token = sillyMapping[cur_contents['data']['symbol']]
+            self.check[token]['weight'] = float(cur_contents["data"]["usdgAmount"]) / float(
+                cur_contents["data"]["maxPrice"])
+            for attribute in ['fundingRate', 'poolAmounts', 'reservedAmount', 'redemptionAmount', 'globalShortSize',
+                              'guaranteedUsd']:
+                self.check[token][attribute] = float(cur_contents['data'][attribute])
+
+    def sanity_check(self):
+        if abs(self.valuation() / self.totalSupply['total'] / self.actualAum['total'] - 1) > GmxAPI.check_tolerance:
+            actualPx = self.actualAum['total'] / self.totalSupply['total']
+            self.strategy.logger.warning(f'val {self.valuation()} vs actual {actualPx}')
+
+    async def reconcile(self,semaphore: asyncio.Semaphore,add_weights=False) -> None:
+        def read_contracts(address, decimal, volatile):
+            coros = []
+            coros.append(
+                async_wrap(lambda x: float(GmxAPI.vault.tokenBalances(address).call()) / decimal)(
+                    None))
+            coros.append(
+                async_wrap(lambda x: float(GmxAPI.vault.poolAmounts(address).call()) / decimal)(
+                    None))
+            coros.append(
+                async_wrap(lambda x: float(GmxAPI.vault.usdgAmounts(address).call()) / decimal)(
+                    None))
+            coros.append(
+                async_wrap(lambda x: float(GmxAPI.vault.getMaxPrice(address).call() / 1e30))(None))
+            coros.append(
+                async_wrap(lambda x: float(GmxAPI.vault.getMinPrice(address).call() / 1e30))(None))
+            coros.append(async_wrap(
+                lambda x: (
+                    float(GmxAPI.vault.guaranteedUsd(address).call()) / 1e30 if volatile else None))(
+                None))
+            coros.append(async_wrap(lambda x: (
+                float(
+                    GmxAPI.vault.reservedAmounts(address).call()) / decimal if volatile else None))(
+                None))
+            coros.append(async_wrap(
+                lambda x: (
+                    float(GmxAPI.vault.globalShortSizes(
+                        address).call()) / 1e30 if volatile else None))(
+                None))
+            coros.append(async_wrap(lambda x: (
+                float(GmxAPI.vault.globalShortAveragePrices(
+                    address).call()) / 1e30 if volatile else None))(
+                None))
+            coros.append(async_wrap(
+                lambda x: (
+                    float(
+                        GmxAPI.vault.feeReserves(address).call()) / decimal if volatile else None))(
+                None))
+            return coros
+
+        coros = []
+        for key, data in GmxAPI.static.items():
+            coros += read_contracts(data['address'], data['decimal'], data['volatile'])
+
+        # result.positions = GLPState.contract_vault.functions.positions().call()
+        coros.append(async_wrap(lambda x: GmxAPI.glp.totalSupply().call() / 1e18)(None))
+        coros.append(async_wrap(lambda x: GmxAPI.glp_manager.getAumInUsdg(
+            False).call() / GmxAPI.glp.totalSupply().call())(None))
+
+        time0 = myUtcNow()
+        results_values = await safe_gather(coros, semaphore=semaphore)  # IT'S CRUCIAL TO MAINTAIN ORDER....
+        time1 = myUtcNow()
+
+        functions_list = ['tokenBalances', 'poolAmounts', 'usdgAmounts', 'pricesUp', 'pricesDown', 'guaranteedUsd',
+                          'reservedAmounts', 'globalShortSizes', 'globalShortAveragePrices', 'feeReserves']
+
+        results = {(function, token): results_values[i] for i, (token, function) in
+                   enumerate(itertools.product(GmxAPI.static.keys(), functions_list))}
+        results |= {('totalSupply', 'total'): results_values[-2],
+                    ('actualAum', 'total'): results_values[-1]}
+
+        for function in functions_list:
+            setattr(self, function, {key: results[(function, key)] for key in GmxAPI.static})
+        self.totalSupply = {'total': results[('totalSupply', 'total')]}
+        self.actualAum = {'total': results[('actualAum', 'total')]}
+        self.timestamp = time1
+
+        if add_weights:
+            self.add_weights()
+
+        return self
+
+
+'''
+the below is only for documentation
+'''
+#
+# def mintAndStakeGlpETH(self,_token,tokenAmount) -> None:
+#     '''mintAndStakeGlp: 0x006ac9fb77641150b1e4333025cb92d0993a878839bb22008c0f354dfdcaf5e7'''
+#     usdgAmount = tokenAmount*self.pricesDown[_token]
+#     fee = vaultUtils.getBuyUsdgFeeBasisPoints(_token, usdgAmount)*usdgAmount
+#     self.feeReserves[_token] += fee
+#     self.usdgAmount[_token] += (usdgAmount - fee) * self.pricesDown[_token]
+#     self.poolAmount[_token] += (usdgAmount - fee)
+#
+# def increasePosition(self, collateral:float, _indexToken: str, _collateralToken: str, _sizeDelta: float, _isLong: bool):
+#     '''
+#     for longs only:
+#       poolAmounts = coll - fee
+#       guaranteedUsd = _sizeDelta + fee + collateralUsd
+#     createIncreasePositionETH (short): 0x0fe07013cca821bcea7bae4d013ab8fd288dbc3a26ed9dfbd10334561d3ffa91
+#     setPricesWithBitsAndExecute: 0x8782436fd0f365aeef20fc8fbf9fa01524401ea35a8d37ad7c70c96332ce912b
+#     '''
+#     fee = GLPState.fee
+#     #self.positions += GLPSimulator.Position(collateral - fee, price, _sizeDelta, myUtcNow())
+#     self.reservedAmounts[_collateralToken] += _sizeDelta / self.pricesDown[_collateralToken]
+#     if _isLong:
+#         self.guaranteedUsd[_collateralToken] += _sizeDelta + fee - collateral * self.pricesDown[_collateralToken]
+#         self.poolAmount[_collateralToken] += collateral - fee / self.pricesDown[_collateralToken]
+#     else:
+#         self.globalShortAveragePrices[_indexToken] = (self.pricesDown[_indexToken] * _sizeDelta + self.globalShortAveragePrices[_indexToken] * self.globalShortSizes) / (_sizeDelta + self.globalShortSizes[_collateralToken])
+#         self.globalShortSizes += _sizeDelta
+#
+# def decreasePosition(self, _collateralToken: str, collateral: float, token: str, _sizeDelta: float, _isLong: bool):
+#     self.reservedAmounts[token] = 0
+#     self.poolAmount[token] -= pnl
+#     if _isLong:
+#         self.guaranteedUsd[token] -= _sizeDelta - collateral * originalPx
+#         self.poolAmount[token] -= collateral
+
+'''
+relevant topics
+'''
+
+# - called everywhere
+# emit IncreasePoolAmount(address _token, uint256 _amount) 0x976177fbe09a15e5e43f848844963a42b41ef919ef17ff21a17a5421de8f4737 --> poolAmounts(_token)
+# emit DecreasePoolAmount(_token, _amount) 0x112726233fbeaeed0f5b1dba5cb0b2b81883dee49fb35ff99fd98ed9f6d31eb0 --> poolAmounts(_token)
+#
+# - only called on position increase
+# emit IncreaseReservedAmount(_token, _amount); 0xaa5649d82f5462be9d19b0f2b31a59b2259950a6076550bac9f3a1c07db9f66d --> reservedAmounts(_token)
+# emit DecreaseReservedAmount(_token, _amount); 0x533cb5ed32be6a90284e96b5747a1bfc2d38fdb5768a6b5f67ff7d62144ed67b --> reservedAmounts(_token)
+#
+# - globalShortSize has no emit, so need following
+# emit IncreasePosition(key, _account, _collateralToken, _indexToken, _collateralDelta, _sizeDelta, _isLong, price, usdOut.sub(usdOutAfterFee)); 0x2fe68525253654c21998f35787a8d0f361905ef647c854092430ab65f2f15022
+# emit DecreasePosition(key, _account, _collateralToken, _indexToken, _collateralDelta, _sizeDelta, _isLong, price, usdOut.sub(usdOutAfterFee)); 0x93d75d64d1f84fc6f430a64fc578bdd4c1e090e90ea2d51773e626d19de56d30
+#
+# - and for tracking usd value:
+# emit IncreaseGuaranteedUsd(_token, _usdAmount); 0xd9d4761f75e0d0103b5cbeab941eeb443d7a56a35b5baf2a0787c03f03f4e474
+# emit DecreaseGuaranteedUsd(_token, _usdAmount); 0x34e07158b9db50df5613e591c44ea2ebc82834eff4a4dc3a46e000e608261d68

@@ -1,4 +1,4 @@
-from tradeexecutor.venue_api import VenueAPI
+from tradeexecutor.venue_api import FtxAPI
 from utils.ftx_utils import *
 from utils.io_utils import  *
 from utils.api_utils import api
@@ -374,7 +374,7 @@ async def ftx_history_main_wrapper(run_type, exchange_name, universe_name, nb_da
     exchange = await open_exchange(exchange_name,'')
     universe = configLoader.get_bases(universe_name)
     nb_days = int(nb_days)
-    futures = pd.DataFrame(await VenueAPI.Static.fetch_futures(exchange)).set_index('name')
+    futures = pd.DataFrame(await FtxAPI.Static.fetch_futures(exchange)).set_index('name')
     await exchange.load_markets()
 
     #universe should be either 'all', either a universe name, or a list of currencies

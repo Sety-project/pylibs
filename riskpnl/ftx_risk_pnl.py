@@ -2,7 +2,7 @@ import time as t
 
 import dateutil.parser
 
-from tradeexecutor.venue_api import VenueAPI
+from tradeexecutor.venue_api import FtxAPI
 from utils.ftx_utils import *
 from utils.MyLogger import *
 from utils.api_utils import api
@@ -12,7 +12,7 @@ async def live_risk_wrapper(exchange,subaccount,nb_runs='1'):
     exchange_obj = await open_exchange(exchange,subaccount)
 
     # contruct markets_by_id
-    futures = pd.DataFrame(await VenueAPI.Static.fetch_futures(exchange_obj)).set_index('name')
+    futures = pd.DataFrame(await FtxAPI.Static.fetch_futures(exchange_obj)).set_index('name')
     for i in range(int(nb_runs)):
         if i>0: t.sleep(30)
         risk = await live_risk(exchange_obj,subaccount,futures)
@@ -160,7 +160,7 @@ async def fetch_portfolio(exchange,time):
     state = await syncronized_state(exchange)
 
     # go ahead
-    futures = pd.DataFrame(await VenueAPI.Static.fetch_futures(exchange))
+    futures = pd.DataFrame(await FtxAPI.Static.fetch_futures(exchange))
     futures = futures.set_index('name')
     positions = pd.DataFrame(state['positions']).reset_index().rename(columns={'index':'future'})
     markets = pd.DataFrame(state['markets'])
@@ -235,7 +235,7 @@ async def fetch_portfolio(exchange,time):
     ],axis=0,ignore_index=True)
 
 async def compute_plex(exchange,start,end,start_portfolio,end_portfolio):
-    futures = pd.DataFrame(await VenueAPI.Static.fetch_futures(exchange)).set_index('name')
+    futures = pd.DataFrame(await FtxAPI.Static.fetch_futures(exchange)).set_index('name')
     start_time = start.timestamp()
     end_time = end.timestamp()
     params={'start_time':start_time,'end_time':end_time}

@@ -33,17 +33,14 @@ class PositionManager(dict):
 
     @staticmethod
     async def build(parameters):
-        if not parameters:
-            return None
-        else:
-            result = PositionManager(parameters)
-            result.limit = PositionManager.LimitBreached(parameters['check_frequency'], parameters['delta_limit'])
+        result = PositionManager(parameters)
+        result.limit = PositionManager.LimitBreached(parameters['check_frequency'], parameters['delta_limit'])
 
-            for symbol in parameters['symbols']:
-                result[symbol] = {'delta': 0,
-                                  'delta_timestamp': myUtcNow(),
-                                  'delta_id': 0}
-            return result
+        for symbol in parameters['symbols']:
+            result[symbol] = {'delta': 0,
+                              'delta_timestamp': myUtcNow(),
+                              'delta_id': 0}
+        return result
 
     def process_fill(self, fill):
         symbol = fill['symbol']
@@ -71,7 +68,10 @@ class PositionManager(dict):
                 target))
 
     async def reconcile(self):
+        '''only runs for ftx. Didn't implement '''
 
+        if self.strategy.venue_api.get_id() != 'ftx':
+            return
         # if not already done, Initializes a margin calculator that can understand the margin of an order
         # reconcile the margin of an exchange with the margin we calculate
         # pls note it needs the exchange pv, which is known after reconcile
