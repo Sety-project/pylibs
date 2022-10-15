@@ -1,4 +1,4 @@
-import asyncio, logging, threading
+import asyncio, logging, threading, retry
 from datetime import datetime, timezone, timedelta
 
 import numpy as np
@@ -112,17 +112,10 @@ class Strategy(dict):
     async def periodic_reconcile(self):
         '''minutely reconcile'''
         while self.position_manager:
-            try:
-                await asyncio.sleep(self.position_manager.limit.check_frequency)
-                await self.reconcile()
-            except ccxtpro.NetworkError as e:
-                self.logger.warning(str(e))
-                self.logger.warning('reconciling after periodic_reconcile dropped off')
-                await self.reconcile()
-            except Exception as e:
-                self.logger.warning(e, exc_info=True)
-                raise e
+            await asyncio.sleep(self.position_manager.limit.check_frequency)
+            await self.reconcile()
 
+    @retry.retry(ccxtpro.NetworkError, tries=14, delay=0.05, backoff=2)
     async def reconcile(self):
         '''update risk using rest
         all symbols not present when state is built are ignored !
@@ -131,6 +124,7 @@ class Strategy(dict):
 
         # if already running, skip reconciliation
         if self.lock['reconciling'].locked():
+            await asyncio.sleep(0.2)
             return
 
         # or reconcile, and lock until done. We don't want to place orders while recon is running
