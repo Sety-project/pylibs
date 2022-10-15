@@ -702,7 +702,7 @@ class GmxAPI(VenueAPI):
                 aum += self.guaranteedUsd[key] - self.reservedAmounts[key] * self.pricesDown[key]
                 # add pnl from shorts
                 aum += (self.pricesDown[key] / self.globalShortAveragePrices[key] - 1) * self.globalShortSizes[key]
-            return aum
+            return aum / self.totalSupply['total']
 
     def partial_delta(self, key: str) -> float:
         '''so delta =  poolAmount - reservedAmounts + globalShortSizes/globalShortAveragePrices
@@ -710,7 +710,7 @@ class GmxAPI(VenueAPI):
         result = self.poolAmounts[key]
         if GmxAPI.static[key]['volatile']:
             result += (- self.reservedAmounts[key] + self.globalShortSizes[key] / self.globalShortAveragePrices[key])
-        return result
+        return result / self.totalSupply['total']
 
     # def add_weights(self) -> None:
     #     weight_contents = urllib.request.urlopen("https://gmx-avax-server.uc.r.appspot.com/tokens").read()
@@ -751,7 +751,7 @@ class GmxAPI(VenueAPI):
                 self.check[token][attribute] = float(cur_contents['data'][attribute])
 
     def sanity_check(self):
-        if abs(self.valuation() / self.totalSupply['total'] / self.actualAum['total'] - 1) > GmxAPI.check_tolerance:
+        if abs(self.valuation() * self.totalSupply['total'] / self.actualAum['total'] - 1) > GmxAPI.check_tolerance:
             actualPx = self.actualAum['total'] / self.totalSupply['total']
             self.strategy.logger.warning(f'val {self.valuation()} vs actual {actualPx}')
 
