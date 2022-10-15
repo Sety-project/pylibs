@@ -44,7 +44,7 @@ class Strategy(dict):
         self.signal_engine = signal_engine
 
         self.logger = logging.getLogger('tradeexecutor')
-        self.data_logger = ExecutionLogger(exchange_name=venue_api.id)
+        self.data_logger = ExecutionLogger(exchange_name=venue_api.get_id())
 
         self.rest_semaphor = asyncio.Semaphore(parameters['rest_semaphore'] if 'rest_semaphore' in parameters else safe_gather_limit)
         self.lock = {'reconciling':threading.Lock()}
@@ -70,7 +70,7 @@ class Strategy(dict):
         position_manager = await PositionManager.build(symbols | parameters['position_manager'])
 
         if parameters['strategy']['type'] == 'execution':
-            result = ExecutionStrategy(symbols|parameters['strategy'],
+            result = ExecutionStrategy(symbols | parameters['strategy'],
                                    signal_engine,
                                    venue_api,
                                    order_manager,
@@ -81,6 +81,14 @@ class Strategy(dict):
                                        venue_api,
                                        order_manager,
                                        position_manager)
+        elif parameters['strategy']['type'] == 'hedged_lp':
+            result = HedgedLPStrategy(symbols | parameters['strategy'],
+                                      signal_engine,
+                                      venue_api,
+                                      order_manager,
+                                      position_manager)
+            parameters['hedge_strategy']['signal_engine']['parent_strategy'] = result
+            result.hedge_strategy = await Strategy.build(parameters['hedge_strategy'])
 
         await result.reconcile()
 
@@ -136,7 +144,6 @@ class Strategy(dict):
         if self.order_manager.fill_flag:
             await self.data_logger.write_history(self.serialize())
             self.order_manager.fill_flag = False
-        await self.signal_engine.to_json()
 
     async def process_order_book_update(self,symbol, orderbook):
         self.signal_engine.process_order_book_update(symbol, orderbook)
@@ -177,8 +184,8 @@ class Strategy(dict):
 
 class ExecutionStrategy(Strategy):
     '''specialized to execute externally generated client orders'''
-    def __init__(self,*args):
-        super().__init__(*args)
+    def __init__(self,*args,**kwargs):
+        super().__init__(*args,**kwargs)
         # TODO: is this necessary ?
         self_keys = ['target','benchmark','update_time_delta','entry_level','rush_in_level','rush_out_level','edit_price_depth','edit_trigger_depth','aggressive_edit_price_depth','aggressive_edit_trigger_depth','stop_depth','slice_size']
         for symbol in self.parameters['symbols']:
@@ -348,8 +355,8 @@ class ExecutionStrategy(Strategy):
                                           edit_price_depth=edit_price_depth, stop_depth=stop_depth)
 
 class AlgoStrategy(Strategy):
-    # def __init__(self, *args):
-    #     super().__init__(*args)
+    # def __init__(self, **kwargs):
+    #     super().__init__(**kwargs)
     #     # TODO: is this necessary ?
     #     self_keys = ['spread_level_in', 'spread_level_out', 'edit_price_depth', 'edit_trigger_depth', 'slice_size',
     #                  'maker_fee', 'taker_fee']
@@ -361,7 +368,7 @@ class AlgoStrategy(Strategy):
     @staticmethod
     def get_other_symbol(symbol):
         return symbol.replace(':USD','') if ':USD' in symbol else f'{symbol}:USD'
-    
+
     async def update_quoter_parameters(self):
         '''updates quoter inputs
         reads file if present. If not: if no risk then shutdown bot, else unwind.
@@ -431,3 +438,18 @@ class AlgoStrategy(Strategy):
                 and self.order_manager.latest_value(self.order_manager.find_clientID_from_fill(fill),'comment') != 'taker_hedge':
             other_symbol = AlgoStrategy.get_other_symbol(symbol)
             await self.venue_api.create_taker_hedge(other_symbol, -fill['amount'])
+
+class HedgedLPStrategy(ExecutionStrategy):
+    ''' reads LP weights from file. A priori constant but could be later rebalanced to manage overall margin
+    can generate the SignalEngine of another ExecutionStrategy, which executes the hedge'''
+    def __init__(self,*args,**kwargs):
+        super().__init__(*args,**kwargs)
+        self.hedge_ratio = self.parameters['hedge_ratio']
+        self.hedge_tx_cost = self.parameters['hedge_tx_cost']
+        self.hedging_strategy: Strategy = self.parameters['hedge_strategy'] if 'hedge_strategy' in self.parameters else None
+
+    async def run(self):
+        await safe_gather([self.periodic_reconcile(), self.hedge_strategy.run()],semaphore=self.rest_semaphor)
+
+    async def update_quoter_parameters(self):
+        return

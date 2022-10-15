@@ -6,9 +6,8 @@ from web3 import Web3
 from utils.api_utils import api
 from utils.io_utils import *
 from utils.async_utils import safe_gather,async_wrap
-from tradeexecutor.strategy import Strategy,ExecutionStrategy
+from tradeexecutor.strategy import Strategy, ExecutionStrategy, SignalEngine
 
-from constants import GLPSC, GLP, GLPManagerABI, GLPManagerAdd, VaultAdd, VaultABI
 import urllib.request
 
 w3 = Web3(Web3.HTTPProvider("https://api.avax.network/ext/bc/C/rpc"))
@@ -35,7 +34,7 @@ class GLPState:
             self.lastIncreasedTime = lastIncreasedTime
 
     def __init__(self, semaphore: asyncio.Semaphore):
-        self.poolAmount = {key: 0 for key in GLPState.static}
+        self.poolAmounts = {key: 0 for key in GLPState.static}
         self.tokenBalances = {key: 0 for key in GLPState.static}
         self.usdgAmounts = {key: 0 for key in GLPState.static}
         self.pricesUp = {key: None for key in GLPState.static}
@@ -61,22 +60,37 @@ class GLPState:
 
     @staticmethod
     async def build(semaphore: asyncio.Semaphore):
+        async def read_contracts(address, decimal, volatile):
+            coros = []
+            coros.append(
+                async_wrap(lambda x: float(contract_vault.functions.tokenBalances(address).call()) / decimal)(None))
+            coros.append(
+                async_wrap(lambda x: float(contract_vault.functions.poolAmounts(address).call()) / decimal)(None))
+            coros.append(
+                async_wrap(lambda x: float(contract_vault.functions.usdgAmounts(address).call()) / decimal)(None))
+            coros.append(async_wrap(lambda x: float(contract_vault.functions.getMaxPrice(address).call() / 1e30))(None))
+            coros.append(async_wrap(lambda x: float(contract_vault.functions.getMinPrice(address).call() / 1e30))(None))
+            coros.append(async_wrap(
+                lambda x: (float(contract_vault.functions.guaranteedUsd(address).call()) / 1e30 if volatile else None))(
+                None))
+            coros.append(async_wrap(lambda x: (
+                float(contract_vault.functions.reservedAmounts(address).call()) / decimal if volatile else None))(None))
+            coros.append(async_wrap(
+                lambda x: (
+                    float(contract_vault.functions.globalShortSizes(address).call()) / 1e30 if volatile else None))(
+                None))
+            coros.append(async_wrap(lambda x: (
+                float(contract_vault.functions.globalShortAveragePrices(address).call()) / 1e30 if volatile else None))(
+                None))
+            coros.append(async_wrap(
+                lambda x: (
+                    float(contract_vault.functions.feeReserves(address).call()) / decimal if volatile else None))(
+                None))
+            return coros
+
         coros = []
         for key, data in GLPState.static.items():
-        #TODO: BUG !!!! coros.append(async_wrap(functools.partial(lambda address, decimal, volatile: float(contract_vault.functions.tokenBalances(address).call()) / decimal, address, decimal, volatile)))
-            address = copy.deepcopy(data['address'])
-            decimal = copy.deepcopy(data['decimal'])
-            volatile = copy.deepcopy(data['volatile'])
-            coros.append(async_wrap(lambda x: float(contract_vault.functions.tokenBalances(address).call()) / decimal)(None))
-            coros.append(async_wrap(lambda x: float(contract_vault.functions.poolAmounts(address).call())/decimal)(None))
-            coros.append(async_wrap(lambda x: float(contract_vault.functions.usdgAmounts(address).call()) / decimal)(None))
-            coros.append(async_wrap(lambda x: float(contract_vault.functions.getMaxPrice(address).call()/1e30))(None))
-            coros.append(async_wrap(lambda x: float(contract_vault.functions.getMinPrice(address).call()/1e30))(None))
-            coros.append(async_wrap(lambda x: (float(contract_vault.functions.guaranteedUsd(address).call())/1e30 if volatile else None))(None))
-            coros.append(async_wrap(lambda x: (float(contract_vault.functions.reservedAmounts(address).call())/decimal if volatile else None))(None))
-            coros.append(async_wrap(lambda x: (float(contract_vault.functions.globalShortSizes(address).call())/1e30 if volatile else None))(None))
-            coros.append(async_wrap(lambda x: (float(contract_vault.functions.globalShortAveragePrices(address).call())/1e30 if volatile else None))(None))
-            coros.append(async_wrap(lambda x: (float(contract_vault.functions.feeReserves(address).call())/decimal if volatile else None))(None))
+            coros += await read_contracts(data['address'], data['decimal'], data['volatile'])
 
         # result.positions = contract_vault.functions.positions().call()
         coros.append(async_wrap(lambda x: contract_glp.functions.totalSupply().call()/1e18)(None))
@@ -86,16 +100,16 @@ class GLPState:
         functions_list = ['tokenBalances', 'poolAmounts', 'usdgAmounts', 'pricesUp', 'pricesDown', 'guaranteedUsd',
                           'reservedAmounts', 'globalShortSizes', 'globalShortAveragePrices', 'feeReserves']
 
-        results = {keys: results_values[i] for i,keys in enumerate(itertools.product(GLPState.static.keys(), functions_list))}
+        results = {(function,token): results_values[i] for i,(token,function) in enumerate(itertools.product(GLPState.static.keys(), functions_list))}
         results |= {('totalSupply', 'total'): results_values[-2],
                     ('actualAum', 'total'): results_values[-1]}
 
         state: GLPState = GLPState(semaphore=semaphore)
         for function in functions_list:
-            setattr(state, function, {key: results[(key, function)] for key in GLPState.static})
+            setattr(state, function, {key: results[(function,key)] for key in GLPState.static})
         state.totalSupply = {'total': results[('totalSupply', 'total')]}
         state.actualAum = {'total': results[('actualAum', 'total')]}
-        
+
         return state
 
     def valuation(self, key = None) -> float:
@@ -104,7 +118,7 @@ class GLPState:
         if key is None:
             return sum(self.valuation(key) for key in GLPState.static)
         else:
-            aum = self.poolAmount[key] * self.pricesDown[key]
+            aum = self.poolAmounts[key] * self.pricesDown[key]
             if GLPState.static[key]['volatile']:
                 aum += self.guaranteedUsd[key] - self.reservedAmounts[key] * self.pricesDown[key]
                 # add pnl from shorts
@@ -114,7 +128,7 @@ class GLPState:
     def partial_delta(self,key: str) -> float:
         '''so delta =  poolAmount - reservedAmounts + globalShortSizes/globalShortAveragePrices
         ~ what's ours + (collateral - N)^{longs}'''
-        result = self.poolAmount[key]
+        result = self.poolAmounts[key]
         if GLPState.static[key]['volatile']:
             result += (- self.reservedAmounts[key] + self.globalShortSizes[key]/self.globalShortAveragePrices[key])
         return result
@@ -133,7 +147,7 @@ class GLPState:
         for cur_contents in weight_json:
             token = sillyMapping[cur_contents['data']['symbol']]
             self.check[token]['weight'] = float(cur_contents["data"]["usdgAmount"]) / float(cur_contents["data"]["maxPrice"])
-            for attribute in ['fundingRate','poolAmount','reservedAmount','redemptionAmount','globalShortSize','guaranteedUsd']:
+            for attribute in ['fundingRate','poolAmounts','reservedAmount','redemptionAmount','globalShortSize','guaranteedUsd']:
                 self.check[token][attribute] = float(cur_contents['data'][attribute])
 
     def sanity_check(self):
@@ -180,25 +194,26 @@ class GLPState:
     #         self.guaranteedUsd[token] -= _sizeDelta - collateral * originalPx
     #         self.poolAmount[token] -= collateral
 
-'''
-relevant topics
+    '''
+    relevant topics
+    '''
 
-- called everywhere
-emit IncreasePoolAmount(address _token, uint256 _amount) 0x976177fbe09a15e5e43f848844963a42b41ef919ef17ff21a17a5421de8f4737 --> poolAmounts(_token)
-emit DecreasePoolAmount(_token, _amount) 0x112726233fbeaeed0f5b1dba5cb0b2b81883dee49fb35ff99fd98ed9f6d31eb0 --> poolAmounts(_token)
+    # - called everywhere
+    # emit IncreasePoolAmount(address _token, uint256 _amount) 0x976177fbe09a15e5e43f848844963a42b41ef919ef17ff21a17a5421de8f4737 --> poolAmounts(_token)
+    # emit DecreasePoolAmount(_token, _amount) 0x112726233fbeaeed0f5b1dba5cb0b2b81883dee49fb35ff99fd98ed9f6d31eb0 --> poolAmounts(_token)
+    #
+    # - only called on position increase
+    # emit IncreaseReservedAmount(_token, _amount); 0xaa5649d82f5462be9d19b0f2b31a59b2259950a6076550bac9f3a1c07db9f66d --> reservedAmounts(_token)
+    # emit DecreaseReservedAmount(_token, _amount); 0x533cb5ed32be6a90284e96b5747a1bfc2d38fdb5768a6b5f67ff7d62144ed67b --> reservedAmounts(_token)
+    #
+    # - globalShortSize has no emit, so need following
+    # emit IncreasePosition(key, _account, _collateralToken, _indexToken, _collateralDelta, _sizeDelta, _isLong, price, usdOut.sub(usdOutAfterFee)); 0x2fe68525253654c21998f35787a8d0f361905ef647c854092430ab65f2f15022
+    # emit DecreasePosition(key, _account, _collateralToken, _indexToken, _collateralDelta, _sizeDelta, _isLong, price, usdOut.sub(usdOutAfterFee)); 0x93d75d64d1f84fc6f430a64fc578bdd4c1e090e90ea2d51773e626d19de56d30
+    #
+    # - and for tracking usd value:
+    # emit IncreaseGuaranteedUsd(_token, _usdAmount); 0xd9d4761f75e0d0103b5cbeab941eeb443d7a56a35b5baf2a0787c03f03f4e474
+    # emit DecreaseGuaranteedUsd(_token, _usdAmount); 0x34e07158b9db50df5613e591c44ea2ebc82834eff4a4dc3a46e000e608261d68
 
-- only called on position increase
-emit IncreaseReservedAmount(_token, _amount); 0xaa5649d82f5462be9d19b0f2b31a59b2259950a6076550bac9f3a1c07db9f66d --> reservedAmounts(_token)
-emit DecreaseReservedAmount(_token, _amount); 0x533cb5ed32be6a90284e96b5747a1bfc2d38fdb5768a6b5f67ff7d62144ed67b --> reservedAmounts(_token)
-
-- globalShortSize has no emit, so need following
-emit IncreasePosition(key, _account, _collateralToken, _indexToken, _collateralDelta, _sizeDelta, _isLong, price, usdOut.sub(usdOutAfterFee)); 0x2fe68525253654c21998f35787a8d0f361905ef647c854092430ab65f2f15022
-emit DecreasePosition(key, _account, _collateralToken, _indexToken, _collateralDelta, _sizeDelta, _isLong, price, usdOut.sub(usdOutAfterFee)); 0x93d75d64d1f84fc6f430a64fc578bdd4c1e090e90ea2d51773e626d19de56d30
-
-- and for tracking usd value:
-emit IncreaseGuaranteedUsd(_token, _usdAmount); 0xd9d4761f75e0d0103b5cbeab941eeb443d7a56a35b5baf2a0787c03f03f4e474
-emit DecreaseGuaranteedUsd(_token, _usdAmount); 0x34e07158b9db50df5613e591c44ea2ebc82834eff4a4dc3a46e000e608261d68
-'''
 
 class HedgingStrategy(ExecutionStrategy):
     symbol_mapping = {'WETH': 'ETH/USD:USD',
@@ -217,14 +232,15 @@ class HedgingStrategy(ExecutionStrategy):
                                               for key,data in HedgingStrategy.symbol_mapping.items()])
         self.funding_rate = dict(zip(HedgingStrategy.symbol_mapping.keys(),funding_rate))
 
-class GLPStrategy:
+class GLPStrategy(SignalEngine):
     # take a week of 150% vol as buffer
     delta_buffer = {key: 1.5/np.sqrt(52) for key in GLPState.static}
     # gmx slippage. 'total' is for glp.
     tx_cost = {key: 1e-3 for key in GLPState.static} | {'total': 5e-3}
 
-    def __init__(self, frequency: int, hedging_strategy: HedgingStrategy=None):
+    def __init__(self, frequency: int, hedge_ratio: float, hedging_strategy: HedgingStrategy=None):
         self.frequency = frequency
+        self.hedge_ratio = hedge_ratio
         dir_name = configLoader.get_mktdata_folder_for_exchange('glp')
         if not os.path.exists(dir_name):
             os.umask(0)
@@ -238,7 +254,15 @@ class GLPStrategy:
             self.series = [dict()]
 
         # open an API for hedge venue
+        # override self.signal_engine.set_weights() at runtime
         self.hedging_strategy = hedging_strategy
+        async def set_weights(self, filename):
+            current_state = self.series[-1]
+            weights = {token: {'target': - self.hedge_ratio * self.series[-1].partial_delta(token)}}
+            if dict(self) != weights:
+                for symbol, data in weights.items():
+                    self[symbol] = data
+                self.timestamp = myUtcNow()
 
     async def run(self):
         while self.frequency:
@@ -249,7 +273,7 @@ class GLPStrategy:
                 logging.getLogger('glp').critical(e)
                 raise e
 
-    async def increment(self) -> None:
+    async def reconcile(self) -> None:
         current_state = await GLPState.build(semaphore=self.hedging_strategy.rest_semaphor)
         #current_state.add_weights()
         current_state.sanity_check()
@@ -318,7 +342,7 @@ async def main_coroutine(parameters):
     logger = logging.getLogger('glp')
 
     hedging_strategy = await Strategy.build(parameters)
-    strategy = GLPStrategy(frequency=parameters['frequency'], hedging_strategy=hedging_strategy)
+    strategy = GLPStrategy(frequency=parameters['frequency'], hedge_ratio=parameters['hedge_ratio'], hedging_strategy=hedging_strategy)
     try:
         await asyncio.gather(strategy.run(), hedging_strategy.run())
     except Exception as e:
@@ -336,16 +360,6 @@ def main(*args, **kwargs):
     logger = kwargs.pop('__logger')
 
     parameters = configLoader.get_executor_params(order='glp.json', dirname=kwargs['config'] if 'config' in kwargs else None)
-
-    # assign signal_engine filename
-    dir_name = os.path.join(os.sep, configLoader.get_config_folder_path(config_name=kwargs['config']), "pfoptimizer")
-    if not os.path.exists(dir_name):
-        os.umask(0)
-        os.makedirs(dir_name, mode=0o777)
-    parameters["signal_engine"]['filename'] = os.path.join(dir_name, args[0])
-
-    if 'frequency' not in parameters:
-        parameters['frequency'] = 1
 
     asyncio.run(main_coroutine(parameters))
 
