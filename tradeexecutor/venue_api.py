@@ -447,7 +447,6 @@ class FtxAPI(VenueAPI,ccxtpro.ftx):
                 and event_histories[0][-1]['state'] in self.strategy.order_manager.acknowledgedStates:
             order = event_histories[0][-1]
             order_distance = (1 if order['side'] == 'buy' else -1) * (opposite_side - order['price'])
-            repeg_gap = (1 if order['side'] == 'buy' else -1) * (edit_price - order['price'])
 
             # panic stop. we could rather place a trailing stop: more robust to latency, but less generic.
             if (stop_depth and order_distance > stop_trigger) \
@@ -461,13 +460,13 @@ class FtxAPI(VenueAPI,ccxtpro.ftx):
                                                          'comment':edit_price_depth if isTaker else 'stop'},
                                                  previous_clientOrderId = order['clientOrderId'])
             # peg limit order
-            elif order_distance > edit_trigger and repeg_gap >= priceIncrement:
+            elif order_distance > edit_trigger and abs(edit_price - order['price']) >= priceIncrement:
                 await self.create_order(symbol, 'limit', order_side, abs(size),
                                                 price=edit_price,
                                                 params={'postOnly': True,
                                                         'ioc':False,
                                                         'comment':'chase'},
-                                                previous_clientOrderId = order['clientOrderId'])
+                                                previous_clientOrderId=order['clientOrderId'])
 
     async def peg_to_level(self, symbol, size, target, edit_trigger_depth=None):
         size = self.round_to_increment(self.static[symbol]['sizeIncrement'], size)
@@ -542,7 +541,7 @@ class FtxAPI(VenueAPI,ccxtpro.ftx):
             await self.cancel_order(previous_clientOrderId, 'edit')
 
         trimmed_size = self.strategy.position_manager.trim_to_margin({symbol:amount * (1 if side == 'buy' else -1)})[symbol]
-        rounded_amount = self.round_to_increment(self.static[symbol]['sizeIncrement'], trimmed_size)
+        rounded_amount = self.round_to_increment(self.static[symbol]['sizeIncrement'], abs(trimmed_size))
         if rounded_amount < self.static[symbol]['sizeIncrement']:
             return
         # set pending_new -> send rest -> if success, leave pending_new and give id. Pls note it may have been caught by handle_order by then.
