@@ -12,6 +12,7 @@ from utils.config_loader import configLoader
 from utils.io_utils import NpEncoder, myUtcNow, nested_dict_to_tuple
 from tradeexecutor.venue_api import GmxAPI
 
+
 class SignalEngine(dict):
     '''SignalEngine computes derived data from venue_api and/or externally generated client orders
     key/values hold target'''
@@ -61,13 +62,7 @@ class SignalEngine(dict):
                        zip(self.parameters['symbols'], vwap_history_list)}
 
     async def set_weights(self):
-        async with aiofiles.open(self.parameters['filename'], 'r') as fp:
-            content = await fp.read()
-        weights = json.loads(content)
-        if dict(self) != weights:
-            for symbol, data in weights.items():
-                self[symbol] = data
-            self.timestamp = myUtcNow()
+        raise NotImplementedError
 
     async def reconcile(self):
         await self.set_weights()
@@ -79,7 +74,7 @@ class SignalEngine(dict):
         await self.to_json()
 
     def serialize(self) -> list[dict]:
-        return [{'symbol':symbol,'timestamp':self.timestamp} | data for symbol,data in self.items()]
+        raise NotImplementedError
 
     async def to_json(self):
         coin = list(self.orderbook.keys())[0].replace(':USD', '').replace('/USD', '')
@@ -124,9 +119,18 @@ class ExternalSignal(SignalEngine):
     def __init__(self, parameters):
         super().__init__(parameters)
         self.parent_strategy = parameters['parent_strategy'] if 'parent_strategy' in parameters else None
-        self_keys = ['target','benchmark','update_time_delta','entry_level','rush_in_level','rush_out_level','edit_price_depth','edit_trigger_depth','aggressive_edit_price_depth','aggressive_edit_trigger_depth','stop_depth','slice_size']
-        for data in self.values():
-            data = dict(zip(self_keys,[None]*len(self_keys)))
+
+    async def set_weights(self):
+        async with aiofiles.open(self.parameters['filename'], 'r') as fp:
+            content = await fp.read()
+        weights = json.loads(content)
+        if dict(self) != weights:
+            for symbol, data in weights.items():
+                self[symbol] = data
+            self.timestamp = myUtcNow()
+
+    def serialize(self) -> list[dict]:
+        return [{'symbol':symbol,'timestamp':self.timestamp} | data for symbol,data in self.items()]
 
     def compile_vwap(self, frequency):
         # get times series of target baskets, compute quantile of increments and add to last price
@@ -147,97 +151,6 @@ class ExternalSignal(SignalEngine):
                 for key in self.vwap[symbol]:
                     updated_data = pd.concat([self.vwap[symbol][key],vwap[key]],axis=0)
                     self.vwap[symbol][key] = updated_data[~updated_data.index.duplicated()].sort_index().ffill()
-
-class GLPSignal(ExternalSignal):
-    def __init__(self, parameters):
-        super().__init__(parameters)
-        self.series = collections.deque(maxlen=SignalEngine.cache_size)
-        for data in GmxAPI.static.values():
-            if data['volatile']:
-                self[data['normalized_symbol']] = None
-
-    async def set_weights(self):
-        # TODO: use self.parent_strategy.position_manager.delta[symbol]['delta']
-        gmx_state = self.parent_strategy.venue_api
-        await gmx_state.reconcile(semaphore=self.strategy.rest_semaphor if self.strategy else None,
-                                                                       add_weights=False)
-        weights = {data['normalized_symbol']: {'target': - self.parent_strategy.hedge_ratio * gmx_state.partial_delta(token),
-                           'benchmark': 0.5*(gmx_state.pricesUp[token]+gmx_state.pricesUp[token])}
-                   for token,data in GmxAPI.static.items() if data['volatile']}
-        if dict(self) != weights:
-            for symbol, data in weights.items():
-                self[symbol] = data
-            self.timestamp = gmx_state.timestamp
-
-    async def reconcile(self) -> None:
-        current_state = await self.parent_strategy.venue_api.reconcile(semaphore=self.strategy.rest_semaphor if self.strategy else None,add_weights=False)
-        current_state.sanity_check()
-
-        ### compute risk, pnl, etc..
-        self.compile_history(current_state)
-
-        await self.to_json()
-
-    def serialize(self) -> list[dict]:
-        return self.series
-
-    async def to_json(self):
-        filename = os.path.join(os.sep, configLoader.get_mktdata_folder_for_exchange('glp'),
-                                f'history.json')
-        with open(filename, "w") as f:
-            json.dump([{json.dumps(k): v for k, v in nested_dict_to_tuple(item).items()} for item in self.series],
-                      f, indent=1, cls=NpEncoder)
-            self.strategy.logger.info('wrote to {} at {}'.format(filename, self.series[-1]['timestamp']))
-
-    def compile_history(self, current_state,do_calcs=True):
-        current = current_state.serialize()
-
-        # compute risk
-        if do_calcs:
-            current |= {'delta': {key: current_state.partial_delta(key) for key in GmxAPI.static},
-                        'valuation': {key: current_state.valuation(key) for key in GmxAPI.static}}
-            current['delta']['total'] = sum(current['delta'].values())
-            current['valuation']['total'] = sum(current['valuation'].values())
-            # compute plex
-            if len(self.series) > 0:
-                previous = self.series[-1]
-                # delta_pnl
-                current |= {'delta_pnl': {
-                    key: previous['delta'][key] * (current['pricesDown'][key] - previous['pricesDown'][key])
-                    for key in GmxAPI.static}}
-                current['delta_pnl']['total'] = sum(current['delta_pnl'].values())
-                # other_pnl (non-delta)
-                current |= {'other_pnl': {
-                    key: current['valuation'][key] - previous['valuation'][key] - current['delta_pnl'][key] for key in
-                    GmxAPI.static}}
-                current['other_pnl']['total'] = sum(current['other_pnl'].values())
-                # discrepancy btw actual and estimate
-                current['discrepancy'] = {'total': (current['actualAum']['total'] - current['valuation']['total'])}
-
-                # capital and tx cost. Don't update GLP.
-                current['capital'] = {
-                    key: abs(current['delta'][key]) * current['pricesDown'][key] * self.strategy.delta_buffer[key] for key
-                    in GmxAPI.static}
-
-                # delta hedge cost
-                # TODO:self.strategy.hedging_strategy.venue_api.sweep_price_atomic(symbol, sizeUSD, include_taker_vs_maker_fee=True)
-                current['tx_cost'] = {
-                    key: -abs(current['delta'][key] - previous['delta'][key]) * self.strategy.hedge_tx_cost[key] for key in
-                    GmxAPI.static}
-                current['tx_cost']['total'] = sum(current['tx_cost'].values())
-            else:
-                # initialize capital and tx cost
-                current['capital'] = {
-                    key: abs(current['delta'][key]) * current['pricesDown'][key] * self.parent_strategy.parameters['delta_buffer'] for key
-                    in GmxAPI.static}
-                current['capital']['total'] = current['actualAum']['total']
-                # initial delta hedge cost + entry+exit of glp
-                current['tx_cost'] = {key: -abs(current['delta'][key]) * self.parent_strategy.parameters['hedge_tx_cost'] for key in
-                                      GmxAPI.static}
-                current['tx_cost']['total'] = sum(current['tx_cost'].values()) - 2 * GmxAPI.tx_cost * \
-                                              current['actualAum']['total']
-        # done. record.
-        self.series.append(current)
 
 class SpreadTradeSignal(SignalEngine):
     def __init__(self,parameters):
@@ -315,3 +228,92 @@ class SpreadTradeSignal(SignalEngine):
                                     q=quantile,
                                     method='normal_unbiased')
                 self.spread_distribution[symbol][direction].append({'timestamp': myUtcNow(), 'level': level})
+
+class GLPSignal(ExternalSignal):
+    def __init__(self, parameters):
+        super().__init__(parameters)
+        self.series = collections.deque(maxlen=SignalEngine.cache_size)
+        for data in GmxAPI.static.values():
+            if data['volatile']:
+                self[data['normalized_symbol']] = None
+
+    async def set_weights(self):
+        # TODO: use self.parent_strategy.position_manager.delta[symbol]['delta']
+        await self.parent_strategy.venue_api.reconcile(semaphore=self.strategy.rest_semaphor if self.strategy else None,
+                                                                       add_weights=False)
+        gmx_state = self.parent_strategy.venue_api
+        gmx_state.sanity_check()
+
+        weights = {'ETH/USD:USD': {'target': - self.parent_strategy.hedge_ratio * self.parent_strategy['GLP']['target'] * gmx_state.partial_delta('WETH'),
+                           'benchmark': 0.5*(gmx_state.pricesUp['WETH']+gmx_state.pricesUp['WETH'])},
+                 'AVAX/USD:USD': {'target': - self.parent_strategy.hedge_ratio * self.parent_strategy['GLP']['target'] * gmx_state.partial_delta('WAVAX'),
+                           'benchmark': 0.5*(gmx_state.pricesUp['WAVAX']+gmx_state.pricesUp['WAVAX'])},
+                 'BTC/USD:USD': {'target': - self.parent_strategy.hedge_ratio * self.parent_strategy['GLP']['target'] * (gmx_state.partial_delta('WBTC') + gmx_state.partial_delta('WBTC')),
+                                 'benchmark': 0.5*(gmx_state.pricesUp['WBTC'] + gmx_state.pricesUp['WBTC'])}}
+
+        if dict(self) != weights:
+            # pls note also updates timestamp when benchmark changes :(
+            for symbol, data in weights.items():
+                self[symbol] = data
+            self.timestamp = gmx_state.timestamp
+
+    def serialize(self) -> list[dict]:
+        return self.series
+
+    async def to_json(self):
+        filename = os.path.join(os.sep, configLoader.get_mktdata_folder_for_exchange('glp'),
+                                f'history.json')
+        with open(filename, "w") as f:
+            json.dump([{json.dumps(k): v for k, v in nested_dict_to_tuple(item).items()} for item in self.series],
+                      f, indent=1, cls=NpEncoder)
+            self.strategy.logger.info('wrote to {} at {}'.format(filename, self.timestamp))
+
+    def compile_history(self, current_state,do_calcs=True):
+        current = current_state.serialize()
+
+        # compute risk
+        if do_calcs:
+            current |= {'delta': {key: current_state.partial_delta(key) for key in GmxAPI.static},
+                        'valuation': {key: current_state.valuation(key) for key in GmxAPI.static}}
+            current['delta']['total'] = sum(current['delta'].values())
+            current['valuation']['total'] = sum(current['valuation'].values())
+            # compute plex
+            if len(self.series) > 0:
+                previous = self.series[-1]
+                # delta_pnl
+                current |= {'delta_pnl': {
+                    key: previous['delta'][key] * (current['pricesDown'][key] - previous['pricesDown'][key])
+                    for key in GmxAPI.static}}
+                current['delta_pnl']['total'] = sum(current['delta_pnl'].values())
+                # other_pnl (non-delta)
+                current |= {'other_pnl': {
+                    key: current['valuation'][key] - previous['valuation'][key] - current['delta_pnl'][key] for key in
+                    GmxAPI.static}}
+                current['other_pnl']['total'] = sum(current['other_pnl'].values())
+                # discrepancy btw actual and estimate
+                current['discrepancy'] = {'total': (current['actualAum']['total'] - current['valuation']['total'])}
+
+                # capital and tx cost. Don't update GLP.
+                current['capital'] = {
+                    key: abs(current['delta'][key]) * current['pricesDown'][key] * self.strategy.delta_buffer[key] for key
+                    in GmxAPI.static}
+
+                # delta hedge cost
+                # TODO:self.strategy.hedging_strategy.venue_api.sweep_price_atomic(symbol, sizeUSD, include_taker_vs_maker_fee=True)
+                current['tx_cost'] = {
+                    key: -abs(current['delta'][key] - previous['delta'][key]) * self.strategy.hedge_tx_cost[key] for key in
+                    GmxAPI.static}
+                current['tx_cost']['total'] = sum(current['tx_cost'].values())
+            else:
+                # initialize capital and tx cost
+                current['capital'] = {
+                    key: abs(current['delta'][key]) * current['pricesDown'][key] * self.parent_strategy.parameters['delta_buffer'] for key
+                    in GmxAPI.static}
+                current['capital']['total'] = current['actualAum']['total']
+                # initial delta hedge cost + entry+exit of glp
+                current['tx_cost'] = {key: -abs(current['delta'][key]) * self.parent_strategy.parameters['hedge_tx_cost'] for key in
+                                      GmxAPI.static}
+                current['tx_cost']['total'] = sum(current['tx_cost'].values()) - 2 * GmxAPI.tx_cost * \
+                                              current['actualAum']['total']
+        # done. record.
+        self.series.append(current)

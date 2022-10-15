@@ -87,10 +87,11 @@ class Strategy(dict):
                                       venue_api,
                                       order_manager,
                                       position_manager)
-            parameters['hedge_strategy']['signal_engine']['parent_strategy'] = result
-            result.hedge_strategy = await Strategy.build(parameters['hedge_strategy'])
 
         await result.reconcile()
+        if parameters['strategy']['type'] == 'hedged_lp':
+            parameters['hedge_strategy']['signal_engine']['parent_strategy'] = result
+            result.hedge_strategy = await Strategy.build(parameters['hedge_strategy'])
 
         return result
 
@@ -109,7 +110,7 @@ class Strategy(dict):
         raise NotImplementedError
 
     async def periodic_reconcile(self):
-        '''redundant minutely risk check'''
+        '''minutely reconcile'''
         while self.position_manager:
             try:
                 await asyncio.sleep(self.position_manager.limit.check_frequency)
@@ -117,7 +118,7 @@ class Strategy(dict):
             except ccxtpro.NetworkError as e:
                 self.logger.warning(str(e))
                 self.logger.warning('reconciling after periodic_reconcile dropped off')
-                await self.periodic_reconcile()
+                await self.reconcile()
             except Exception as e:
                 self.logger.warning(e, exc_info=True)
                 raise e
@@ -269,11 +270,12 @@ class ExecutionStrategy(Strategy):
 
         original_size = self.signal_engine[symbol]['target'] - self.position_manager[symbol]['delta'] / mid
         if abs(original_size) < self.parameters['significance_threshold'] * self.position_manager.pv / mid \
-                or abs(original_size) < self.venue_api.static[symbol]['sizeIncrement'] \
-                or self.lock['reconciling'].locked():
+                or abs(original_size) < self.venue_api.static[symbol]['sizeIncrement']:
             return
 
-        if self.lock[symbol].locked(): return
+        if self.lock[symbol].locked() or self.lock['reconciling'].locked():
+            return
+
         with self.lock[symbol]:
             # size to do:
             original_size = data['target'] - self.position_manager[symbol]['delta'] / mid
@@ -452,4 +454,10 @@ class HedgedLPStrategy(ExecutionStrategy):
         await safe_gather([self.periodic_reconcile(), self.hedge_strategy.run()],semaphore=self.rest_semaphor)
 
     async def update_quoter_parameters(self):
-        return
+        '''updates key/values from signal'''
+        self.timestamp = myUtcNow()
+
+        # overwrite key/value from signal_engine
+        for symbol,data in self.signal_engine.items():
+            for key, value in data.items():
+                self[symbol][key] = value
