@@ -7,7 +7,7 @@ import ccxtpro
 
 from tradeexecutor.order_manager import OrderManager
 from tradeexecutor.position_manager import PositionManager
-from tradeexecutor.signal_engine import SignalEngine
+from tradeexecutor.signal_engine import SignalEngine, GLPSignal
 from tradeexecutor.venue_api import VenueAPI
 from utils.MyLogger import ExecutionLogger
 from utils.async_utils import safe_gather_limit, safe_gather, async_wrap
@@ -47,8 +47,8 @@ class Strategy(dict):
         self.data_logger = ExecutionLogger(exchange_name=venue_api.get_id())
 
         self.rest_semaphor = asyncio.Semaphore(parameters['rest_semaphore'] if 'rest_semaphore' in parameters else safe_gather_limit)
-        self.lock = {'reconciling':threading.Lock()}
-        self.lock |= {symbol: threading.Lock() for symbol in self.parameters['symbols']}
+        self.lock = {f'reconciling_{id(self)}':threading.Lock()}
+        self.lock |= {f'{symbol}_{id(self)}': threading.Lock() for symbol in self.parameters['symbols']}
 
     def serialize(self) -> dict[str,list[dict]]:
         '''{data type:[dict]}'''
@@ -123,17 +123,23 @@ class Strategy(dict):
         trigger interception of all incoming messages until done'''
 
         # if already running, skip reconciliation
-        if self.lock['reconciling'].locked():
+        if self.lock[f'reconciling_{id(self)}'].locked():
             await asyncio.sleep(0.2)
+            self.logger.warning(f'already reconciling {id(self)}')
             return
 
         # or reconcile, and lock until done. We don't want to place orders while recon is running
-        with self.lock['reconciling']:
-            await self.position_manager.reconcile()
-            await self.signal_engine.reconcile() # needs pv...
-            await self.order_manager.reconcile()
-            await self.update_quoter_parameters()
-            self.replay_missed_messages()
+        with self.lock[f'reconciling_{id(self)}']:
+            try:
+                await self.position_manager.reconcile()
+                await self.signal_engine.reconcile()
+                await self.order_manager.reconcile()
+                await self.update_quoter_parameters()
+                self.replay_missed_messages()
+            except Exception as e:
+                self.logger.warning(f'{str(e)} {id(self)}')
+            else:
+                pass
 
         # critical job is done, release lock and print data
         if self.order_manager.fill_flag:
@@ -256,7 +262,7 @@ class ExecutionStrategy(Strategy):
         '''
             leverages orderbook and risk to issue an order
             Critical loop, needs to go quick
-            self.lock[symbol]: careful not to act if another orderbook update triggers again during execution
+            self.lock[f'{symbol}_{id(self)}']: careful not to act if another orderbook update triggers again during execution
         '''
         await super().process_order_book_update(symbol,orderbook)
         data = self[symbol]
@@ -267,12 +273,15 @@ class ExecutionStrategy(Strategy):
                 or abs(original_size) < self.venue_api.static[symbol]['sizeIncrement']:
             return
 
-        if self.lock[symbol].locked() or self.lock['reconciling'].locked():
+        if self.lock[f'{symbol}_{id(self)}'].locked() or self.lock[f'reconciling_{id(self)}'].locked():
             return
 
-        with self.lock[symbol]:
+        with self.lock[f'{symbol}_{id(self)}']:
             # size to do:
-            original_size = data['target'] - self.position_manager[symbol]['delta'] / mid
+            try:
+                original_size = data['target'] - self.position_manager[symbol]['delta'] / mid
+            except:
+                pass
 
             # risk
             globalDelta = self.position_manager.delta_bounds(symbol)['global_delta']
@@ -391,12 +400,12 @@ class AlgoStrategy(Strategy):
             only runs on lower_volume
             aggressive limit spread outside quantiles
             Critical loop, needs to go quick
-            self.lock[symbol]: careful not to act if another orderbook update triggers again during execution
+            self.lock[f'{symbol}_{id(self)}']: careful not to act if another orderbook update triggers again during execution
         '''
         await super().process_order_book_update(symbol, orderbook)
 
-        if self.lock[symbol].locked(): return
-        with self.lock[symbol]:
+        if self.lock[f'{symbol}_{id(self)}'].locked(): return
+        with self.lock[f'{symbol}_{id(self)}']:
             # flatten delta if any
             coinDelta = self.position_manager.coin_delta(symbol)
             if abs(coinDelta) > self.position_manager.limit.delta_limit * self.position_manager.pv \
@@ -426,7 +435,7 @@ class AlgoStrategy(Strategy):
                                                           edit_trigger_depth=self[symbol]['edit_trigger_depth'])
 
     async def process_fill(self, fill):
-        '''self.lock[symbol]: not necessary here ?'''
+        '''self.lock[f'{symbol}_{id(self)}']: not necessary here ?'''
         await super().process_fill(fill)
         # only react to limit orders being filled
         symbol = fill['symbol']
@@ -442,7 +451,7 @@ class HedgedLPStrategy(ExecutionStrategy):
         super().__init__(*args,**kwargs)
         self.hedge_ratio = self.parameters['hedge_ratio']
         self.hedge_tx_cost = self.parameters['hedge_tx_cost']
-        self.hedging_strategy: Strategy = self.parameters['hedge_strategy'] if 'hedge_strategy' in self.parameters else None
+        self.hedge_strategy: Strategy = self.parameters['hedge_strategy'] if 'hedge_strategy' in self.parameters else None
 
     async def run(self):
         await safe_gather([self.periodic_reconcile(), self.hedge_strategy.run()],semaphore=self.rest_semaphor)
