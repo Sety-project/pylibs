@@ -37,7 +37,7 @@ def intercept_message_during_reconciliation(wrapped):
         self=args[0]
         if not isinstance(self, VenueAPI):
             raise Exception("only apply on venueAPI methods")
-        if self.strategy.lock['reconciling'].locked():
+        if self.strategy.lock[f'reconciling_{id(self)}'].locked():
             self.strategy.logger.warning(f'message during reconciliation{args[2]}')
             self.message_missed.append(args[2])
         else:
@@ -337,7 +337,7 @@ class FtxAPI(VenueAPI,ccxtpro.ftx):
         '''maintains risk_state, event_records, logger.info
             #     await self.reconcile_state() is safer but slower. we have monitor_risk to reconcile'''
         fills = await self.watch_my_trades()
-        if not self.strategy.lock['reconciling'].locked():
+        if not self.strategy.lock[f'reconciling_{id(self)}'].locked():
             for fill in fills:
                 if hasattr(self.strategy, 'process_fill'):
                     await getattr(self.strategy, 'process_fill')(fill)
@@ -348,7 +348,7 @@ class FtxAPI(VenueAPI,ccxtpro.ftx):
     async def monitor_orders(self,symbol):
         '''maintains orders, pending_new, event_records'''
         orders = await self.watch_orders(symbol=symbol)
-        if not self.strategy.lock['reconciling'].locked():
+        if not self.strategy.lock[f'reconciling_{id(self)}'].locked():
             for order in orders:
                 if hasattr(self.strategy, 'process_order'):
                     await getattr(self.strategy, 'process_order')(order | {'comment': 'websocket_acknowledgment'})
@@ -652,6 +652,7 @@ class GmxAPI(VenueAPI):
     check_tolerance = 1e-4
     fee = 0.001
     tx_cost = 0.005
+    semaphore = asyncio.Semaphore(10) # do a new one because it could block if dependencies !
 
     # class Position:
     #     def __init__(self, collateral, entryFundingRate, size, lastIncreasedTime):
@@ -660,7 +661,7 @@ class GmxAPI(VenueAPI):
     #         self.size = size
     #         self.lastIncreasedTime = lastIncreasedTime
 
-    def __init__(self, parameters, semaphore: asyncio.Semaphore=None):
+    def __init__(self, parameters):
         super().__init__(parameters)
         self.timestamp = None
 
@@ -679,7 +680,6 @@ class GmxAPI(VenueAPI):
         self.totalSupply = {'total': None}
         self.actualAum = {'total': None}
         self.check = {key: dict() for key in GmxAPI.static}
-        self.semaphore = semaphore if semaphore else asyncio.Semaphore(safe_gather_limit)
 
     def get_id(self):
         return "gmx"
@@ -754,7 +754,7 @@ class GmxAPI(VenueAPI):
             actualPx = self.actualAum['total'] / self.totalSupply['total']
             self.strategy.logger.warning(f'val {self.valuation()} vs actual {actualPx}')
 
-    async def reconcile(self,semaphore: asyncio.Semaphore,add_weights=False) -> None:
+    async def fetch_all(self, add_weights=False) -> None:
         def read_contracts(address, decimal, volatile):
             coros = []
             coros.append(
@@ -804,7 +804,7 @@ class GmxAPI(VenueAPI):
             False).call() / GmxAPI.glp.totalSupply().call())(None))
 
         time0 = myUtcNow()
-        results_values = await safe_gather(coros, semaphore=semaphore)  # IT'S CRUCIAL TO MAINTAIN ORDER....
+        results_values = await safe_gather(coros, semaphore=GmxAPI.semaphore)  # IT'S CRUCIAL TO MAINTAIN ORDER....
         time1 = myUtcNow()
 
         functions_list = ['tokenBalances', 'poolAmounts', 'usdgAmounts', 'pricesUp', 'pricesDown', 'guaranteedUsd',
@@ -824,9 +824,6 @@ class GmxAPI(VenueAPI):
         if add_weights:
             self.add_weights()
 
-        return self
-
-
 '''
 the below is only for documentation
 '''
@@ -843,7 +840,7 @@ the below is only for documentation
 #     '''
 #     for longs only:
 #       poolAmounts = coll - fee
-#       guaranteedUsd = _sizeDelta + fee + collateralUsd
+#       guaranteedUsd = _sizeDelta + fee - collateralUsd
 #     createIncreasePositionETH (short): 0x0fe07013cca821bcea7bae4d013ab8fd288dbc3a26ed9dfbd10334561d3ffa91
 #     setPricesWithBitsAndExecute: 0x8782436fd0f365aeef20fc8fbf9fa01524401ea35a8d37ad7c70c96332ce912b
 #     '''

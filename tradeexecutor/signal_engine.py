@@ -66,7 +66,6 @@ class SignalEngine(dict):
 
     async def reconcile(self):
         await self.set_weights()
-
         for member_data in self.parameters['record_set']:
             if hasattr(self, member_data):
                 if hasattr(self, f'compile_{member_data}'):
@@ -239,17 +238,16 @@ class GLPSignal(ExternalSignal):
 
     async def set_weights(self):
         # TODO: use self.parent_strategy.position_manager.delta[symbol]['delta']
-        await self.parent_strategy.venue_api.reconcile(semaphore=self.strategy.rest_semaphor if self.strategy else None,
-                                                                       add_weights=False)
+        await self.parent_strategy.venue_api.fetch_all(add_weights=False)
         gmx_state = self.parent_strategy.venue_api
         gmx_state.sanity_check()
 
         weights = {'ETH/USD:USD': {'target': - self.parent_strategy.hedge_ratio * self.parent_strategy['GLP']['target'] * gmx_state.partial_delta('WETH'),
-                           'benchmark': 0.5*(gmx_state.pricesUp['WETH']+gmx_state.pricesUp['WETH'])},
+                           'benchmark': 0.5*(gmx_state.pricesDown['WETH']+gmx_state.pricesUp['WETH'])},
                  'AVAX/USD:USD': {'target': - self.parent_strategy.hedge_ratio * self.parent_strategy['GLP']['target'] * gmx_state.partial_delta('WAVAX'),
-                           'benchmark': 0.5*(gmx_state.pricesUp['WAVAX']+gmx_state.pricesUp['WAVAX'])},
+                           'benchmark': 0.5*(gmx_state.pricesDown['WAVAX']+gmx_state.pricesUp['WAVAX'])},
                  'BTC/USD:USD': {'target': - self.parent_strategy.hedge_ratio * self.parent_strategy['GLP']['target'] * (gmx_state.partial_delta('WBTC') + gmx_state.partial_delta('WBTC')),
-                                 'benchmark': 0.5*(gmx_state.pricesUp['WBTC'] + gmx_state.pricesUp['WBTC'])}}
+                                 'benchmark': 0.5*(gmx_state.pricesDown['WBTC'] + gmx_state.pricesUp['WBTC'])}}
 
         if dict(self) != weights:
             # pls note also updates timestamp when benchmark changes :(
@@ -299,7 +297,7 @@ class GLPSignal(ExternalSignal):
                     in GmxAPI.static}
 
                 # delta hedge cost
-                # TODO:self.strategy.hedging_strategy.venue_api.sweep_price_atomic(symbol, sizeUSD, include_taker_vs_maker_fee=True)
+                # TODO:self.strategy.hedge_strategy.venue_api.sweep_price_atomic(symbol, sizeUSD, include_taker_vs_maker_fee=True)
                 current['tx_cost'] = {
                     key: -abs(current['delta'][key] - previous['delta'][key]) * self.strategy.hedge_tx_cost[key] for key in
                     GmxAPI.static}
