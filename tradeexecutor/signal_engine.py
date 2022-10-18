@@ -2,6 +2,7 @@ import aiofiles
 import collections, os, json
 import itertools
 from datetime import timedelta
+from abc import abstractmethod
 
 import numpy as np
 import pandas as pd
@@ -11,17 +12,16 @@ from utils.async_utils import safe_gather
 from utils.config_loader import configLoader
 from utils.io_utils import NpEncoder, myUtcNow, nested_dict_to_tuple
 from tradeexecutor.venue_api import GmxAPI
+from tradeexecutor.interface.StrategyEnabler import StrategyEnabler
 
-
-class SignalEngine(dict):
+class SignalEngine(StrategyEnabler):
     '''SignalEngine computes derived data from venue_api and/or externally generated client orders
     key/values hold target'''
     cache_size = 100000
 
     def __init__(self, parameters):
-        super().__init__()
-        self.parameters = parameters
-        self.strategy = None
+        super().__init__(parameters)
+        self.data: dict = dict()
         # raw data caches, filled by API. Processed data is in inheriting objects.
         self.orderbook = None
         self.trades = None
@@ -41,7 +41,7 @@ class SignalEngine(dict):
             return None
 
         await result.set_weights()
-        result.parameters['symbols'] = list(result.keys())
+        result.parameters['symbols'] = list(result.data.keys())
 
         result.orderbook = {symbol: collections.deque(maxlen=SignalEngine.cache_size)
                           for symbol in parameters['symbols']}
@@ -50,17 +50,7 @@ class SignalEngine(dict):
 
         return result
 
-    async def initialize_vwap(self):
-        # initialize vwap_history
-        nowtime = myUtcNow(return_type='datetime')
-        frequency = timedelta(minutes=1)
-        start = nowtime - timedelta(seconds=self.parameters['stdev_window'])
-        vwap_history_list = await safe_gather([fetch_trades_history(
-            self.strategy.venue_api.market(symbol)['id'], self.strategy.venue_api, start, nowtime, frequency=frequency)
-            for symbol in self], semaphore=self.strategy.rest_semaphor)
-        self.vwap = {symbol: data for symbol, data in
-                       zip(self.parameters['symbols'], vwap_history_list)}
-
+    @abstractmethod
     async def set_weights(self):
         raise NotImplementedError
 
@@ -71,9 +61,6 @@ class SignalEngine(dict):
                 if hasattr(self, f'compile_{member_data}'):
                     getattr(self, f'compile_{member_data}')()
         await self.to_json()
-
-    def serialize(self) -> list[dict]:
-        raise NotImplementedError
 
     async def to_json(self):
         coin = list(self.orderbook.keys())[0].replace(':USD', '').replace('/USD', '')
@@ -117,19 +104,28 @@ class SignalEngine(dict):
 class ExternalSignal(SignalEngine):
     def __init__(self, parameters):
         super().__init__(parameters)
-        self.parent_strategy = parameters['parent_strategy'] if 'parent_strategy' in parameters else None
 
     async def set_weights(self):
         async with aiofiles.open(self.parameters['filename'], 'r') as fp:
             content = await fp.read()
         weights = json.loads(content)
-        if dict(self) != weights:
-            for symbol, data in weights.items():
-                self[symbol] = data
+        if self.data != weights:
+            self.data = weights
             self.timestamp = myUtcNow()
 
     def serialize(self) -> list[dict]:
-        return [{'symbol':symbol,'timestamp':self.timestamp} | data for symbol,data in self.items()]
+        return [{'symbol':symbol,'timestamp':self.timestamp} | data for symbol,data in self.data.items()]
+
+    async def initialize_vwap(self):
+        # initialize vwap_history
+        nowtime = myUtcNow(return_type='datetime')
+        frequency = timedelta(minutes=1)
+        start = nowtime - timedelta(seconds=self.parameters['stdev_window'])
+        vwap_history_list = await safe_gather([fetch_trades_history(
+            self.strategy.venue_api.market(symbol)['id'], self.strategy.venue_api, start, nowtime, frequency=frequency)
+            for symbol in self.data], semaphore=self.strategy.rest_semaphor)
+        self.vwap = {symbol: data for symbol, data in
+                     zip(self.parameters['symbols'], vwap_history_list)}
 
     def compile_vwap(self, frequency):
         # get times series of target baskets, compute quantile of increments and add to last price
@@ -185,13 +181,24 @@ class SpreadTradeSignal(SignalEngine):
         else:
             pv = None
         for coin, data in weights.items():
-            self[f'{coin}/USD'] = (data * pv if pv is not None else None)
-            self[f'{coin}/USD:USD'] = (data * pv if pv is not None else None)
+            self.data[f'{coin}/USD'] = (data * pv if pv is not None else None)
+            self.data[f'{coin}/USD:USD'] = (data * pv if pv is not None else None)
         self.timestamp = myUtcNow()
 
     def serialize(self) -> list[dict]:
         res = [res for data in self.spread_distribution.values() for res in data.values()]
         return res
+
+    async def initialize_vwap(self):
+        # initialize vwap_history
+        nowtime = myUtcNow(return_type='datetime')
+        frequency = timedelta(minutes=1)
+        start = nowtime - timedelta(seconds=self.parameters['stdev_window'])
+        vwap_history_list = await safe_gather([fetch_trades_history(
+            self.strategy.venue_api.market(symbol)['id'], self.strategy.venue_api, start, nowtime, frequency=frequency)
+            for symbol in self.data], semaphore=self.strategy.rest_semaphor)
+        self.vwap = {symbol: data for symbol, data in
+                     zip(self.parameters['symbols'], vwap_history_list)}
 
     def compile_vwap(self, frequency):
         # get times series of target baskets, compute quantile of increments and add to last price
@@ -214,7 +221,7 @@ class SpreadTradeSignal(SignalEngine):
                     self.vwap[symbol][key] = updated_data[~updated_data.index.duplicated()].sort_index().ffill()
 
     def compile_spread_distribution(self):
-        for symbol,direction in itertools.product(self.keys(),['buy','sell']):
+        for symbol,direction in itertools.product(self.data.keys(),['buy','sell']):
             spread_trades = [spread_trade for spread_trade in self.spread_trades
                              if spread_trade['taker_symbol'] == symbol
                              and spread_trade['side'] == direction][-self.parameters['distribution_window_trades']:-1]
@@ -230,29 +237,32 @@ class SpreadTradeSignal(SignalEngine):
 
 class GLPSignal(ExternalSignal):
     def __init__(self, parameters):
+        if 'parents' not in parameters:
+            raise Exception('parents needed')
         super().__init__(parameters)
+
         self.series = collections.deque(maxlen=SignalEngine.cache_size)
         for data in GmxAPI.static.values():
             if data['volatile']:
-                self[data['normalized_symbol']] = None
+                self.data[data['normalized_symbol']] = None
 
     async def set_weights(self):
-        # TODO: use self.parent_strategy.position_manager.delta[symbol]['delta']
-        await self.parent_strategy.venue_api.fetch_all(add_weights=False)
-        gmx_state = self.parent_strategy.venue_api
+        lp_strategy = self.strategy.parents['GLP'] if self.strategy is not None else self.parameters['parents']['GLP']  # for the first time..
+        gmx_state = lp_strategy.venue_api
+        await gmx_state.reconcile()
         gmx_state.sanity_check()
 
-        weights = {'ETH/USD:USD': {'target': - self.parent_strategy.hedge_ratio * self.parent_strategy['GLP']['target'] * gmx_state.partial_delta('WETH'),
+        glp_position = lp_strategy.position_manager.data['GLP']['delta']/gmx_state.valuation()
+        weights = {'ETH/USD:USD': {'target': - (lp_strategy.hedge_ratio-1) * glp_position * gmx_state.partial_delta('WETH'),
                            'benchmark': 0.5*(gmx_state.pricesDown['WETH']+gmx_state.pricesUp['WETH'])},
-                 'AVAX/USD:USD': {'target': - self.parent_strategy.hedge_ratio * self.parent_strategy['GLP']['target'] * gmx_state.partial_delta('WAVAX'),
+                 'AVAX/USD:USD': {'target': - (lp_strategy.hedge_ratio-1) * glp_position * gmx_state.partial_delta('WAVAX'),
                            'benchmark': 0.5*(gmx_state.pricesDown['WAVAX']+gmx_state.pricesUp['WAVAX'])},
-                 'BTC/USD:USD': {'target': - self.parent_strategy.hedge_ratio * self.parent_strategy['GLP']['target'] * (gmx_state.partial_delta('WBTC') + gmx_state.partial_delta('WBTC')),
+                 'BTC/USD:USD': {'target': - (lp_strategy.hedge_ratio-1) * glp_position * (gmx_state.partial_delta('WBTC') + gmx_state.partial_delta('WBTC')),
                                  'benchmark': 0.5*(gmx_state.pricesDown['WBTC'] + gmx_state.pricesUp['WBTC'])}}
 
-        if dict(self) != weights:
+        if self.data != weights:
             # pls note also updates timestamp when benchmark changes :(
-            for symbol, data in weights.items():
-                self[symbol] = data
+            self.data = weights
             self.timestamp = gmx_state.timestamp
 
     def serialize(self) -> list[dict]:
@@ -305,11 +315,11 @@ class GLPSignal(ExternalSignal):
             else:
                 # initialize capital and tx cost
                 current['capital'] = {
-                    key: abs(current['delta'][key]) * current['pricesDown'][key] * self.parent_strategy.parameters['delta_buffer'] for key
+                    key: abs(current['delta'][key]) * current['pricesDown'][key] * self.strategy.parents['GLP'].parameters['delta_buffer'] for key
                     in GmxAPI.static}
                 current['capital']['total'] = current['actualAum']['total']
                 # initial delta hedge cost + entry+exit of glp
-                current['tx_cost'] = {key: -abs(current['delta'][key]) * self.parent_strategy.parameters['hedge_tx_cost'] for key in
+                current['tx_cost'] = {key: -abs(current['delta'][key]) * self.strategy.parents['GLP'].parameters['hedge_tx_cost'] for key in
                                       GmxAPI.static}
                 current['tx_cost']['total'] = sum(current['tx_cost'].values()) - 2 * GmxAPI.tx_cost * \
                                               current['actualAum']['total']
