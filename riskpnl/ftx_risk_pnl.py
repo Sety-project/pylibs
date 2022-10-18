@@ -157,7 +157,7 @@ async def diff_portoflio_wrapper(*args,**kwargs):
     return diff
 
 async def fetch_portfolio(exchange,time):
-    state = await syncronized_state(exchange)
+    state = await reconcile(exchange)
 
     # go ahead
     futures = pd.DataFrame(await FtxAPI.Static.fetch_futures(exchange))
