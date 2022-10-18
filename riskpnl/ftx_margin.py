@@ -52,12 +52,12 @@ class MarginCalculator:
         await self.update_actual(exchange)
         self.IM_buffer = im_buffer
 
-    async def set_instruments(self ,exchange, balances=None, positions=None):
+    async def set_instruments(self, exchange, balances=None, positions=None):
         '''reset balances_and_positions and get from rest request'''
         self.balances_and_positions = dict()
 
         if balances is None or positions is None:
-            state = await syncronized_state(exchange)
+            state = await exchange.reconcile()
             balances = state['balances']['total']
             positions = state['positions']['netSize']
 
