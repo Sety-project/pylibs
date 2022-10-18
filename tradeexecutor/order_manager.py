@@ -2,9 +2,10 @@ from datetime import datetime, timezone
 
 from utils.async_utils import safe_gather
 from utils.io_utils import myUtcNow
+from tradeexecutor.interface.StrategyEnabler import StrategyEnabler
 
 
-class OrderManager(dict):
+class OrderManager(StrategyEnabler):
     '''OrderManager manages and records order state transitions.
     structure is {clientOrderId:[{...state dictionnary...},...]}
     able to reconcile to an exchange'''
@@ -14,9 +15,7 @@ class OrderManager(dict):
     cancelableStates = set(['sent', 'acknowledged', 'partially_filled'])
 
     def __init__(self,parameters):
-        super().__init__()
-        self.parameters = parameters
-        self.strategy = None
+        super().__init__(parameters)
 
         self.latest_order_reconcile_timestamp = None
         self.latest_fill_reconcile_timestamp = None
@@ -31,19 +30,19 @@ class OrderManager(dict):
             return OrderManager(parameters)
 
     def serialize(self) -> list[dict]:
-        return sum(self.values(),[])
+        return sum(self.data.values(),[])
 
     '''various helpers'''
 
-    def filter_order_histories(self,symbols=[],state_set=[]):
+    def filter_order_histories(self,symbols=list(),state_set=list()):
         '''returns all blockchains for symbol (all symbols if None), in a set of current states'''
         return [data
-            for data in self.values()
+            for data in self.data.values()
             if ((data[0]['symbol'] in symbols) or (symbols == []))
             and ((data[-1]['state'] in state_set) or (state_set == []))]
 
     def latest_value(self,clientOrderId,key):
-        for previous_state in reversed(self[clientOrderId]):
+        for previous_state in reversed(self.data[clientOrderId]):
             if key in previous_state:
                 return previous_state[key]
         raise f'{key} not found for {clientOrderId}'
@@ -53,14 +52,14 @@ class OrderManager(dict):
         all layers events must carry id if known !! '''
         if 'clientOrderId' in fill:
             found = fill['clientOrderId']
-            assert (found in self),f'{found} unknown'
+            assert (found in self.data),f'{found} unknown'
         else:
             try:
-                found = next(clientID for clientID, events in self.items() if
+                found = next(clientID for clientID, events in self.data.items() if
                              any('id' in event and event['id'] == fill['order'] for event in events))
             except StopIteration as e:# could still be in flight --> lookup
                 try:
-                    found = next(clientID for clientID,events in self.items() if
+                    found = next(clientID for clientID,events in self.data.items() if
                                  any(event['price'] == fill['price']
                                      and event['amount'] == fill['amount']
                                      and event['symbol'] == fill['symbol']
@@ -99,8 +98,8 @@ class OrderManager(dict):
 
         ## risk details
         risk_data = self.strategy.position_manager
-        current |= {'risk_timestamp':risk_data[symbol]['delta_timestamp'],
-                    'delta':risk_data[symbol]['delta'],
+        current |= {'risk_timestamp':risk_data.data[symbol]['delta_timestamp'],
+                    'delta':risk_data.data[symbol]['delta'],
                     'netDelta': risk_data.coin_delta(symbol),
                     'pv(wrong timestamp)':risk_data.pv,
                     'margin_headroom':risk_data.margin.actual_IM,
@@ -117,7 +116,7 @@ class OrderManager(dict):
                    | {key: mkt_data[key] for key in ['bid', 'bidVolume', 'ask', 'askVolume']}
 
         #4) mine genesis block
-        self[clientOrderId] = [current]
+        self.data[clientOrderId] = [current]
 
         return clientOrderId
 
@@ -127,7 +126,7 @@ class OrderManager(dict):
         clientOrderId = order_event['clientOrderId']
 
         # 2) validate block
-        past = self[clientOrderId][-1]
+        past = self.data[clientOrderId][-1]
         if past['state'] not in ['pending_new','acknowledged','partially_filled']:
             self.strategy.logger.warning('order {} was {} before sent'.format(past['clientOrderId'],past['state']))
             return
@@ -140,7 +139,7 @@ class OrderManager(dict):
                                  'remote_timestamp':order_event['timestamp']}
         current['timestamp'] = nowtime
 
-        self[clientOrderId] += [current]
+        self.data[clientOrderId] += [current]
         if order_event['status'] == 'closed':
             if order_event['remaining'] == 0:
                 current['order'] = order_event['id']
@@ -158,7 +157,7 @@ class OrderManager(dict):
         clientOrderId = order_event['clientOrderId']
 
         # 2) validate block
-        past = self[clientOrderId][-1]
+        past = self.data[clientOrderId][-1]
         if past['state'] not in self.openStates:
             self.strategy.logger.warning('order {} re-canceled'.format(past['clientOrderId']))
             return
@@ -172,7 +171,7 @@ class OrderManager(dict):
         current['timestamp'] = nowtime
 
         # 4) mine
-        self[clientOrderId] += [current]
+        self.data[clientOrderId] += [current]
 
     def cancel_sent(self, order_event):
         '''this is first called with result={}, then with the rest response. could be two states...
@@ -181,7 +180,7 @@ class OrderManager(dict):
         clientOrderId = order_event['clientOrderId']
 
         # 2) validate block
-        past = self[clientOrderId][-1]
+        past = self.data[clientOrderId][-1]
         if not past['state'] in self.openStates:
             self.strategy.logger.warning('order {} re-canceled'.format(past['clientOrderId']))
             return
@@ -195,7 +194,7 @@ class OrderManager(dict):
                                  'timestamp': nowtime}
 
         # 4) mine
-        self[clientOrderId] += [current]
+        self.data[clientOrderId] += [current]
 
     def acknowledgment(self, order_event):
         '''order_event: clientOrderId, trigger,timestamp,status'''
@@ -238,11 +237,11 @@ class OrderManager(dict):
         #     self.fill(current)
         else:
             current['state'] = 'acknowledged'
-            self[clientOrderId] += [current]
+            self.data[clientOrderId] += [current]
             self.strategy.position_manager.margin.add_open_order(order_event)
 
     def process_fill(self, fill):
-        if fill['symbol'] in self:
+        if fill['symbol'] in self.data:
             fill['clientOrderId'] = fill['info']['clientOrderId']
             fill['comment'] = 'websocket_fill'
             self.fill(fill)
@@ -265,9 +264,9 @@ class OrderManager(dict):
         current['id'] = order_event['order']
 
         if current['remaining'] == 0:
-            self[clientOrderId] += [current|{'state':'filled'}]
+            self.data[clientOrderId] += [current|{'state':'filled'}]
         else:
-            self[clientOrderId] += [current | {'state': 'partially_filled'}]
+            self.data[clientOrderId] += [current | {'state': 'partially_filled'}]
 
         if 'verbose' in self.strategy.parameters:
             # logger.info
@@ -298,7 +297,7 @@ class OrderManager(dict):
         current['timestamp'] = nowtime
 
         # 4) mine
-        self[clientOrderId] += [current]
+        self.data[clientOrderId] += [current]
 
     '''reconciliations to an exchange'''
     async def reconcile(self):
@@ -318,14 +317,14 @@ class OrderManager(dict):
             fill['comment'] = 'reconciled'
             fill['clientOrderId'] = self.find_clientID_from_fill(fill)
             if fill['id'] not in [block['fillId']
-                                     for block in self[fill['clientOrderId']]
+                                     for block in self.data[fill['clientOrderId']]
                                      if 'fillId' in block]:
                 self.fill(fill)
         self.latest_fill_reconcile_timestamp = myUtcNow()
 
     async def reconcile_orders(self):
         # list internal orders
-        internal_order_internal_status = {clientOrderId:data[-1] for clientOrderId,data in self.items()
+        internal_order_internal_status = {clientOrderId:data[-1] for clientOrderId,data in self.data.items()
                                           if data[-1]['state'] in OrderManager.openStates}
 
         # add missing orders (we missed orders from the exchange)
@@ -335,7 +334,7 @@ class OrderManager(dict):
                 self.acknowledgment(order | {'comment':'reconciled_missing'})
                 self.strategy.logger.warning('{} was missing'.format(order['clientOrderId']))
                 found = order['clientOrderId']
-                assert (found in self), f'{found} unknown'
+                assert (found in self.data), f'{found} unknown'
 
         # remove zombie orders (we beleive they are live but they are not open)
         # should not happen so we put it in the logs
