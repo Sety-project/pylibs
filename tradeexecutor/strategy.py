@@ -1,5 +1,6 @@
 import asyncio, logging, threading, retry
 from abc import ABC, abstractmethod
+from typing import Union
 
 import numpy as np
 import pandas as pd
@@ -110,7 +111,16 @@ class Strategy(ABC):
                      for symbol in self.data], [])
 
         await safe_gather(coros,semaphore=self.rest_semaphor)
-        
+
+    async def exit_gracefully(self):
+        if hasattr(self.venue_api, 'cancel_all_orders'):
+            await safe_gather([self.venue_api.cancel_all_orders(symbol) for symbol in self.parameters['symbols']],
+                              semaphore=self.rest_semaphor)
+            self.logger.warning(f'cancelled orders')
+        # await self.close_dust()  # Commenting out until bug fixed
+        if hasattr(self.venue_api,'close'):
+            self.venue_api.close()
+
     @abstractmethod
     async def update_quoter_parameters(self):
         raise NotImplementedError
@@ -121,7 +131,7 @@ class Strategy(ABC):
             await asyncio.sleep(self.position_manager.limit.check_frequency)
             await self.reconcile()
 
-    @retry.retry(ccxtpro.NetworkError, tries=14, delay=0.05, backoff=2)
+    @retry.retry((ccxtpro.NetworkError, ConnectionError), tries=14, delay=0.05, backoff=2)  # annoyingly ccxtpro.NetworkError doesn't inherit from ConnectionError
     async def reconcile(self):
         '''update risk using rest
         all symbols not present when state is built are ignored !
@@ -229,14 +239,14 @@ class ExecutionStrategy(Strategy):
             quantiles = basket_vwap_quantile(
                 [self.signal_engine.vwap[_symbol]['vwap'] for _symbol in self.data],
                 [data['update_time_delta'] for data in self.data.values()],
-                [self.parameters['entry_tolerance'],self.parameters['rush_in_tolerance'],self.parameters['rush_out_tolerance']])
+                [self.parameters['entry_tolerance'], self.parameters['rush_in_tolerance'], self.parameters['rush_out_tolerance']])
 
             data['entry_level'] = quantiles[0]
             data['rush_in_level'] = quantiles[1]
             data['rush_out_level'] = quantiles[2]
 
             stdev = self.signal_engine.vwap[symbol]['vwap'].std().squeeze()
-            if not (stdev>0): stdev = 1e-16
+            if not (stdev > 0): stdev = 1e-16
 
             # edit_price_depth = how far to put limit on risk increasing orders
             data['edit_price_depth'] = stdev * np.sqrt(self.parameters['edit_price_tolerance']) * scaler
@@ -245,11 +255,11 @@ class ExecutionStrategy(Strategy):
 
             # aggressive version understand tolerance as price increment
             if isinstance(self.parameters['aggressive_edit_price_increments'],int):
-                data['aggressive_edit_price_depth'] = max(1,self.parameters['aggressive_edit_price_increments']) * self.venue_api.static[symbol]['priceIncrement']
-                data['aggressive_edit_trigger_depth'] = max(1,self.parameters['aggressive_edit_trigger_increments']) * self.venue_api.static[symbol]['priceIncrement']
+                data['aggressive_edit_price_depth'] = max(1, self.parameters['aggressive_edit_price_increments']) * self.venue_api.static[symbol]['priceIncrement']
+                data['aggressive_edit_trigger_depth'] = max(1, self.parameters['aggressive_edit_trigger_increments']) * self.venue_api.static[symbol]['priceIncrement']
             elif self.parameters['aggressive_edit_price_increments'] in 'taker_hedge':
                 data['aggressive_edit_price_depth'] = self.parameters['aggressive_edit_price_increments']
-                data['aggressive_edit_trigger_depth'] = None # takers don't peg
+                data['aggressive_edit_trigger_depth'] = None  # takers don't peg
 
                 # stop_depth = how far to set the stop on risk reducing orders
             data['stop_depth'] = stdev * np.sqrt(self.parameters['stop_tolerance']) * scaler
@@ -284,7 +294,7 @@ class ExecutionStrategy(Strategy):
             delta_limit = self.position_manager.limit.delta_limit * self.position_manager.pv
             marginal_risk = np.abs(globalDelta / mid + original_size) - np.abs(globalDelta / mid)
 
-            # if increases risk but not out of limit, trim and go passive.
+            # if increases risk, trim to limit and go passive.
             if np.sign(original_size) == np.sign(globalDelta):
                 # if (global_delta_plus / mid + original_size) > delta_limit:
                 #     trimmed_size = delta_limit - global_delta_plus / mid
@@ -389,7 +399,6 @@ class AlgoStrategy(Strategy):
                     data[direction] = self.signal_engine.spread_distribution[symbol][direction][-1]['level'] * mid / 365.25
                 except:
                     return
-
 
     async def process_order_book_update(self, symbol, orderbook):
         '''

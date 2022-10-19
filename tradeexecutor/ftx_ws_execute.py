@@ -1,8 +1,6 @@
 import os.path
 
 from tradeexecutor.strategy import Strategy
-from tradeexecutor.signal_engine import SignalEngine
-from tradeexecutor.venue_api import VenueAPI
 from utils.config_loader import *
 from utils.ccxt_utilities import *
 from utils.api_utils import api
@@ -35,13 +33,10 @@ async def main_coroutine(order_name, **kwargs):
     try:
         await strategy.run()
     except Exception as e:
-        logger = logging.getLogger('tradeexecutor')
-        logger.critical(str(e), exc_info=True)
-        await safe_gather([strategy.venue_api.cancel_all_orders(symbol) for symbol in strategy.parameters['symbols']],semaphore=strategy.rest_semaphor)
-        logger.warning(f'cancelled orders')
-        # await strategy.close_dust()  # Commenting out until bug fixed
-        await strategy.venue_api.close()
+        await strategy.exit_gracefully()
         if not isinstance(e, Strategy.ReadyToShutdown):
+            logger = logging.getLogger('tradeexecutor')
+            logger.critical(str(e), exc_info=True)
             raise e
 
 @api
