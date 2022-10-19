@@ -276,7 +276,7 @@ class GLPSignal(ExternalSignal):
                       f, indent=1, cls=NpEncoder)
             self.strategy.logger.info('wrote to {} at {}'.format(filename, self.timestamp))
 
-    def compile_history(self, current_state,do_calcs=True):
+    def compile_pnlexplain(self, current_state, do_calcs=True):
         current = current_state.serialize()
 
         # compute risk

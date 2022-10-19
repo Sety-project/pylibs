@@ -49,7 +49,7 @@ def intercept_message_during_reconciliation(wrapped):
 
 
 class PegRule:
-    Actions = set(['repeg','stopout'])
+    Actions = {'repeg','stopout'}
     def __call__(self, input):
         raise NotImplementedError
 
@@ -110,9 +110,6 @@ class VenueAPI(StrategyEnabler):
             raise NotImplementedError
 
         return exchange
-
-    async def cancel_all_orders(self,symbol):
-        self.strategy.logger.warning('cancel_all_orders not implemented. skipping.')
 
 class FtxAPI(VenueAPI,ccxtpro.ftx):
     '''VenueAPI implements rest calls and websocket loops to observe raw market data / order events and place orders
@@ -705,7 +702,7 @@ class GmxAPI(VenueAPI):
     check_tolerance = 1e-4
     fee = 0.001
     tx_cost = 0.005
-    safe_gather_limit = 10
+    safe_gather_limit = 9
 
     # class Position:
     #     def __init__(self, collateral, entryFundingRate, size, lastIncreasedTime):
@@ -866,10 +863,8 @@ class GmxAPI(VenueAPI):
             False).call() / GmxAPI.glp.totalSupply().call())(None))
 
         time0 = myUtcNow()
-        self.strategy.logger.warning(f' safe_gather at {time0}')
         results_values = await safe_gather(coros, n=GmxAPI.safe_gather_limit)  # IT'S CRUCIAL TO MAINTAIN ORDER....
         time1 = myUtcNow()
-        self.strategy.logger.warning(f' safe_gather in {time1-time0}')
 
         functions_list = ['tokenBalances', 'poolAmounts', 'usdgAmounts', 'pricesUp', 'pricesDown', 'guaranteedUsd',
                           'reservedAmounts', 'globalShortSizes', 'globalShortAveragePrices', 'feeReserves']
