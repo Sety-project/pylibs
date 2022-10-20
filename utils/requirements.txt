@@ -11,3 +11,4 @@ pyarrow
 s3fs
 openpyxl
 retry
+web3
