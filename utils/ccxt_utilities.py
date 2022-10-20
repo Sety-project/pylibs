@@ -31,7 +31,9 @@ def decode_api_params(api_param):
     for exchange_name in data:
         clear_dict[exchange_name] = {}
         clear_dict[exchange_name]['key'] = Fernet(api_param).decrypt(data[exchange_name]['key'].encode()).decode()
-        clear_dict[exchange_name]['comment'] = Fernet(api_param).decrypt(data[exchange_name]['comment'].encode()).decode() if data[exchange_name]['comment'] != '' else ''
+        clear_dict[exchange_name]['comment'] = data[exchange_name]['comment']
+        if 'key2' in data[exchange_name]:
+            clear_dict[exchange_name]['key2'] = Fernet(api_param).decrypt(data[exchange_name]['key2'].encode()).decode()
 
     return clear_dict
 
@@ -71,7 +73,7 @@ async def open_exchange(exchange_name,subaccount,config={}):
             'enableRateLimit': True,
             'apiKey': '6a72779d-0a4a-4554-a283-f28a17612747',
             'secret': api_params[exchange_name]['key'],
-            'secret2': api_params.loc[exchange_name,'comment'],
+            'secret2': api_params.loc[exchange_name,'key2'],
         }|config)
         if subaccount != 'convexity':
             logging.warning('subaccount override: convexity')
