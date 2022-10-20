@@ -15,6 +15,7 @@ ENV PATH=$PATH:$HOME/.local/bin
 
 ENV PYLIBS_PATH=$HOME/pylibs
 ENV GLP_PATH=$PYLIBS_PATH/glp
+ENV TRADEXECUTOR_PATH=$PYLIBS_PATH/tradeexecutor
 ENV UTILS_PATH=$PYLIBS_PATH/utils
 ENV LOGS_PATH=/tmp/glp
 
@@ -22,6 +23,7 @@ ENV PYTHONPATH=$PYLIBS_PATH:$HOME
 
 RUN mkdir -p $PYLIBS_PATH
 RUN mkdir -p $GLP_PATH
+RUN mkdir -p $TRADEXECUTOR_PATH
 RUN mkdir -p $UTILS_PATH
 RUN mkdir -p $HOME/mktdata
 RUN mkdir -p $HOME/mktdata/glp
@@ -30,6 +32,7 @@ RUN mkdir -p $LOGS_PATH
 
 RUN chown -R $USER $PYLIBS_PATH
 RUN chown -R $USER $GLP_PATH
+RUN chown -R $USER $TRADEXECUTOR_PATH
 RUN chown -R $USER $UTILS_PATH
 RUN chown -R $USER $HOME/mktdata
 RUN chown -R $USER $HOME/config
@@ -40,15 +43,18 @@ WORKDIR $GLP_PATH
 # Copy pip requirements before copying full project
 USER $USER
 COPY --chown=$USER:$USER /glp/requirements.txt $GLP_PATH
+COPY --chown=$USER:$USER /tradeexecutor/requirements.txt $TRADEXECUTOR_PATH
 COPY --chown=$USER:$USER /utils/requirements.txt $UTILS_PATH
 
 
 # Install Pip dependencies --> Need to install as root
 RUN pip3 install -Ur $GLP_PATH/requirements.txt
+RUN pip3 install -Ur $TRADEXECUTOR_PATH/requirements.txt
 RUN pip3 install -Ur $UTILS_PATH/requirements.txt
 
 # Now copy full project
 COPY --chown=$USER:$USER /utils $UTILS_PATH
+COPY --chown=$USER:$USER /tradeexecutor $TRADEXECUTOR_PATH
 COPY --chown=$USER:$USER /glp $GLP_PATH
 RUN chmod +x $GLP_PATH/run.sh
 
