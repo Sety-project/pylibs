@@ -12,6 +12,7 @@ import json
 import pandas as pd
 import numpy as np
 from datetime import timedelta, datetime, timezone
+import dateutil
 import pyarrow, pyarrow.parquet,s3fs
 from typing import Any
 
