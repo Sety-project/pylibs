@@ -200,7 +200,7 @@ MyModules.register(name='tradeexecutor',
                    testbed=["weights_ftx_debug_ETH.json"], # ,"unwind exchange=ftx subaccount=debug config=prod"
                    args_validation=[
                        ['order', lambda x: isinstance(x,str),'not a str']],
-                   kwargs_validation={'exchange':[lambda x: x in ['ftx'],'not in {}'.format(['ftx'])],
+                   kwargs_validation={'exchange':[lambda x: x in ['ftx', 'gmx'],'not in {}'.format(['ftx', 'gmx'])],
                                       'subaccount':[lambda x: True,'not found'],
                                       'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(config_name=x))),'not found']})
 
