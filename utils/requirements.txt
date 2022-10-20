@@ -163,5 +163,5 @@ websockets==9.1
 widgetsnbextension==3.6.1
 wrapt==1.14.1
 XlsxWriter==3.0.3
-yarl==1.8.1
+yarl==1.7.2
 zipp==3.8.1
