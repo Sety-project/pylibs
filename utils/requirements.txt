@@ -10,3 +10,4 @@ pandas
 pyarrow
 s3fs
 openpyxl
+retry
