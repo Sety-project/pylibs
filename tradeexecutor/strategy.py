@@ -8,7 +8,7 @@ import ccxtpro
 
 from tradeexecutor.order_manager import OrderManager
 from tradeexecutor.position_manager import PositionManager
-from tradeexecutor.signal_engine import SignalEngine
+from tradeexecutor.signal_engine import SignalEngine, GLPSignal
 from tradeexecutor.venue_api import VenueAPI
 from utils.MyLogger import ExecutionLogger
 from utils.async_utils import safe_gather_limit, safe_gather
@@ -24,13 +24,13 @@ class Strategy(ABC):
     class NothingToDo(ReadyToShutdown):
         def __init__(self, text):
             super().__init__(text)
-    def __init__(self,parameters,signal_engine,venue_api,order_manager,position_manager):
+    def __init__(self, parameters, signal_engine, venue_api, order_manager, position_manager):
         '''Strategy contructor also opens channels btw objects (a simple member data for now)'''
         self.data: dict = dict({key: None for key in parameters['symbols']})
         self.parameters: dict = parameters
         self.timestamp: float = None
-        self.parents: dict[str, Strategy] = parameters['parents'] if 'parents' in parameters else dict()
-        self.children: dict[str, Strategy] = parameters['children'] if 'children' in parameters else dict()
+        self.parents: dict[str, Strategy] = parameters.pop('parents') if 'parents' in parameters else dict()
+        self.children: dict[str, Strategy] = parameters.pop('children') if 'children' in parameters else dict()
 
         # pointers to enablers (like a bus in a single thread...)
         if position_manager is not None: position_manager.strategy = self
@@ -46,14 +46,14 @@ class Strategy(ABC):
         self.logger: logging.Logger = logging.getLogger('tradeexecutor')
         self.data_logger: ExecutionLogger = ExecutionLogger(exchange_name=venue_api.get_id())
 
-        self.rest_semaphor:asyncio.Semaphore = asyncio.Semaphore(parameters['rest_semaphore'] if 'rest_semaphore' in parameters else safe_gather_limit)
-        self.lock: dict[str,threading.Lock] = {f'reconciling_{id(self)}':threading.Lock()} \
+        self.rest_semaphore: asyncio.Semaphore = asyncio.Semaphore(parameters['rest_semaphore'] if 'rest_semaphore' in parameters else safe_gather_limit)
+        self.lock: dict[str, threading.Lock] = {f'reconciling_{id(self)}': threading.Lock()} \
                                               | {f'{symbol}_{id(self)}': threading.Lock() for symbol in self.parameters['symbols']}
 
     def serialize(self) -> dict[str,list[dict]]:
         '''{data type:[dict]}'''
         return {'parameters': [{'timestamp':self.timestamp} | self.parameters],
-                'strategy': [{'symbol': symbol, 'timestamp':self.timestamp} | data for symbol,data in self.data.items()],
+                'strategy': [{'symbol': symbol, 'timestamp':self.timestamp} | data for symbol, data in self.data.items()],
                 'order_manager': self.order_manager.serialize(),
                 'position_manager': self.position_manager.serialize(),
                 'signal_engine': self.signal_engine.serialize()}
@@ -87,13 +87,11 @@ class Strategy(ABC):
                                       venue_api,
                                       order_manager,
                                       position_manager)
-
         await result.reconcile()
 
         if parameters['strategy']['type'] == 'hedged_lp':
             parameters['hedge_strategy']['strategy']['parents'] = {'GLP': result}
-            parameters['hedge_strategy']['signal_engine']['parents'] = {'GLP':result}
-            parameters['hedge_strategy']['position_manager']['parents'] = {'GLP':result}
+            parameters['hedge_strategy']['signal_engine']['parents'] = {'GLP': result}
             hedge_strategy = await Strategy.build(parameters['hedge_strategy'])
             result.children['hedge_strategy'] = hedge_strategy
             hedge_strategy.parents['GLP'] = result
@@ -102,7 +100,7 @@ class Strategy(ABC):
 
     async def run(self):
         self.logger.warning('cancelling orders')
-        await safe_gather([self.venue_api.cancel_all_orders(symbol) for symbol in self.data],semaphore=self.rest_semaphor)
+        await safe_gather([self.venue_api.cancel_all_orders(symbol) for symbol in self.data], semaphore=self.rest_semaphore)
 
         coros = [self.venue_api.monitor_fills(), self.periodic_reconcile()] + \
                 sum([[self.venue_api.monitor_orders(symbol),
@@ -110,12 +108,12 @@ class Strategy(ABC):
                       self.venue_api.monitor_trades(symbol)]
                      for symbol in self.data], [])
 
-        await safe_gather(coros,semaphore=self.rest_semaphor)
+        await safe_gather(coros, semaphore=self.rest_semaphore)
 
     async def exit_gracefully(self):
         if hasattr(self.venue_api, 'cancel_all_orders'):
             await safe_gather([self.venue_api.cancel_all_orders(symbol) for symbol in self.parameters['symbols']],
-                              semaphore=self.rest_semaphor)
+                              semaphore=self.rest_semaphore)
             self.logger.warning(f'cancelled orders')
         # await self.close_dust()  # Commenting out until bug fixed
         if hasattr(self.venue_api,'close'):
@@ -153,7 +151,7 @@ class Strategy(ABC):
             self.replay_missed_messages()
 
         # critical job is done, release lock and print data
-        if self.order_manager.fill_flag:
+        if self.order_manager.fill_flag or isinstance(self.signal_engine, GLPSignal):
             await self.data_logger.write_history(self.serialize())
             self.order_manager.fill_flag = False
 
@@ -199,22 +197,22 @@ class ExecutionStrategy(Strategy):
     def __init__(self,*args,**kwargs):
         super().__init__(*args,**kwargs)
         # TODO: is this necessary ?
-        self_keys = ['target','benchmark','update_time_delta','entry_level','rush_in_level','rush_out_level','edit_price_depth','edit_trigger_depth','aggressive_edit_price_depth','aggressive_edit_trigger_depth','stop_depth','slice_size']
+        self_keys = ['target', 'benchmark', 'update_time_delta', 'entry_level', 'rush_in_level', 'rush_out_level', 'edit_price_depth', 'edit_trigger_depth', 'aggressive_edit_price_depth', 'aggressive_edit_trigger_depth', 'stop_depth', 'slice_size']
         for symbol in self.parameters['symbols']:
-            self.data[symbol] = dict(zip(self_keys,[None]*len(self_keys)))
+            self.data[symbol] = dict(zip(self_keys, [None]*len(self_keys)))
     async def update_quoter_parameters(self):
         '''updates key/values from signal'''
         self.timestamp = myUtcNow()
 
         # overwrite key/value from signal_engine
-        for symbol,data in self.signal_engine.data.items():
+        for symbol, data in self.signal_engine.data.items():
             for key, value in data.items():
                 self.data[symbol][key] = value
 
         no_delta = [abs(self.position_manager.adjusted_delta(symbol)) < self.parameters['significance_threshold'] * self.position_manager.pv
                     for symbol in self.data]
         no_target = [abs(data['target']*data['benchmark']) < self.parameters['significance_threshold'] * self.position_manager.pv
-                    for symbol,data in self.data.items()]
+                    for symbol, data in self.data.items()]
         if all(no_delta) and all(no_target):
             raise Strategy.NothingToDo(
                 f'no {self.data.keys()} delta and no {self.data} order --> shutting down bot')
@@ -254,7 +252,7 @@ class ExecutionStrategy(Strategy):
             data['edit_trigger_depth'] = stdev * np.sqrt(self.parameters['edit_trigger_tolerance']) * scaler
 
             # aggressive version understand tolerance as price increment
-            if isinstance(self.parameters['aggressive_edit_price_increments'],int):
+            if isinstance(self.parameters['aggressive_edit_price_increments'], int):
                 data['aggressive_edit_price_depth'] = max(1, self.parameters['aggressive_edit_price_increments']) * self.venue_api.static[symbol]['priceIncrement']
                 data['aggressive_edit_trigger_depth'] = max(1, self.parameters['aggressive_edit_trigger_increments']) * self.venue_api.static[symbol]['priceIncrement']
             elif self.parameters['aggressive_edit_price_increments'] in 'taker_hedge':
@@ -459,7 +457,7 @@ class HedgedLPStrategy(ExecutionStrategy):
         self.children['hedge_strategy'] = None
 
     async def run(self):
-        await safe_gather([self.periodic_reconcile(), self.children['hedge_strategy'].run()],semaphore=self.rest_semaphor)
+        await safe_gather([self.periodic_reconcile(), self.children['hedge_strategy'].run()], semaphore=self.rest_semaphore)
 
     async def update_quoter_parameters(self):
         '''updates key/values from signal'''

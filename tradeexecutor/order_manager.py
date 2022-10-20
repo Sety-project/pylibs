@@ -9,10 +9,10 @@ class OrderManager(StrategyEnabler):
     '''OrderManager manages and records order state transitions.
     structure is {clientOrderId:[{...state dictionnary...},...]}
     able to reconcile to an exchange'''
-    allStates = set(['pending_new', 'pending_cancel', 'sent', 'cancel_sent', 'pending_replace', 'acknowledged', 'partially_filled', 'filled', 'canceled', 'rejected'])
-    openStates = set(['pending_new', 'sent', 'pending_cancel', 'pending_replace', 'acknowledged', 'partially_filled'])
-    acknowledgedStates = set(['acknowledged', 'partially_filled'])
-    cancelableStates = set(['sent', 'acknowledged', 'partially_filled'])
+    allStates = {'pending_new', 'pending_cancel', 'sent', 'cancel_sent', 'pending_replace', 'acknowledged', 'partially_filled', 'filled', 'canceled', 'rejected'}
+    openStates = {'pending_new', 'sent', 'pending_cancel', 'pending_replace', 'acknowledged', 'partially_filled'}
+    acknowledgedStates = {'acknowledged', 'partially_filled'}
+    cancelableStates = {'sent', 'acknowledged', 'partially_filled'}
 
     def __init__(self,parameters):
         super().__init__(parameters)
@@ -312,7 +312,7 @@ class OrderManager(StrategyEnabler):
     async def reconcile_fills(self):
         '''fetch fills, to recover missed messages'''
         sincetime = self.latest_fill_reconcile_timestamp if self.latest_fill_reconcile_timestamp else myUtcNow() - 1000
-        fetched_fills = sum(await safe_gather([self.strategy.venue_api.fetch_my_trades(since=sincetime,symbol=symbol) for symbol in self.parameters['symbols']],semaphore=self.strategy.rest_semaphor), [])
+        fetched_fills = sum(await safe_gather([self.strategy.venue_api.fetch_my_trades(since=sincetime,symbol=symbol) for symbol in self.parameters['symbols']], semaphore=self.strategy.rest_semaphore), [])
         for fill in fetched_fills:
             fill['comment'] = 'reconciled'
             fill['clientOrderId'] = self.find_clientID_from_fill(fill)
@@ -328,7 +328,7 @@ class OrderManager(StrategyEnabler):
                                           if data[-1]['state'] in OrderManager.openStates}
 
         # add missing orders (we missed orders from the exchange)
-        external_orders = sum(await safe_gather([self.strategy.venue_api.fetch_open_orders(symbol=symbol) for symbol in self.parameters['symbols']],semaphore=self.strategy.rest_semaphor), [])
+        external_orders = sum(await safe_gather([self.strategy.venue_api.fetch_open_orders(symbol=symbol) for symbol in self.parameters['symbols']], semaphore=self.strategy.rest_semaphore), [])
         for order in external_orders:
             if order['clientOrderId'] not in internal_order_internal_status.keys():
                 self.acknowledgment(order | {'comment':'reconciled_missing'})
@@ -340,7 +340,7 @@ class OrderManager(StrategyEnabler):
         # should not happen so we put it in the logs
         internal_order_external_status = await safe_gather([self.strategy.venue_api.fetch_order(id=None, params={'clientOrderId':clientOrderId})
                                                    for clientOrderId in internal_order_internal_status.keys()],
-                                                           semaphore=self.strategy.rest_semaphor,
+                                                           semaphore=self.strategy.rest_semaphore,
                                                            return_exceptions=True)
         for clientOrderId,external_status in zip(internal_order_internal_status.keys(),internal_order_external_status):
             if isinstance(external_status, Exception):

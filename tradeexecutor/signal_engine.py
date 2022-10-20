@@ -53,6 +53,9 @@ class SignalEngine(StrategyEnabler):
     @abstractmethod
     async def set_weights(self):
         raise NotImplementedError
+    @abstractmethod
+    def serialize(self) -> list[dict]:
+        raise NotImplementedError
 
     async def reconcile(self):
         await self.set_weights()
@@ -63,22 +66,22 @@ class SignalEngine(StrategyEnabler):
         await self.to_json()
 
     async def to_json(self):
-        coin = list(self.orderbook.keys())[0].replace(':USD', '').replace('/USD', '')
-
-        for member_data in self.parameters['record_set']:
-            if hasattr(self,member_data):
-                if isinstance(getattr(self, member_data), list) or isinstance(getattr(self, member_data), collections.deque):
-                    filename = os.path.join(os.sep, configLoader.get_mktdata_folder_for_exchange('ftx_tickdata'),
-                                            f'{member_data}_{coin}.json')
-                    async with aiofiles.open(filename,'w+') as fp:
+        strategies = list(self.strategy.parents.values())
+        if strategies == []: strategies = [self.strategy]
+        for strategy in strategies:
+            venue_id = strategy.venue_api.get_id()
+            dirname = configLoader.get_mktdata_folder_for_exchange(f'{venue_id}_tickdata')
+            for member_data in self.parameters['record_set']:
+                filename = os.path.join(os.sep, dirname, f'{member_data}.json')
+                async with aiofiles.open(filename, 'w+') as fp:
+                    if isinstance(getattr(self, member_data), list) or isinstance(getattr(self, member_data),
+                                                                                  collections.deque):
                         await fp.write(json.dumps(getattr(self, member_data), cls=NpEncoder))
-                elif isinstance(getattr(self, member_data), dict):
-                    for key,data in getattr(self, member_data).items():
-                        filename = os.path.join(os.sep,
-                                                configLoader.get_mktdata_folder_for_exchange('ftx_tickdata'),
-                                                f'{member_data}_{coin}.json')
-                        async with aiofiles.open(filename,'w+') as fp:
-                            await fp.write(json.dumps(data, cls=NpEncoder))
+                    elif isinstance(getattr(self, member_data), dict):
+                        for key,data in getattr(self, member_data).items():
+                            filename = os.path.join(os.sep, dirname, f'{member_data}.json')
+                            async with aiofiles.open(filename, 'w+') as fp:
+                                await fp.write(json.dumps(data, cls=NpEncoder))
 
     def process_order_book_update(self, symbol, orderbook):
         item = {'timestamp': orderbook['timestamp']}
@@ -123,7 +126,7 @@ class ExternalSignal(SignalEngine):
         start = nowtime - timedelta(seconds=self.parameters['stdev_window'])
         vwap_history_list = await safe_gather([fetch_trades_history(
             self.strategy.venue_api.market(symbol)['id'], self.strategy.venue_api, start, nowtime, frequency=frequency)
-            for symbol in self.data], semaphore=self.strategy.rest_semaphor)
+            for symbol in self.data], semaphore=self.strategy.rest_semaphore)
         self.vwap = {symbol: data for symbol, data in
                      zip(self.parameters['symbols'], vwap_history_list)}
 
@@ -196,7 +199,7 @@ class SpreadTradeSignal(SignalEngine):
         start = nowtime - timedelta(seconds=self.parameters['stdev_window'])
         vwap_history_list = await safe_gather([fetch_trades_history(
             self.strategy.venue_api.market(symbol)['id'], self.strategy.venue_api, start, nowtime, frequency=frequency)
-            for symbol in self.data], semaphore=self.strategy.rest_semaphor)
+            for symbol in self.data], semaphore=self.strategy.rest_semaphore)
         self.vwap = {symbol: data for symbol, data in
                      zip(self.parameters['symbols'], vwap_history_list)}
 
@@ -241,7 +244,7 @@ class GLPSignal(ExternalSignal):
             raise Exception('parents needed')
         super().__init__(parameters)
 
-        self.series = collections.deque(maxlen=SignalEngine.cache_size)
+        self.pnlexplain = collections.deque(maxlen=SignalEngine.cache_size)
         for data in GmxAPI.static.values():
             if data['volatile']:
                 self.data[data['normalized_symbol']] = None
@@ -266,17 +269,11 @@ class GLPSignal(ExternalSignal):
             self.timestamp = gmx_state.timestamp
 
     def serialize(self) -> list[dict]:
-        return self.series
+        return [{f'{k[0]}_{k[1]}': v for k, v in nested_dict_to_tuple(item).items()} for item in self.pnlexplain]
 
-    async def to_json(self):
-        filename = os.path.join(os.sep, configLoader.get_mktdata_folder_for_exchange('glp'),
-                                f'history.json')
-        with open(filename, "w") as f:
-            json.dump([{json.dumps(k): v for k, v in nested_dict_to_tuple(item).items()} for item in self.series],
-                      f, indent=1, cls=NpEncoder)
-            self.strategy.logger.info('wrote to {} at {}'.format(filename, self.timestamp))
-
-    def compile_pnlexplain(self, current_state, do_calcs=True):
+    def compile_pnlexplain(self, do_calcs=True):
+        # venue_api already reconciled by reconcile()
+        current_state = self.strategy.parents['GLP'].venue_api
         current = current_state.serialize()
 
         # compute risk
@@ -286,8 +283,8 @@ class GLPSignal(ExternalSignal):
             current['delta']['total'] = sum(current['delta'].values())
             current['valuation']['total'] = sum(current['valuation'].values())
             # compute plex
-            if len(self.series) > 0:
-                previous = self.series[-1]
+            if len(self.pnlexplain) > 0:
+                previous = self.pnlexplain[-1]
                 # delta_pnl
                 current |= {'delta_pnl': {
                     key: previous['delta'][key] * (current['pricesDown'][key] - previous['pricesDown'][key])
@@ -303,13 +300,13 @@ class GLPSignal(ExternalSignal):
 
                 # capital and tx cost. Don't update GLP.
                 current['capital'] = {
-                    key: abs(current['delta'][key]) * current['pricesDown'][key] * self.strategy.delta_buffer[key] for key
+                    key: abs(current['delta'][key]) * current['pricesDown'][key] * self.strategy.parents['GLP'].parameters['delta_buffer'] for key
                     in GmxAPI.static}
 
                 # delta hedge cost
                 # TODO:self.strategy.hedge_strategy.venue_api.sweep_price_atomic(symbol, sizeUSD, include_taker_vs_maker_fee=True)
                 current['tx_cost'] = {
-                    key: -abs(current['delta'][key] - previous['delta'][key]) * self.strategy.hedge_tx_cost[key] for key in
+                    key: -abs(current['delta'][key] - previous['delta'][key]) * self.strategy.parents['GLP'].parameters['hedge_tx_cost'] for key in
                     GmxAPI.static}
                 current['tx_cost']['total'] = sum(current['tx_cost'].values())
             else:
@@ -324,4 +321,4 @@ class GLPSignal(ExternalSignal):
                 current['tx_cost']['total'] = sum(current['tx_cost'].values()) - 2 * GmxAPI.tx_cost * \
                                               current['actualAum']['total']
         # done. record.
-        self.series.append(current)
+        self.pnlexplain.append(current)

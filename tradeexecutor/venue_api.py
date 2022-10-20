@@ -573,7 +573,7 @@ class FtxAPI(VenueAPI,ccxtpro.ftx):
                                                                          self.strategy.order_manager.cancelableStates)
         coro += [self.cancel_order(order[-1]['clientOrderId'], 'cancel_symbol')
                                for order in cancelable_orders]
-        await safe_gather(coro,semaphore=self.strategy.rest_semaphor)
+        await safe_gather(coro, semaphore=self.strategy.rest_semaphore)
 
     async def create_order(self, symbol, type, side, amount, price=None, params=dict(),previous_clientOrderId=None,peg_rule: PegRule=None):
         '''if not new, cancel previous first
@@ -649,7 +649,7 @@ class FtxAPI(VenueAPI,ccxtpro.ftx):
             return True
 
     async def close_dust(self):
-        data = await safe_gather([self.fetch_balance(),self.fetch_markets()],semaphore=self.strategy.rest_semaphor)
+        data = await safe_gather([self.fetch_balance(),self.fetch_markets()], semaphore=self.strategy.rest_semaphore)
         balances = data[0]
         markets = data[1]
         coros = []
@@ -666,10 +666,10 @@ class FtxAPI(VenueAPI,ccxtpro.ftx):
                     request = {'fromCoin':'USD','toCoin':coin,'size':abs(size)*self.mid(f'{coin}/USD')}
                 coros += [self.privatePostOtcQuotes(request)]
 
-        quoteId_list = await safe_gather(coros,semaphore=self.strategy.rest_semaphor)
-        await safe_gather([self.privatePostOtcQuotesQuoteIdAccept({'quoteId': int(quoteId['result']['quoteId'])},semaphore=self.strategy.rest_semaphor)
+        quoteId_list = await safe_gather(coros, semaphore=self.strategy.rest_semaphore)
+        await safe_gather([self.privatePostOtcQuotesQuoteIdAccept({'quoteId': int(quoteId['result']['quoteId'])}, semaphore=self.strategy.rest_semaphore)
         for quoteId in quoteId_list
-        if quoteId['success']],semaphore=self.strategy.rest_semaphor)
+        if quoteId['success']], semaphore=self.strategy.rest_semaphore)
 
 
 class GmxAPI(VenueAPI):

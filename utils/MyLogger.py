@@ -6,7 +6,7 @@ from histfeed.ftx_history import fetch_trades_history
 from utils.ccxt_utilities import open_exchange
 from utils.io_utils import *
 from utils.async_utils import *
-from utils.api_utils import build_logging,extract_args_kwargs
+from utils.api_utils import extract_args_kwargs
 
 class ExecutionLogger:
     '''it s a logger that can also write jsons, and summarize them'''
@@ -27,21 +27,21 @@ class ExecutionLogger:
             os.makedirs(self.mktdata_dirname, mode=0o777)
 
     async def write_history(self, records: dict[str,list[dict]]) -> None:
-        coin = records['parameters'][0]['symbols'][0].replace(':USD','').replace('/USD','')
-        filename = self.json_filename.replace('.json',f'_{coin}.json')
+        coin = records['parameters'][0]['symbols'][0].replace(':USD','').replace('/USD', '')
+        filename = self.json_filename.replace('.json', f'_{coin}.json')
         if os.path.isfile(filename):
             async with aiofiles.open(filename, 'r') as file:
                 content = await file.read()
                 history = json.loads(content)
             new_records = {key: (data if key not in ['order_manager','signal_engine'] else []) + records[key]
-                           for key,data in history.items()}
+                           for key, data in history.items()}
         else:
             new_records = records
         async with aiofiles.open(filename, 'w') as file:
             await file.write(json.dumps(new_records, cls=NpEncoder))
 
     @staticmethod
-    def batch_summarize_exec_logs(exchange='ftx', subaccount='',dirname=os.path.join(os.sep, 'tmp','','tradeexecutor'),
+    def batch_summarize_exec_logs(exchange='ftx', subaccount='', dirname=os.path.join(os.sep, 'tmp', '', 'tradeexecutor'),
                                   start=datetime(1970, 1, 1),
                                   end=datetime.now(),
                                   rebuild=True,
