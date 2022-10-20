@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
 from utils.async_utils import *
-import sys, os, shutil
 import logging
 
-from datetime import *
-import dateutil
 import numpy as np
-import scipy
 import json
 
 from cryptography.fernet import Fernet
@@ -100,13 +96,17 @@ async def open_exchange(exchange_name,subaccount,config={}):
                                        } | config)
     elif exchange_name == 'paradigm':
         from mess.paradigm_tape import paradigm_request
-        result = paradigm_request(path='/v1/fs/trade_tape',
+        exchange = paradigm_request(path='/v1/fs/trade_tape',
                                   access_key='EytZmov5bDDPGXqvYviriCs8',
                                   secret_key=api_params[exchange_name]['key'])
-        return result
+    elif exchange_name in api_params:
+        exchange = api_params[exchange_name]
     #subaccount_list = pd.DataFrame((exchange.privateGetSubaccounts())['result'])
-    else: print('what exchange?')
-    exchange.checkRequiredCredentials()  # raises AuthenticationError
-    await exchange.load_markets()
-    await exchange.load_fees()
+    else:
+        print('what exchange?')
+    if isinstance(exchange,ccxt.base.exchange):
+        exchange.checkRequiredCredentials()  # raises AuthenticationError
+        await exchange.load_markets()
+        await exchange.load_fees()
+
     return exchange
