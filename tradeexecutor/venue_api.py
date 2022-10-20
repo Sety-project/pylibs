@@ -689,8 +689,6 @@ class GmxAPI(VenueAPI):
     glp_manager = w3.eth.contract(abi=GLPManagerABI, address=GLPManagerAdd).functions
     reward_tracker = w3.eth.contract(abi=RewardTrackerABI, address=RewardTrackerAdd).functions
 
-    account = "0xFaf2A8b5fa78cA2786cEf5F7e19f6942EC7cB531"
-
     static = {'MIM': {'address': "0x130966628846BFd36ff31a822705796e8cb8C18D",      'decimal': 1e18, 'volatile': False, 'normalized_symbol': 'MIM/USD:USD'},
               'WETH': {'address': "0x49D5c2BdFfac6CE2BFdB6640F4F80f226bc10bAB",     'decimal': 1e18, 'volatile': True, 'normalized_symbol': 'ETH/USD:USD'},
               'WBTC': {'address': "0x50b7545627a5162F82A992c33b87aDc75187B218",     'decimal': 1e8, 'volatile': True, 'normalized_symbol': 'BTC/USD:USD'},
@@ -714,6 +712,7 @@ class GmxAPI(VenueAPI):
     def __init__(self, parameters):
         super().__init__(parameters)
         self.timestamp = None
+        self.wallet = parameters['wallet']
 
         self.poolAmounts = {key: 0 for key in GmxAPI.static}
         self.tokenBalances = {key: 0 for key in GmxAPI.static}
@@ -884,8 +883,8 @@ class GmxAPI(VenueAPI):
             self.add_weights()
 
     def depositBalances(self):
-        feeGlp = GmxAPI.reward_tracker.stakedAmounts(GmxAPI.account).call()/1e18
-        #feeGmx = GmxAPI.reward_tracker.depositBalances(GmxAPI.account,GmxAPI.feeGmxTracker).call() / 1e18
+        feeGlp = GmxAPI.reward_tracker.stakedAmounts(self.wallet).call()/1e18
+        #feeGmx = GmxAPI.reward_tracker.depositBalances(self.wallet,GmxAPI.feeGmxTracker).call() / 1e18
         return feeGlp
 
 '''
