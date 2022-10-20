@@ -205,7 +205,7 @@ MyModules.register(name='tradeexecutor',
                                       'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(config_name=x))),'not found']})
 
 MyModules.register(name='glp',
-                   testbed=["weight_glp.json exchange=ftx subaccount=hummingbot config=prod"],
+                   testbed=["glp.json exchange=ftx subaccount=glp config=prod"],
                    args_validation=[['order', lambda x: isinstance(x,str),'not a str']],
                    kwargs_validation={'exchange': [lambda x: x in ['ftx'], 'not in {}'.format(['ftx'])],
                                       'subaccount': [lambda x: True, 'not found'],
