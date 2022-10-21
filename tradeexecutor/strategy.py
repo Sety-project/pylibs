@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import ccxtpro
 
+from tradeexecutor.interface.StrategyEnabler import StrategyEnabler
 from tradeexecutor.order_manager import OrderManager
 from tradeexecutor.position_manager import PositionManager
 from tradeexecutor.signal_engine import SignalEngine, GLPSignal
@@ -16,6 +17,8 @@ from utils.io_utils import myUtcNow
 from utils.api_utils import rename_logfile
 
 class Strategy(ABC):
+    reconcile_delay = 1
+    reconcile_backoff = 2
     '''abstract class Strategy leverages StrategyEnabler to implement quoter (ie generate orders from mkt change or order feed, risk, external request..)
     If there was a bus, its graph would be a tree and Strategy would be the top'''
     class ReadyToShutdown(Exception):
@@ -127,9 +130,21 @@ class Strategy(ABC):
         '''minutely reconcile'''
         while self.position_manager:
             await asyncio.sleep(self.position_manager.limit.check_frequency)
-            await self.reconcile()
+            try:
+                await self.reconcile()
+            except Union[ccxtpro.NetworkError, ConnectionError] as e:
+                delay = Strategy.reconcile_delay
+                while delay > 0:
+                    await asyncio.sleep(delay)
+                    self.logger.warning(f'retry reconcile')
+                    try:
+                        await self.reconcile()
+                    except Union[ccxtpro.NetworkError, ConnectionError] as e:
+                        delay *= Strategy.reconcile_backoff
+                    else:
+                        delay = 0
 
-    @retry.retry((ccxtpro.NetworkError, ConnectionError), tries=14, delay=0.05, backoff=2)  # annoyingly ccxtpro.NetworkError doesn't inherit from ConnectionError
+    #@retry.retry((ccxtpro.NetworkError, ConnectionError), tries=5, delay=1, backoff=2)  # annoyingly ccxtpro.NetworkError doesn't inherit from ConnectionError
     async def reconcile(self):
         '''update risk using rest
         all symbols not present when state is built are ignored !
@@ -138,17 +153,24 @@ class Strategy(ABC):
 
         # if already running, skip reconciliation
         if self.lock[f'reconciling_{id(self)}'].locked():
-            await asyncio.sleep(1)
+            await asyncio.sleep(Strategy.reconcile_delay)
             return
 
         # or reconcile, and lock until done. We don't want to place orders while recon is running
         with self.lock[f'reconciling_{id(self)}']:
-            await self.venue_api.reconcile()
-            await self.signal_engine.reconcile()
-            await self.position_manager.reconcile()
-            await self.order_manager.reconcile()
-            await self.update_quoter_parameters()
-            self.replay_missed_messages()
+            try:
+                await self.venue_api.reconcile()
+                await self.signal_engine.reconcile()
+                await self.position_manager.reconcile()
+                await self.order_manager.reconcile()
+                await self.update_quoter_parameters()
+                self.replay_missed_messages()
+            except Exception as e:
+                pass
+            finally:
+                for reconciled_object in [self.venue_api, self.signal_engine, self.position_manager, self.order_manager]:
+                    reconciled_object.reconciled = False
+                print(f'{type(self)} reset')
 
         # critical job is done, release lock and print data
         if self.order_manager.fill_flag or isinstance(self.signal_engine, GLPSignal):

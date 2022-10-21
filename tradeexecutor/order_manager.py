@@ -300,6 +300,8 @@ class OrderManager(StrategyEnabler):
         self.data[clientOrderId] += [current]
 
     '''reconciliations to an exchange'''
+
+    @StrategyEnabler.unless_reconciled
     async def reconcile(self):
         '''reconciliations to an exchange
         run sequentially to avoid race conditions

@@ -257,8 +257,8 @@ class GLPStrategy(SignalEngine):
         # override self.signal_engine.set_weights() at runtime
         self.hedging_strategy = hedging_strategy
         async def set_weights(self, filename):
-            current_state = self.series[-1]
-            weights = {token: {'target': - self.hedge_ratio * self.series[-1].partial_delta(token)}}
+            current_state = self.pnlexplain[-1]
+            weights = {token: {'target': - self.hedge_ratio * self.pnlexplain[-1].partial_delta(token)}}
             if dict(self) != weights:
                 for symbol, data in weights.items():
                     self[symbol] = data
@@ -274,7 +274,7 @@ class GLPStrategy(SignalEngine):
                 raise e
 
     async def reconcile(self) -> None:
-        current_state = await GLPState.build(semaphore=self.hedging_strategy.rest_semaphor)
+        current_state = await GLPState.build(semaphore=self.hedging_strategy.rest_semaphore)
         #current_state.add_weights()
         current_state.sanity_check()
 

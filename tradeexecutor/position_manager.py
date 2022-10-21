@@ -51,6 +51,7 @@ class PositionManager(StrategyEnabler):
         raise NotImplementedError
 
     @abstractmethod
+    @StrategyEnabler.unless_reconciled
     def reconcile(self):
         raise NotImplementedError
 
@@ -84,6 +85,7 @@ class FtxPositionManager(PositionManager):
                 current,
                 target))
 
+    @StrategyEnabler.unless_reconciled
     async def reconcile(self):
         # if not already done, Initializes a margin calculator that can understand the margin of an order
         # reconcile the margin of an exchange with the margin we calculate
@@ -99,7 +101,8 @@ class FtxPositionManager(PositionManager):
         for parent in self.strategy.parents.values():
             await parent.venue_api.reconcile()
 
-        state = await self.strategy.venue_api.reconcile()
+        await self.strategy.venue_api.reconcile()
+        state = self.strategy.venue_api.state
         self.delta_adjustment = {key: sum(parent.venue_api.partial_delta(key, normalized=True) * parent.position_manager.adjusted_delta(lp_token) * self.strategy.venue_api.mid(key)
                                           for lp_token, parent in self.strategy.parents.items())
                                  for key in self.data}
@@ -108,10 +111,10 @@ class FtxPositionManager(PositionManager):
 
         # delta is noisy for perps, so override to delta 1.
         self.pv = 0
-        for coin, balance in state['balances']['total'].items():
+        for coin, balance in state.balances['total'].items():
             if coin != 'USD':
                 symbol = coin + '/USD'
-                mid = state['markets']['price'][self.strategy.venue_api.market_id(symbol)]
+                mid = state.markets['price'][self.strategy.venue_api.market_id(symbol)]
                 delta = balance * mid
                 if symbol not in self.data:
                     self.data[symbol] = {'delta_id': 0}
@@ -119,9 +122,9 @@ class FtxPositionManager(PositionManager):
                 self.data[symbol]['delta_timestamp'] = risk_timestamp
                 self.pv += delta
 
-        self.pv += state['balances']['total']['USD']  # doesn't contribute to delta, only pv !
+        self.pv += state.balances['total']['USD']  # doesn't contribute to delta, only pv !
 
-        for name, position in state['positions']['netSize'].items():
+        for name, position in state.positions['netSize'].items():
             symbol = self.strategy.venue_api.market(name)['symbol']
             delta = position * self.strategy.venue_api.mid(symbol)
 
@@ -131,7 +134,7 @@ class FtxPositionManager(PositionManager):
             self.data[symbol]['delta_timestamp'] = risk_timestamp
 
         # update IM
-        await self.margin.refresh(self.strategy.venue_api, balances=state['balances']['total'], positions=state['positions']['netSize'],
+        await self.margin.refresh(self.strategy.venue_api, balances=state.balances['total'], positions=state.positions['netSize'],
                                   im_buffer=self.parameters['im_buffer'] * self.pv)
 
         delta_error = {symbol: self.data[symbol]['delta'] - (previous_delta[symbol]['delta'] if symbol in previous_delta else 0)
@@ -226,6 +229,7 @@ class GMXPositionManager(PositionManager):
     def adjusted_delta(self, symbol):
         return self.data[symbol]['delta']
 
+    @StrategyEnabler.unless_reconciled
     async def reconcile(self):
         '''we could call balance of but we just read the target'''
         previous_delta = {symbol: {'delta': data['delta']} for symbol, data in self.data.items()}

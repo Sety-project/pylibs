@@ -57,6 +57,7 @@ class SignalEngine(StrategyEnabler):
     def serialize(self) -> list[dict]:
         raise NotImplementedError
 
+    @StrategyEnabler.unless_reconciled
     async def reconcile(self):
         await self.set_weights()
         for member_data in self.parameters['record_set']:
