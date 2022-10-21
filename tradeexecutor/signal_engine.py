@@ -75,14 +75,14 @@ class SignalEngine(StrategyEnabler):
             venue_id = strategy.venue_api.get_id()
             dirname = configLoader.get_mktdata_folder_for_exchange(f'{venue_id}_tickdata')
             for member_data in self.parameters['record_set']:
-                filename = os.path.join(os.sep, dirname, f'{member_data}.json')
+                filename = os.path.join(os.sep, dirname, f'{member_data}_{self.createdAt.strftime("%Y%m%d_%H%M%S")}.json')
                 async with aiofiles.open(filename, 'w+') as fp:
                     if isinstance(getattr(self, member_data), list) or isinstance(getattr(self, member_data),
                                                                                   collections.deque):
                         await fp.write(json.dumps(getattr(self, member_data), cls=NpEncoder))
                     elif isinstance(getattr(self, member_data), dict):
                         for key,data in getattr(self, member_data).items():
-                            filename = os.path.join(os.sep, dirname, f'{member_data}.json')
+                            filename = os.path.join(os.sep, dirname, f'{member_data}_{self.createdAt.strftime("%Y%m%d_%H%M%S")}.json')
                             async with aiofiles.open(filename, 'w+') as fp:
                                 await fp.write(json.dumps(data, cls=NpEncoder))
 
@@ -271,7 +271,7 @@ class GLPSignal(ExternalSignal):
             self.timestamp = lp_strategy.venue_api.timestamp
 
     def serialize(self) -> list[dict]:
-        return [{f'{k[0]}_{k[1]}': v for k, v in nested_dict_to_tuple(item).items()} for item in self.pnlexplain]
+        return list(self.pnlexplain)
 
     def compile_pnlexplain(self, do_calcs=True):
         # venue_api already reconciled by reconcile()
