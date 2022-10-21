@@ -268,7 +268,7 @@ class GLPSignal(ExternalSignal):
         if self.data != weights:
             # pls note also updates timestamp when benchmark changes :(
             self.data = weights
-            self.timestamp = gmx_state.timestamp
+            self.timestamp = lp_strategy.venue_api.timestamp
 
     def serialize(self) -> list[dict]:
         return [{f'{k[0]}_{k[1]}': v for k, v in nested_dict_to_tuple(item).items()} for item in self.pnlexplain]

@@ -859,9 +859,7 @@ class GmxAPI(VenueAPI):
             coros.append(async_wrap(lambda x: GmxAPI.glp_manager.getAumInUsdg(
                 False).call() / GmxAPI.glp.totalSupply().call())(None))
 
-            time0 = myUtcNow()
             results_values = await safe_gather(coros, n=GmxAPI.safe_gather_limit)  # IT'S CRUCIAL TO MAINTAIN ORDER....
-            time1 = myUtcNow()
 
             functions_list = ['tokenBalances', 'poolAmounts', 'usdgAmounts', 'pricesUp', 'pricesDown', 'guaranteedUsd',
                               'reservedAmounts', 'globalShortSizes', 'globalShortAveragePrices', 'feeReserves']
@@ -875,7 +873,6 @@ class GmxAPI(VenueAPI):
                 setattr(self, function, {key: results[(function, key)] for key in GmxAPI.static})
             self.totalSupply = {'total': results[('totalSupply', 'total')]}
             self.actualAum = {'total': results[('actualAum', 'total')]}
-            self.timestamp = time1
 
             if False:
                 self.add_weights()
@@ -895,6 +892,7 @@ class GmxAPI(VenueAPI):
 
     async def reconcile(self) -> None:
         await self.state.reconcile()
+        self.timestamp = myUtcNow()
 
     def serialize(self) -> dict:
         result = {'timestamp': self.timestamp} | {key: getattr(self.state, key)

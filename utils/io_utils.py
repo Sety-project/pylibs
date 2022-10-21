@@ -186,7 +186,7 @@ def nested_dict_to_tuple(nested: dict) -> dict[tuple,Any]:
             innerDict = nested_dict_to_tuple(data)
             result |= {(key,) + index: value for index, value in innerDict.items()}
         else:
-            result |= {(key, None): data}
+            result |= {(key,): data}
     return result
 #
 # d={'a':0,'b': {'c':5,'d':4}}
