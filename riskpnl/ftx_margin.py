@@ -57,9 +57,9 @@ class MarginCalculator:
         self.balances_and_positions = dict()
 
         if balances is None or positions is None:
-            state = await exchange.reconcile()
-            balances = state['balances']['total']
-            positions = state['positions']['netSize']
+            await exchange.reconcile()
+            balances = exchange.state.balances['total']
+            positions = exchange.state.positions['netSize']
 
         for name,position in positions.items():
             symbol = exchange.market(name)['symbol']
