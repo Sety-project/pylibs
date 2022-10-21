@@ -40,7 +40,7 @@ def intercept_message_during_reconciliation(wrapped):
         self=args[0]
         if not isinstance(self, VenueAPI):
             raise Exception("only apply on venueAPI methods")
-        if self.strategy.lock[f'reconciling_{id(self)}'].locked():
+        if self.strategy.lock[f'reconciling'].locked():
             self.strategy.logger.warning(f'message during reconciliation{args[2]}')
             self.message_missed.append(args[2])
         else:
@@ -389,7 +389,7 @@ class FtxAPI(VenueAPI,ccxtpro.ftx):
         '''maintains risk_state, event_records, logger.info
             #     await self.reconcile_state() is safer but slower. we have monitor_risk to reconcile'''
         fills = await self.watch_my_trades()
-        if not self.strategy.lock[f'reconciling_{id(self)}'].locked():
+        if not self.strategy.lock[f'reconciling'].locked():
             for fill in fills:
                 if hasattr(self.strategy, 'process_fill'):
                     await getattr(self.strategy, 'process_fill')(fill)
@@ -400,7 +400,7 @@ class FtxAPI(VenueAPI,ccxtpro.ftx):
     async def monitor_orders(self,symbol):
         '''maintains orders, pending_new, event_records'''
         orders = await self.watch_orders(symbol=symbol)
-        if not self.strategy.lock[f'reconciling_{id(self)}'].locked():
+        if not self.strategy.lock[f'reconciling'].locked():
             for order in orders:
                 if hasattr(self.strategy, 'process_order'):
                     await getattr(self.strategy, 'process_order')(order | {'comment': 'websocket_acknowledgment'})

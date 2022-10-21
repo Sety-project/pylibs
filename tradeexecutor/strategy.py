@@ -47,8 +47,8 @@ class Strategy(ABC):
         self.data_logger: ExecutionLogger = ExecutionLogger(exchange_name=venue_api.get_id())
 
         self.rest_semaphore: asyncio.Semaphore = asyncio.Semaphore(parameters['rest_semaphore'] if 'rest_semaphore' in parameters else safe_gather_limit)
-        self.lock: dict[str, threading.Lock] = {f'reconciling_{id(self)}': threading.Lock()} \
-                                              | {f'{symbol}_{id(self)}': threading.Lock() for symbol in self.parameters['symbols']}
+        self.lock: dict[str, threading.Lock] = {f'reconciling': threading.Lock()} \
+                                              | {f'{symbol}': threading.Lock() for symbol in self.parameters['symbols']}
 
     def serialize(self) -> dict[str,list[dict]]:
         '''{data type:[dict]}'''
@@ -137,13 +137,13 @@ class Strategy(ABC):
         trigger interception of all incoming messages until done'''
 
         # if already running, skip reconciliation
-        if self.lock[f'reconciling_{id(self)}'].locked():
+        if self.lock[f'reconciling'].locked():
             await asyncio.sleep(1)
             return
 
         # We don't want to place orders while recon is running --> lock until done
         # order of the reconciles is important :(
-        with self.lock[f'reconciling_{id(self)}']:
+        with self.lock[f'reconciling']:
             await self.venue_api.reconcile()
             await self.signal_engine.reconcile()
             await self.position_manager.reconcile()
@@ -272,16 +272,16 @@ class ExecutionStrategy(Strategy):
         '''
             leverages orderbook and risk to issue an order
             Critical loop, needs to go quick
-            self.lock[f'{symbol}_{id(self)}']: careful not to act if another orderbook update triggers again during execution
+            self.lock[f'{symbol}']: careful not to act if another orderbook update triggers again during execution
         '''
         await super().process_order_book_update(symbol,orderbook)
         data = self.data[symbol]
         mid = 0.5*(orderbook['bids'][0][0]+orderbook['asks'][0][0])
 
-        if self.lock[f'{symbol}_{id(self)}'].locked() or self.lock[f'reconciling_{id(self)}'].locked():
+        if self.lock[f'{symbol}'].locked() or self.lock[f'reconciling'].locked():
             return
 
-        with self.lock[f'{symbol}_{id(self)}']:
+        with self.lock[f'{symbol}']:
             # size to do:
             original_size = data['target'] - self.position_manager.adjusted_delta(symbol) / mid
             if abs(original_size) < self.parameters['significance_threshold'] * self.position_manager.pv / mid \
@@ -404,12 +404,12 @@ class AlgoStrategy(Strategy):
             only runs on lower_volume
             aggressive limit spread outside quantiles
             Critical loop, needs to go quick
-            self.lock[f'{symbol}_{id(self)}']: careful not to act if another orderbook update triggers again during execution
+            self.lock[f'{symbol}']: careful not to act if another orderbook update triggers again during execution
         '''
         await super().process_order_book_update(symbol, orderbook)
 
-        if self.lock[f'{symbol}_{id(self)}'].locked(): return
-        with self.lock[f'{symbol}_{id(self)}']:
+        if self.lock[f'{symbol}'].locked(): return
+        with self.lock[f'{symbol}']:
             # flatten delta if any
             coinDelta = self.position_manager.coin_delta(symbol)
             if abs(coinDelta) > self.position_manager.limit.delta_limit * self.position_manager.pv \
@@ -439,7 +439,7 @@ class AlgoStrategy(Strategy):
                                                           edit_trigger_depth=self.data[symbol]['edit_trigger_depth'])
 
     async def process_fill(self, fill):
-        '''self.lock[f'{symbol}_{id(self)}']: not necessary here ?'''
+        '''self.lock[f'{symbol}']: not necessary here ?'''
         await super().process_fill(fill)
         # only react to limit orders being filled
         symbol = fill['symbol']
