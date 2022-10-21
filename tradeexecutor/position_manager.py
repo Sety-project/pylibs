@@ -85,9 +85,10 @@ class FtxPositionManager(PositionManager):
                 target))
 
     async def reconcile(self):
-        # if not already done, Initializes a margin calculator that can understand the margin of an order
-        # reconcile the margin of an exchange with the margin we calculate
-        # pls note it needs the exchange pv, which is known after reconcile
+        '''needs a reconciled venueAPI
+        if not already done, Initializes a margin calculator that can understand the margin of an order
+        reconcile the margin of an exchange with the margin we calculate
+        pls note it needs the exchange pv, which is known after reconcile'''
         self.margin = self.margin if self.margin else await MarginCalculator.margin_calculator_factory(self.strategy.venue_api)
         self.markets = self.markets if self.markets else self.strategy.venue_api.markets
 
@@ -99,9 +100,8 @@ class FtxPositionManager(PositionManager):
         for parent in self.strategy.parents.values():
             await parent.venue_api.reconcile()
 
-        await self.strategy.venue_api.reconcile()
         state = self.strategy.venue_api.state
-        self.delta_adjustment = {key: sum(parent.venue_api.partial_delta(key, normalized=True) * parent.position_manager.adjusted_delta(lp_token) * self.strategy.venue_api.mid(key)
+        self.delta_adjustment = {key: sum(parent.venue_api.state.partial_delta(key, normalized=True) * parent.position_manager.adjusted_delta(lp_token) * self.strategy.venue_api.mid(key)
                                           for lp_token, parent in self.strategy.parents.items())
                                  for key in self.data}
 
@@ -228,14 +228,13 @@ class GMXPositionManager(PositionManager):
         return self.data[symbol]['delta']
 
     async def reconcile(self):
-        '''we could call balance of but we just read the target'''
+        '''needs a reconciled venueAPI'''
         previous_delta = {symbol: {'delta': data['delta']} for symbol, data in self.data.items()}
         previous_pv = self.pv
         
         risk_timestamp = myUtcNow()
-        await self.strategy.venue_api.reconcile()
-        glp_position = self.strategy.venue_api.depositBalances()
-        self.pv = glp_position * self.strategy.venue_api.actualAum['total']
+        glp_position = self.strategy.venue_api.state.depositBalances()
+        self.pv = glp_position * self.strategy.venue_api.state.actualAum['total']
         self.data['GLP']['delta'] = self.pv
 
         delta_error = {symbol: self.data[symbol]['delta'] - (previous_delta[symbol]['delta'] if symbol in previous_delta else 0)

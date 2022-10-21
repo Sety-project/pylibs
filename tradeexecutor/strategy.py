@@ -129,7 +129,7 @@ class Strategy(ABC):
             await asyncio.sleep(self.position_manager.limit.check_frequency)
             await self.reconcile()
 
-    @retry.retry((ccxtpro.NetworkError, ConnectionError), tries=14, delay=0.05, backoff=2)  # annoyingly ccxtpro.NetworkError doesn't inherit from ConnectionError
+    @retry.retry((ccxtpro.NetworkError, ConnectionError), tries=10, delay=0.1, backoff=2)  # annoyingly ccxtpro.NetworkError doesn't inherit from ConnectionError
     async def reconcile(self):
         '''update risk using rest
         all symbols not present when state is built are ignored !
@@ -141,7 +141,8 @@ class Strategy(ABC):
             await asyncio.sleep(1)
             return
 
-        # or reconcile, and lock until done. We don't want to place orders while recon is running
+        # We don't want to place orders while recon is running --> lock until done
+        # order of the reconciles is important :(
         with self.lock[f'reconciling_{id(self)}']:
             await self.venue_api.reconcile()
             await self.signal_engine.reconcile()

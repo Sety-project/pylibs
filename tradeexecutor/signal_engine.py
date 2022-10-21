@@ -1,3 +1,5 @@
+import asyncio
+
 import aiofiles
 import collections, os, json
 import itertools
@@ -37,6 +39,7 @@ class SignalEngine(StrategyEnabler):
             result = SpreadTradeSignal(parameters)
         elif parameters['type'] == 'parent_strategy':
             result = GLPSignal(parameters)
+            await parameters['parents']['GLP'].venue_api.reconcile()
         else:
             return None
 
@@ -250,10 +253,9 @@ class GLPSignal(ExternalSignal):
                 self.data[data['normalized_symbol']] = None
 
     async def set_weights(self):
+        '''needs venue to be reconciled'''
         lp_strategy = self.strategy.parents['GLP'] if self.strategy is not None else self.parameters['parents']['GLP']  # for the first time..
-        gmx_state = lp_strategy.venue_api
-        await gmx_state.reconcile()
-        gmx_state.sanity_check()
+        gmx_state = lp_strategy.venue_api.state
 
         glp_position = lp_strategy.position_manager.data['GLP']['delta']/gmx_state.valuation()
         weights = {'ETH/USD:USD': {'target': - (lp_strategy.hedge_ratio-1) * glp_position * gmx_state.partial_delta('WETH'),
@@ -273,8 +275,8 @@ class GLPSignal(ExternalSignal):
 
     def compile_pnlexplain(self, do_calcs=True):
         # venue_api already reconciled by reconcile()
-        current_state = self.strategy.parents['GLP'].venue_api
-        current = current_state.serialize()
+        current_state = self.strategy.parents['GLP'].venue_api.state
+        current = self.strategy.parents['GLP'].venue_api.serialize()
 
         # compute risk
         if do_calcs:

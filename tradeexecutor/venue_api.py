@@ -719,184 +719,190 @@ class GmxAPI(VenueAPI):
     #         self.size = size
     #         self.lastIncreasedTime = lastIncreasedTime
 
+    class State:
+        def __init__(self, parameters):
+            self.wallet = parameters['wallet']
+
+            self.poolAmounts = {key: 0 for key in GmxAPI.static}
+            self.tokenBalances = {key: 0 for key in GmxAPI.static}
+            self.usdgAmounts = {key: 0 for key in GmxAPI.static}
+            self.pricesUp = {key: None for key in GmxAPI.static}
+            self.pricesDown = {key: None for key in GmxAPI.static}
+
+            self.guaranteedUsd = {key: 0 for key, data in GmxAPI.static.items() if data['volatile']}
+            self.reservedAmounts = {key: 0 for key, data in GmxAPI.static.items() if data['volatile']}
+            self.globalShortSizes = {key: 0 for key, data in GmxAPI.static.items() if data['volatile']}
+            self.globalShortAveragePrices = {key: None for key, data in GmxAPI.static.items() if data['volatile']}
+            self.feeReserves = {key: 0 for key in GmxAPI.static}
+
+            self.totalSupply = {'total': None}
+            self.actualAum = {'total': None}
+            self.check = {key: dict() for key in GmxAPI.static}
+
+        def valuation(self, key=None) -> float:
+            '''unstakeAndRedeemGlpETH: 0xe5004b114abd13b32267514808e663c456d1803ace40c0a4ae7421571155fdd3
+            total is key is None'''
+            if key is None:
+                return sum(self.valuation(key) for key in GmxAPI.static)
+            else:
+                aum = self.poolAmounts[key] * self.pricesDown[key]
+                if GmxAPI.static[key]['volatile']:
+                    aum += self.guaranteedUsd[key] - self.reservedAmounts[key] * self.pricesDown[key]
+                    # add pnl from shorts
+                    aum += (self.pricesDown[key] / self.globalShortAveragePrices[key] - 1) * self.globalShortSizes[key]
+                return aum / self.totalSupply['total']
+
+        def partial_delta(self, key: str, normalized: bool=False) -> float:
+            ''' delta in token
+            delta =  poolAmount - reservedAmounts + globalShortSizes/globalShortAveragePrices
+            ~ what's ours + (collateral - N)^{longs}'''
+            if normalized:  # this uses normalized input
+                result = 0
+                for token, data in GmxAPI.static.items():
+                    if data['normalized_symbol'] == key:
+                        result += self.poolAmounts[token]
+                        if data['volatile']:
+                            result += (- self.reservedAmounts[token] + self.globalShortSizes[token] / self.globalShortAveragePrices[token])
+                return result / self.totalSupply['total']
+            else:
+                result = self.poolAmounts[key]
+                if GmxAPI.static[key]['volatile']:
+                    result += (- self.reservedAmounts[key] + self.globalShortSizes[key] / self.globalShortAveragePrices[key])
+                return result / self.totalSupply['total']
+        # def add_weights(self) -> None:
+        #     weight_contents = urllib.request.urlopen("https://gmx-avax-server.uc.r.appspot.com/tokens").read()
+        #     weight_json = json.loads(weight_contents)
+        #     sillyMapping = {'MIM': 'MIM',
+        #                     'BTC.b': 'BTC_E',
+        #                     'ETH': 'WETH',
+        #                     'BTC': 'WBTC',
+        #                     'USDC.e': 'USDC_E',
+        #                     'AVAX': 'WAVAX',
+        #                     'USDC': 'USDC'}
+        #
+        #     for cur_contents in weight_json:
+        #         token = sillyMapping[cur_contents['data']['symbol']]
+        #         self.check[token]['weight'] = float(cur_contents["data"]["usdgAmount"]) / float(
+        #             cur_contents["data"]["maxPrice"])
+        #         for attribute in ['fundingRate', 'poolAmounts', 'reservedAmount', 'redemptionAmount', 'globalShortSize',
+        #                           'guaranteedUsd']:
+        #             self.check[token][attribute] = float(cur_contents['data'][attribute])
+
+        def add_weights(self) -> None:
+            weight_contents = urllib.request.urlopen("https://gmx-avax-server.uc.r.appspot.com/tokens").read()
+            weight_json = json.loads(weight_contents)
+            sillyMapping = {'MIM': 'MIM',
+                            'BTC.b': 'BTC_E',
+                            'ETH': 'WETH',
+                            'BTC': 'WBTC',
+                            'USDC.e': 'USDC_E',
+                            'AVAX': 'WAVAX',
+                            'USDC': 'USDC'}
+
+            for cur_contents in weight_json:
+                token = sillyMapping[cur_contents['data']['symbol']]
+                self.check[token]['weight'] = float(cur_contents["data"]["usdgAmount"]) / float(
+                    cur_contents["data"]["maxPrice"])
+                for attribute in ['fundingRate', 'poolAmounts', 'reservedAmount', 'redemptionAmount', 'globalShortSize',
+                                  'guaranteedUsd']:
+                    self.check[token][attribute] = float(cur_contents['data'][attribute])
+
+        def sanity_check(self):
+            return abs(self.valuation() * self.totalSupply['total'] / self.actualAum['total'] - 1) < GmxAPI.check_tolerance
+
+        async def reconcile(self) -> None:
+            def read_contracts(address, decimal, volatile):
+                coros = []
+                coros.append(
+                    async_wrap(lambda x: float(GmxAPI.vault.tokenBalances(address).call()) / decimal)(
+                        None))
+                coros.append(
+                    async_wrap(lambda x: float(GmxAPI.vault.poolAmounts(address).call()) / decimal)(
+                        None))
+                coros.append(
+                    async_wrap(lambda x: float(GmxAPI.vault.usdgAmounts(address).call()) / decimal)(
+                        None))
+                coros.append(
+                    async_wrap(lambda x: float(GmxAPI.vault.getMaxPrice(address).call() / 1e30))(None))
+                coros.append(
+                    async_wrap(lambda x: float(GmxAPI.vault.getMinPrice(address).call() / 1e30))(None))
+                coros.append(async_wrap(
+                    lambda x: (
+                        float(GmxAPI.vault.guaranteedUsd(address).call()) / 1e30 if volatile else None))(
+                    None))
+                coros.append(async_wrap(lambda x: (
+                    float(
+                        GmxAPI.vault.reservedAmounts(address).call()) / decimal if volatile else None))(
+                    None))
+                coros.append(async_wrap(
+                    lambda x: (
+                        float(GmxAPI.vault.globalShortSizes(
+                            address).call()) / 1e30 if volatile else None))(
+                    None))
+                coros.append(async_wrap(lambda x: (
+                    float(GmxAPI.vault.globalShortAveragePrices(
+                        address).call()) / 1e30 if volatile else None))(
+                    None))
+                coros.append(async_wrap(
+                    lambda x: (
+                        float(
+                            GmxAPI.vault.feeReserves(address).call()) / decimal if volatile else None))(
+                    None))
+                return coros
+
+            coros = []
+            for key, data in GmxAPI.static.items():
+                coros += read_contracts(data['address'], data['decimal'], data['volatile'])
+
+            # result.positions = GLPState.contract_vault.functions.positions().call()
+            coros.append(async_wrap(lambda x: GmxAPI.glp.totalSupply().call() / 1e18)(None))
+            coros.append(async_wrap(lambda x: GmxAPI.glp_manager.getAumInUsdg(
+                False).call() / GmxAPI.glp.totalSupply().call())(None))
+
+            time0 = myUtcNow()
+            results_values = await safe_gather(coros, n=GmxAPI.safe_gather_limit)  # IT'S CRUCIAL TO MAINTAIN ORDER....
+            time1 = myUtcNow()
+
+            functions_list = ['tokenBalances', 'poolAmounts', 'usdgAmounts', 'pricesUp', 'pricesDown', 'guaranteedUsd',
+                              'reservedAmounts', 'globalShortSizes', 'globalShortAveragePrices', 'feeReserves']
+
+            results = {(function, token): results_values[i] for i, (token, function) in
+                       enumerate(itertools.product(GmxAPI.static.keys(), functions_list))}
+            results |= {('totalSupply', 'total'): results_values[-2],
+                        ('actualAum', 'total'): results_values[-1]}
+
+            for function in functions_list:
+                setattr(self, function, {key: results[(function, key)] for key in GmxAPI.static})
+            self.totalSupply = {'total': results[('totalSupply', 'total')]}
+            self.actualAum = {'total': results[('actualAum', 'total')]}
+            self.timestamp = time1
+
+            if False:
+                self.add_weights()
+
+        def depositBalances(self):
+            feeGlp = GmxAPI.reward_tracker.stakedAmounts(self.wallet).call()/1e18
+            #feeGmx = GmxAPI.reward_tracker.depositBalances(self.wallet,GmxAPI.feeGmxTracker).call() / 1e18
+            return feeGlp
+
     def __init__(self, parameters):
         super().__init__(parameters)
         self.timestamp = None
-        self.wallet = parameters['wallet']
-
-        self.poolAmounts = {key: 0 for key in GmxAPI.static}
-        self.tokenBalances = {key: 0 for key in GmxAPI.static}
-        self.usdgAmounts = {key: 0 for key in GmxAPI.static}
-        self.pricesUp = {key: None for key in GmxAPI.static}
-        self.pricesDown = {key: None for key in GmxAPI.static}
-
-        self.guaranteedUsd = {key: 0 for key, data in GmxAPI.static.items() if data['volatile']}
-        self.reservedAmounts = {key: 0 for key, data in GmxAPI.static.items() if data['volatile']}
-        self.globalShortSizes = {key: 0 for key, data in GmxAPI.static.items() if data['volatile']}
-        self.globalShortAveragePrices = {key: None for key, data in GmxAPI.static.items() if data['volatile']}
-        self.feeReserves = {key: 0 for key in GmxAPI.static}
-
-        self.totalSupply = {'total': None}
-        self.actualAum = {'total': None}
-        self.check = {key: dict() for key in GmxAPI.static}
+        self.state = GmxAPI.State(parameters)
 
     def get_id(self):
         return "gmx"
 
-    def serialize(self) -> dict:
-        result = {key: getattr(self,key)
-                  for key in ['timestamp','tokenBalances', 'poolAmounts', 'usdgAmounts', 'pricesUp', 'pricesDown', 'guaranteedUsd',
-                      'reservedAmounts', 'globalShortSizes', 'globalShortAveragePrices', 'feeReserves','actualAum','totalSupply']}
-        return result
-
-    def valuation(self, key=None) -> float:
-        '''unstakeAndRedeemGlpETH: 0xe5004b114abd13b32267514808e663c456d1803ace40c0a4ae7421571155fdd3
-        total is key is None'''
-        if key is None:
-            return sum(self.valuation(key) for key in GmxAPI.static)
-        else:
-            aum = self.poolAmounts[key] * self.pricesDown[key]
-            if GmxAPI.static[key]['volatile']:
-                aum += self.guaranteedUsd[key] - self.reservedAmounts[key] * self.pricesDown[key]
-                # add pnl from shorts
-                aum += (self.pricesDown[key] / self.globalShortAveragePrices[key] - 1) * self.globalShortSizes[key]
-            return aum / self.totalSupply['total']
-
-    def partial_delta(self, key: str, normalized: bool=False) -> float:
-        ''' delta in token
-        delta =  poolAmount - reservedAmounts + globalShortSizes/globalShortAveragePrices
-        ~ what's ours + (collateral - N)^{longs}'''
-        if normalized:  # this uses normalized input
-            result = 0
-            for token, data in GmxAPI.static.items():
-                if data['normalized_symbol'] == key:
-                    result += self.poolAmounts[token]
-                    if data['volatile']:
-                        result += (- self.reservedAmounts[token] + self.globalShortSizes[token] / self.globalShortAveragePrices[token])
-            return result / self.totalSupply['total']
-        else:
-            result = self.poolAmounts[key]
-            if GmxAPI.static[key]['volatile']:
-                result += (- self.reservedAmounts[key] + self.globalShortSizes[key] / self.globalShortAveragePrices[key])
-            return result / self.totalSupply['total']
-    # def add_weights(self) -> None:
-    #     weight_contents = urllib.request.urlopen("https://gmx-avax-server.uc.r.appspot.com/tokens").read()
-    #     weight_json = json.loads(weight_contents)
-    #     sillyMapping = {'MIM': 'MIM',
-    #                     'BTC.b': 'BTC_E',
-    #                     'ETH': 'WETH',
-    #                     'BTC': 'WBTC',
-    #                     'USDC.e': 'USDC_E',
-    #                     'AVAX': 'WAVAX',
-    #                     'USDC': 'USDC'}
-    #
-    #     for cur_contents in weight_json:
-    #         token = sillyMapping[cur_contents['data']['symbol']]
-    #         self.check[token]['weight'] = float(cur_contents["data"]["usdgAmount"]) / float(
-    #             cur_contents["data"]["maxPrice"])
-    #         for attribute in ['fundingRate', 'poolAmounts', 'reservedAmount', 'redemptionAmount', 'globalShortSize',
-    #                           'guaranteedUsd']:
-    #             self.check[token][attribute] = float(cur_contents['data'][attribute])
-
-    def add_weights(self) -> None:
-        weight_contents = urllib.request.urlopen("https://gmx-avax-server.uc.r.appspot.com/tokens").read()
-        weight_json = json.loads(weight_contents)
-        sillyMapping = {'MIM': 'MIM',
-                        'BTC.b': 'BTC_E',
-                        'ETH': 'WETH',
-                        'BTC': 'WBTC',
-                        'USDC.e': 'USDC_E',
-                        'AVAX': 'WAVAX',
-                        'USDC': 'USDC'}
-
-        for cur_contents in weight_json:
-            token = sillyMapping[cur_contents['data']['symbol']]
-            self.check[token]['weight'] = float(cur_contents["data"]["usdgAmount"]) / float(
-                cur_contents["data"]["maxPrice"])
-            for attribute in ['fundingRate', 'poolAmounts', 'reservedAmount', 'redemptionAmount', 'globalShortSize',
-                              'guaranteedUsd']:
-                self.check[token][attribute] = float(cur_contents['data'][attribute])
-
-    def sanity_check(self):
-        if abs(self.valuation() * self.totalSupply['total'] / self.actualAum['total'] - 1) > GmxAPI.check_tolerance:
-            actualPx = self.actualAum['total'] / self.totalSupply['total']
-            self.strategy.logger.warning(f'val {self.valuation()} vs actual {actualPx}')
-
     async def reconcile(self) -> None:
-        def read_contracts(address, decimal, volatile):
-            coros = []
-            coros.append(
-                async_wrap(lambda x: float(GmxAPI.vault.tokenBalances(address).call()) / decimal)(
-                    None))
-            coros.append(
-                async_wrap(lambda x: float(GmxAPI.vault.poolAmounts(address).call()) / decimal)(
-                    None))
-            coros.append(
-                async_wrap(lambda x: float(GmxAPI.vault.usdgAmounts(address).call()) / decimal)(
-                    None))
-            coros.append(
-                async_wrap(lambda x: float(GmxAPI.vault.getMaxPrice(address).call() / 1e30))(None))
-            coros.append(
-                async_wrap(lambda x: float(GmxAPI.vault.getMinPrice(address).call() / 1e30))(None))
-            coros.append(async_wrap(
-                lambda x: (
-                    float(GmxAPI.vault.guaranteedUsd(address).call()) / 1e30 if volatile else None))(
-                None))
-            coros.append(async_wrap(lambda x: (
-                float(
-                    GmxAPI.vault.reservedAmounts(address).call()) / decimal if volatile else None))(
-                None))
-            coros.append(async_wrap(
-                lambda x: (
-                    float(GmxAPI.vault.globalShortSizes(
-                        address).call()) / 1e30 if volatile else None))(
-                None))
-            coros.append(async_wrap(lambda x: (
-                float(GmxAPI.vault.globalShortAveragePrices(
-                    address).call()) / 1e30 if volatile else None))(
-                None))
-            coros.append(async_wrap(
-                lambda x: (
-                    float(
-                        GmxAPI.vault.feeReserves(address).call()) / decimal if volatile else None))(
-                None))
-            return coros
+        await self.state.reconcile()
 
-        coros = []
-        for key, data in GmxAPI.static.items():
-            coros += read_contracts(data['address'], data['decimal'], data['volatile'])
-
-        # result.positions = GLPState.contract_vault.functions.positions().call()
-        coros.append(async_wrap(lambda x: GmxAPI.glp.totalSupply().call() / 1e18)(None))
-        coros.append(async_wrap(lambda x: GmxAPI.glp_manager.getAumInUsdg(
-            False).call() / GmxAPI.glp.totalSupply().call())(None))
-
-        time0 = myUtcNow()
-        results_values = await safe_gather(coros, n=GmxAPI.safe_gather_limit)  # IT'S CRUCIAL TO MAINTAIN ORDER....
-        time1 = myUtcNow()
-
-        functions_list = ['tokenBalances', 'poolAmounts', 'usdgAmounts', 'pricesUp', 'pricesDown', 'guaranteedUsd',
-                          'reservedAmounts', 'globalShortSizes', 'globalShortAveragePrices', 'feeReserves']
-
-        results = {(function, token): results_values[i] for i, (token, function) in
-                   enumerate(itertools.product(GmxAPI.static.keys(), functions_list))}
-        results |= {('totalSupply', 'total'): results_values[-2],
-                    ('actualAum', 'total'): results_values[-1]}
-
-        for function in functions_list:
-            setattr(self, function, {key: results[(function, key)] for key in GmxAPI.static})
-        self.totalSupply = {'total': results[('totalSupply', 'total')]}
-        self.actualAum = {'total': results[('actualAum', 'total')]}
-        self.timestamp = time1
-
-        if False:
-            self.add_weights()
-
-    def depositBalances(self):
-        feeGlp = GmxAPI.reward_tracker.stakedAmounts(self.wallet).call()/1e18
-        #feeGmx = GmxAPI.reward_tracker.depositBalances(self.wallet,GmxAPI.feeGmxTracker).call() / 1e18
-        return feeGlp
-
+    def serialize(self) -> dict:
+        result = {'timestamp': self.timestamp} | {key: getattr(self.state, key)
+                  for key in ['tokenBalances', 'poolAmounts', 'usdgAmounts', 'pricesUp', 'pricesDown',
+                              'guaranteedUsd',
+                              'reservedAmounts', 'globalShortSizes', 'globalShortAveragePrices', 'feeReserves',
+                              'actualAum', 'totalSupply']}
+        return result
 '''
 the below is only for documentation
 '''
