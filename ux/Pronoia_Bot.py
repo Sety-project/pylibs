@@ -43,7 +43,7 @@ def help(update, context):
         if mod_name != 'ux':
             for test in data.testbed:
                 update.message.reply_text(f'{mod_name} '+str(test))
-    update.message.reply_text('docker ps \n docker stop <appname>\nbash: get <filepath>\nbash: ls <dirname> ')
+    update.message.reply_text('docker ps \n docker stop <tradeexecutor_glp>\nbash: get <filepath>\nbash: ls <home ec2-user mktdata gmx_tickdata> ')
 
 def echo(update, context):
     try:

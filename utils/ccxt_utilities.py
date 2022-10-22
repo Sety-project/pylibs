@@ -106,7 +106,7 @@ async def open_exchange(exchange_name,subaccount,config={}):
     #subaccount_list = pd.DataFrame((exchange.privateGetSubaccounts())['result'])
     else:
         print('what exchange?')
-    if isinstance(exchange,ccxt.base.exchange):
+    if isinstance(exchange, ccxt.Exchange):
         exchange.checkRequiredCredentials()  # raises AuthenticationError
         await exchange.load_markets()
         await exchange.load_fees()
