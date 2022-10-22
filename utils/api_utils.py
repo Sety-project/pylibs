@@ -197,17 +197,17 @@ MyModules.register(name='ux',
                    kwargs_validation={})
 
 MyModules.register(name='tradeexecutor',
-                   testbed=["weights_ftx_debug_ETH.json"], # ,"unwind exchange=ftx subaccount=debug config=prod"
+                   testbed=["weights_ftx_debug_ETH.json","glp.json exchange=ftx subaccount=glp config=prod"], # ,"unwind exchange=ftx subaccount=debug config=prod"
                    args_validation=[
                        ['order', lambda x: isinstance(x,str),'not a str']],
                    kwargs_validation={'exchange':[lambda x: x in ['ftx'],'not in {}'.format(['ftx'])],
                                       'subaccount':[lambda x: True,'not found'],
                                       'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(config_name=x))),'not found']})
 
-MyModules.register(name='glp',
-                   testbed=["glp.json exchange=ftx subaccount=glp config=prod"],
-                   args_validation=[['order', lambda x: isinstance(x,str),'not a str']],
-                   kwargs_validation={'exchange': [lambda x: x in ['ftx'], 'not in {}'.format(['ftx'])],
-                                      'subaccount': [lambda x: True, 'not found'],
-                                      'config': [lambda x: os.path.isdir(os.path.join(os.sep, configLoader.get_config_folder_path(config_name=x))),'not found'],
-                                      'frequency': [lambda x: isinstance(x,int), 'not a int']})
+# MyModules.register(name='glp',
+#                    testbed=["glp.json exchange=ftx subaccount=glp config=prod"],
+#                    args_validation=[['order', lambda x: isinstance(x,str),'not a str']],
+#                    kwargs_validation={'exchange': [lambda x: x in ['ftx'], 'not in {}'.format(['ftx'])],
+#                                       'subaccount': [lambda x: True, 'not found'],
+#                                       'config': [lambda x: os.path.isdir(os.path.join(os.sep, configLoader.get_config_folder_path(config_name=x))),'not found'],
+#                                       'frequency': [lambda x: isinstance(x,int), 'not a int']})

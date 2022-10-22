@@ -28,16 +28,17 @@ async def main_coroutine(order_name, **kwargs):
     order = os.path.join(os.sep, configLoader.get_config_folder_path(config_name=kwargs['config']), "pfoptimizer", order_name)
     parameters["signal_engine"]['filename'] = order
 
-    strategy = await Strategy.build(parameters)
-
-    try:
-        await strategy.run()
-    except Exception as e:
-        await strategy.exit_gracefully()
-        if not isinstance(e, Strategy.ReadyToShutdown):
-            logger = logging.getLogger('tradeexecutor')
-            logger.critical(str(e), exc_info=True)
-            raise e
+    while True:
+        try:
+            strategy = await Strategy.build(parameters)
+            await strategy.run()
+        except Exception as e:
+            await strategy.exit_gracefully()
+            if not isinstance(e, Strategy.ReadyToShutdown):
+                logger = logging.getLogger('tradeexecutor')
+                logger.critical(str(e), exc_info=True)
+            else:
+                raise e
 
 @api
 def main(*args,**kwargs):

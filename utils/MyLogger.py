@@ -27,8 +27,8 @@ class ExecutionLogger:
             os.makedirs(self.mktdata_dirname, mode=0o777)
 
     async def write_history(self, records: dict[str,list[dict]]) -> None:
-        coin = records['parameters'][0]['symbols'][0].replace(':USD','').replace('/USD', '')
-        filename = self.json_filename.replace('.json', f'_{coin}.json')
+        coins = '_'.join([symbol.replace(':USD','').replace('/USD', '') for symbol in records['parameters'][0]['symbols']])
+        filename = self.json_filename.replace('.json', f'{coins}.json')
         if os.path.isfile(filename):
             async with aiofiles.open(filename, 'r') as file:
                 content = await file.read()
