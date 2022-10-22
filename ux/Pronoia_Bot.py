@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # This program is dedicated to the public domain under the CC0 license.
+import os.path
+
 from utils.api_utils import extract_args_kwargs,api,MyModules
 import importlib,logging
 
@@ -41,6 +43,7 @@ def help(update, context):
         if mod_name != 'ux':
             for test in data.testbed:
                 update.message.reply_text(f'{mod_name} '+str(test))
+    update.message.reply_text('docker ps \n docker stop <appname>\nbash: get <filepath>\nbash: ls <dirname> ')
 
 def echo(update, context):
     try:
@@ -87,13 +90,18 @@ def echo(update, context):
             update.message.reply_text(''.join([f'{key} ----->\n {value}\n' for key, value in response.items()]))
             data = None
         elif split_message[0] == 'bash:':
-            if os.path.isfile(split_message[1]):
-                with open(split_message[1], "rb") as file:
+            path = os.path.join(os.sep,*split_message[2:])
+            if split_message[1] == 'get' and os.path.isfile(path):
+                with open(path, "rb") as file:
                     update.message.bot.sendDocument(update.message['chat']['id'], document=file)
                     data = None
+            elif split_message[1] == 'ls' and os.path.isdir(path):
+                response = os.listdir(path)
+                update.message.reply_text(''.join([f'{value}\n' for value in response]))
+                data = None
             else:
                 raise Exception('disabled')
-                response = bash_run(''.join(split_message[1:]))
+                # response = bash_run(''.join(split_message[1:]))
                 update.message.reply_text(''.join([f'{key} ----->\n {value}\n' for key, value in response.items()]))
                 data = None
         else:
