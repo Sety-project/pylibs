@@ -75,9 +75,9 @@ class FtxPositionManager(PositionManager):
         # update margin
         self.margin.add_instrument(symbol, fill_size)
 
-        if 'verbose' in self.strategy.parameters['options'] and symbol in self.strategy:
+        if 'verbose' in self.strategy.parameters['options'] and symbol in self.strategy.data:
             current = self.data[symbol]['delta']
-            target = self.strategy[symbol]['target'] * px if 'target' in self.strategy[symbol] else None
+            target = self.strategy.data[symbol]['target'] * px if 'target' in self.strategy.data[symbol] else None
             self.strategy.logger.warning('{} risk at {} ms: [current {}, target {}]'.format(
                 symbol,
                 self.data[symbol]['delta_timestamp'],
@@ -112,7 +112,7 @@ class FtxPositionManager(PositionManager):
         for coin, balance in state.balances['total'].items():
             if coin != 'USD':
                 symbol = coin + '/USD'
-                mid = state['markets']['price'][self.strategy.venue_api.market_id(symbol)]
+                mid = state.markets['price'][self.strategy.venue_api.market_id(symbol)]
                 delta = balance * mid
                 if symbol not in self.data:
                     self.data[symbol] = {'delta_id': 0}

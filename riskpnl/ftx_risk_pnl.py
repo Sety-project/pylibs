@@ -157,14 +157,14 @@ async def diff_portoflio_wrapper(*args,**kwargs):
     return diff
 
 async def fetch_portfolio(exchange,time):
-    state = await reconcile(exchange)
+    state = exchange.state
 
     # go ahead
     futures = pd.DataFrame(await FtxAPI.Static.fetch_futures(exchange))
     futures = futures.set_index('name')
-    positions = pd.DataFrame(state['positions']).reset_index().rename(columns={'index':'future'})
-    markets = pd.DataFrame(state['markets'])
-    balances = pd.DataFrame(state['balances']).reset_index().rename(columns={'index':'coin'})
+    positions = pd.DataFrame(state.positions).reset_index().rename(columns={'index':'future'})
+    markets = pd.DataFrame(state.markets)
+    balances = pd.DataFrame(state.balances).reset_index().rename(columns={'index':'coin'})
     if not positions.empty:
         unrealizedPnL = positions['unrealizedPnl'].sum()
         positions['coin'] = 'USD'
