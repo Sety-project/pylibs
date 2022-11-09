@@ -630,7 +630,7 @@ class FtxAPI(VenueAPI,ccxtpro.ftx):
         '''set in flight, send cancel, set as pending cancel, set as canceled or insist'''
         symbol = clientOrderId.split('_')[1]
         self.strategy.order_manager.pending_cancel({'comment':trigger}
-                                          | {key: [order[key] for order in self.strategy.order_manager[clientOrderId] if key in order][-1]
+                                          | {key: [order[key] for order in self.strategy.order_manager.data[clientOrderId] if key in order][-1]
                                         for key in ['clientOrderId','symbol','side','amount','remaining','price']})  # may be needed
 
         try:
@@ -737,6 +737,7 @@ class GmxAPI(VenueAPI):
 
             self.totalSupply = {'total': None}
             self.actualAum = {'total': None}
+            self.wavaxReward = {'total': None}
             self.check = {key: dict() for key in GmxAPI.static}
 
         def valuation(self, key=None) -> float:
@@ -867,12 +868,15 @@ class GmxAPI(VenueAPI):
             results = {(function, token): results_values[i] for i, (token, function) in
                        enumerate(itertools.product(GmxAPI.static.keys(), functions_list))}
             results |= {('totalSupply', 'total'): results_values[-2],
-                        ('actualAum', 'total'): results_values[-1]}
+                        ('actualAum', 'total'): results_values[-1],
+                        ('rewards', 'WAVAX'): GmxAPI.reward_tracker.claimable(self.wallet).call()/1e18,
+                        ('rewards', 'esGMX'): 0}
 
             for function in functions_list:
                 setattr(self, function, {key: results[(function, key)] for key in GmxAPI.static})
             self.totalSupply = {'total': results[('totalSupply', 'total')]}
             self.actualAum = {'total': results[('actualAum', 'total')]}
+            self.wavaxReward = {'total': results[('rewards', 'WAVAX')]}
 
             if False:
                 self.add_weights()
