@@ -3,7 +3,7 @@ from utils.async_utils import *
 import logging
 
 import numpy as np
-import json
+import json, dateutil
 
 from cryptography.fernet import Fernet
 import ccxt.async_support as ccxt
@@ -62,11 +62,11 @@ async def open_exchange(exchange_name,subaccount,config={}):
         } | config)
         if subaccount!='': exchange.headers= {'FTX-SUBACCOUNT': subaccount}
 
-    elif exchange_name == 'binance':
-        exchange = ccxt.binance(config={# subaccount convexity
+    elif exchange_name in ['binance','binanceusdm','binancecoin']:
+        exchange = getattr(ccxt,exchange_name)(config={# subaccount convexity
         'enableRateLimit': True,
         'apiKey': 'V2KfGbMd9Zd9fATONTESrbtUtkEHFcVDr6xAI4KyGBjKs7z08pQspTaPhqITwh1M',
-        'secret': api_params[exchange_name]['key'],
+        'secret': api_params['binance']['key'],
     }|config)
     elif exchange_name == 'okex5':
         exchange = ccxt.okex5(config={

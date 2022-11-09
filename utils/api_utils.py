@@ -161,7 +161,7 @@ class MyModules:
 MyModules.register(name='histfeed',
                    testbed=["build ftx wide 1"],
                    args_validation=[['run_type',lambda x: x in ["build", "correct", "get"],'not in {}'.format(["build", "correct", "get"])],
-                                    ['exchange',lambda x: x in ["ftx"],'not in {}'.format(["ftx"])],
+                                    ['exchange',lambda x: True,'not in {}'.format(["ftx"])],
                                     ['universe',lambda x: x in configLoader.get_universe_pool(),'not in {}'.format(configLoader.get_universe_pool())]],
                    kwargs_validation={'nb_days': [lambda x: isinstance(int(x), int), 'not an int']})
 MyModules.register(name='pfoptimizer',
