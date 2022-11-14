@@ -72,7 +72,11 @@ class configLoader():
     def set_executor_params(order,dirname=None):
         ''' Used by tradeexecutor to get execution params'''
         try:
-            if order in ['unwind','flatten']:
+            if order == 'listen_ftx':
+                params_filename = 'listen_ftx.json'
+            if order == 'listen_binance':
+                params_filename = 'listen_binance.json'
+            elif order in ['unwind','flatten']:
                 params_filename = 'emergency_params.json'
             elif 'spreaddistribution' in order:
                 params_filename = 'spreaddistribution_params.json'
