@@ -1,6 +1,6 @@
 from tradeexecutor.venue_api import FtxAPI
 from utils.ftx_utils import *
-from utils.io_utils import  *
+from utils.io_utils import *
 from utils.api_utils import api
 
 history_start = datetime(2019, 11, 26).replace(tzinfo=timezone.utc)
@@ -370,8 +370,9 @@ def vwap_from_list(frequency, trades: list[dict]) -> pd.DataFrame:
 
 
 async def ftx_history_main_wrapper(run_type, exchange_name, universe_name, nb_days=1):
+    parameters = configLoader.get_executor_params(order='listen_ftx', dirname='prod')
+    exchange = await FtxAPI.build(parameters['venue_api'])
 
-    exchange = await open_exchange(exchange_name,'')
     universe = configLoader.get_bases(universe_name)
     nb_days = int(nb_days)
     futures = pd.DataFrame(await FtxAPI.Static.fetch_futures(exchange)).set_index('name')

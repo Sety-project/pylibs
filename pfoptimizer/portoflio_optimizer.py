@@ -383,21 +383,13 @@ def to_json(exchange, all,config_name):
              | {coin: data.T.to_dict() for coin, data in all.groupby(by='underlying')}
 
 async def strategy_wrapper(**kwargs):
+    parameters = configLoader.get_executor_params(order='listen_ftx', dirname='prod')
+    exchange = await FtxAPI.build(parameters['venue_api'])
 
     if type(kwargs['equity_override'][0])==float:
-        exchange = await open_exchange(kwargs['exchange_name'], '')
-        exchange = FtxAPI({'exchange': 'ftx', 'subaccount':'',  'asyncio_loop':asyncio.get_running_loop()})
         equity_override = kwargs['equity_override'][0]
     else:
         if kwargs['equity_override'][0] == "None":
-            exchange = await open_exchange(kwargs['exchange_name'],
-                                       kwargs['subaccount'],
-                                       config={'asyncio_loop':asyncio.get_running_loop()})
-            parameters = configLoader.get_executor_params(order='unwind',dirname='prod')
-            order = os.path.join(os.sep, configLoader.get_config_folder_path(config_name='prod'), "pfoptimizer", 'sysperp_dummy.json')
-            parameters["signal_engine"]['filename'] = order
-            strategy = await Strategy.build(parameters)
-            exchange = strategy.venue_api
             equity_override = None
         else:
             raise Exception('override must be either None or numeric')

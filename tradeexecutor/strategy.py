@@ -60,43 +60,54 @@ class Strategy(ABC):
 
     @staticmethod
     async def build(parameters):
-        '''symbols come from signal_engine'''
-        signal_engine = await SignalEngine.build(parameters['signal_engine'])
-        symbols = {'symbols': signal_engine.parameters['symbols']}
-        rename_logfile(symbols['symbols'][0].replace(':USD', '').replace('/USD', ''))
-
-        venue_api = await VenueAPI.build(symbols | parameters['venue_api'])
-        order_manager = await OrderManager.build(symbols | parameters['order_manager'])
-        position_manager = await PositionManager.build(symbols | parameters['position_manager'])
-
-        if parameters['strategy']['type'] == 'execution':
+        if parameters['strategy']['type'] == 'listen':
+            venue_api = await VenueAPI.build(parameters['venue_api'])
+            symbols = {'symbols': list(venue_api.static.keys())}
             result = ExecutionStrategy(symbols | parameters['strategy'],
-                                   signal_engine,
-                                   venue_api,
-                                   order_manager,
-                                   position_manager)
-        elif parameters['strategy']['type'] == 'spread_distribution':
-            result = AlgoStrategy(symbols | parameters['strategy'],
+                                       signal_engine=None,
+                                       venue_api=venue_api,
+                                       order_manager=None,
+                                       position_manager=None)
+            await result.reconcile()
+            return result
+        else:
+            '''symbols come from signal_engine'''
+            signal_engine = await SignalEngine.build(parameters['signal_engine'])
+            symbols = {'symbols': signal_engine.parameters['symbols']}
+            rename_logfile(symbols['symbols'][0].replace(':USD', '').replace('/USD', ''))
+
+            venue_api = await VenueAPI.build(symbols | parameters['venue_api'])
+            order_manager = await OrderManager.build(symbols | parameters['order_manager'])
+            position_manager = await PositionManager.build(symbols | parameters['position_manager'])
+
+            if parameters['strategy']['type'] == 'execution':
+                result = ExecutionStrategy(symbols | parameters['strategy'],
                                        signal_engine,
                                        venue_api,
                                        order_manager,
                                        position_manager)
-        elif parameters['strategy']['type'] == 'hedged_lp':
-            result = HedgedLPStrategy(symbols | parameters['strategy'],
-                                      signal_engine,
-                                      venue_api,
-                                      order_manager,
-                                      position_manager)
-        await result.reconcile()
+            elif parameters['strategy']['type'] == 'spread_distribution':
+                result = AlgoStrategy(symbols | parameters['strategy'],
+                                           signal_engine,
+                                           venue_api,
+                                           order_manager,
+                                           position_manager)
+            elif parameters['strategy']['type'] == 'hedged_lp':
+                result = HedgedLPStrategy(symbols | parameters['strategy'],
+                                          signal_engine,
+                                          venue_api,
+                                          order_manager,
+                                          position_manager)
+            await result.reconcile()
 
-        if parameters['strategy']['type'] == 'hedged_lp':
-            parameters['hedge_strategy']['strategy']['parents'] = {'GLP': result}
-            parameters['hedge_strategy']['signal_engine']['parents'] = {'GLP': result}
-            hedge_strategy = await Strategy.build(parameters['hedge_strategy'])
-            result.children['hedge_strategy'] = hedge_strategy
-            hedge_strategy.parents['GLP'] = result
+            if parameters['strategy']['type'] == 'hedged_lp':
+                parameters['hedge_strategy']['strategy']['parents'] = {'GLP': result}
+                parameters['hedge_strategy']['signal_engine']['parents'] = {'GLP': result}
+                hedge_strategy = await Strategy.build(parameters['hedge_strategy'])
+                result.children['hedge_strategy'] = hedge_strategy
+                hedge_strategy.parents['GLP'] = result
 
-        return result
+            return result
 
     async def run(self):
         self.logger.warning('cancelling orders')
@@ -144,15 +155,15 @@ class Strategy(ABC):
         # We don't want to place orders while recon is running --> lock until done
         # order of the reconciles is important :(
         with self.lock[f'reconciling']:
-            await self.venue_api.reconcile()
-            await self.signal_engine.reconcile()
-            await self.position_manager.reconcile()
-            await self.order_manager.reconcile()
-            await self.update_quoter_parameters()
+            if self.venue_api: await self.venue_api.reconcile()
+            if self.signal_engine: await self.signal_engine.reconcile()
+            if self.position_manager: await self.position_manager.reconcile()
+            if self.order_manager: await self.order_manager.reconcile()
+            if self.signal_engine: await self.update_quoter_parameters()
             self.replay_missed_messages()
 
-        # critical job is done, release lock and print data
-        if self.order_manager.fill_flag or isinstance(self.signal_engine, GLPSignal):
+        # critical job is done, release lock and print data if any fill happened
+        if (self.order_manager and self.order_manager.fill_flag) or isinstance(self.signal_engine, GLPSignal):
             await self.data_logger.write_history(self.serialize())
             self.order_manager.fill_flag = False
 
