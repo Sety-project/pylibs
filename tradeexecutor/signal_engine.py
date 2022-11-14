@@ -1,5 +1,3 @@
-import asyncio
-
 import aiofiles
 import collections, os, json
 import itertools
@@ -297,6 +295,11 @@ class GLPSignal(ExternalSignal):
                     key: current['valuation'][key] - previous['valuation'][key] - current['delta_pnl'][key] for key in
                     GmxAPI.static}}
                 current['other_pnl']['total'] = sum(current['other_pnl'].values())
+                # rewards
+                current |= {'reward_pnl': {
+                    key: current['rewards'][key]*current['pricesDown'][key] - previous['rewards'][key]*previous['pricesDown'][key] for key in
+                    ['WAVAX']}}
+                current['reward_pnl']['total'] = sum(current['reward_pnl'].values())
                 # discrepancy btw actual and estimate
                 current['discrepancy'] = {'total': (current['actualAum']['total'] - current['valuation']['total'])}
 
@@ -312,7 +315,7 @@ class GLPSignal(ExternalSignal):
                     GmxAPI.static}
                 current['tx_cost']['total'] = sum(current['tx_cost'].values())
             else:
-                # initialize capital and tx cost
+                # initialize capital
                 current['capital'] = {
                     key: abs(current['delta'][key]) * current['pricesDown'][key] * self.strategy.parents['GLP'].parameters['delta_buffer'] for key
                     in GmxAPI.static}
