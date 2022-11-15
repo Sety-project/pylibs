@@ -7,7 +7,7 @@ from abc import abstractmethod
 import numpy as np
 import pandas as pd
 
-from histfeed.ftx_history import fetch_trades_history, vwap_from_list
+from histfeed.binance_history import fetch_trades_history, vwap_from_list
 from utils.async_utils import safe_gather
 from utils.config_loader import configLoader
 from utils.io_utils import NpEncoder, myUtcNow, nested_dict_to_tuple

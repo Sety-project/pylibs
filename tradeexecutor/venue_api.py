@@ -734,7 +734,7 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
                     }
             return result
 
-       ### get all static fields TODO: could just append coindetails if it wasn't for index,imf factor,positionLimitWeight
+       ### get all static fields TODO: only works for perps
         @staticmethod
         async def fetch_futures(exchange):
             if 'fetch_futures' in BinanceAPI.Static._cache:
@@ -745,7 +745,8 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
             includeInverse = False
 
             perp_markets = await exchange.fetch_markets({'type': 'future'})
-            future_markets = await exchange.fetch_markets({'type': 'delivery'})
+            #future_markets = await exchange.fetch_markets({'type': 'delivery'})
+            margin_markets = await exchange.fetch_markets({'type': 'margin'})
 
             future_list = [f for f in perp_markets
                            if (('status' in f['info'] and f['info']['status'] == 'TRADING')) # only for linear perps it seems
@@ -753,15 +754,18 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
 
             otc_file = configLoader.get_static_params_used()
 
-            perp_list = [f['id'] for f in future_list if f['swap']]
+            perp_list = [f['id'] for f in future_list if f['expiry'] == None]
             funding_rates = await safe_gather([exchange.fetch_funding_rate(symbol=f) for f in perp_list])
-            perp_tickers = await exchange.fetch_tickers(symbols=[f['id'] for f in future_list], params={'type':'future'})
-            delivery_tickers = await exchange.fetch_tickers(symbols=[f['id'] for f in future_list], params={'type': 'delivery'})
+            # perp_tickers = await exchange.fetch_tickers(symbols=[f['id'] for f in future_list], params={'type':'future'})
+            # delivery_tickers = await exchange.fetch_tickers(symbols=[f['id'] for f in future_list], params={'type': 'delivery'})
+            open_interests = await safe_gather([exchange.fapiPublicGetOpenInterest({'symbol':f}) for f in perp_list])
 
             result = []
             for i in range(0, len(funding_rates)):
                 funding_rate = funding_rates[i]
-                market = next(market for market in perp_markets if market['symbol'] == funding_rate['symbol'])
+                market = next(m for m in perp_markets if m['symbol'] == funding_rate['symbol'])
+                margin_market = next((m for m in margin_markets if m['symbol'] == funding_rate['symbol']), None)
+                open_interest = next((m for m in open_interests if m['symbol'] == market['id']), None)
 
                 index = funding_rate['indexPrice']
                 mark = funding_rate['markPrice']
@@ -789,12 +793,15 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
                         float(next(_filter for _filter in market['info']['filters']
                              if _filter['filterType'] == 'MARKET_LOT_SIZE')['stepSize']),
                     'underlying': market['base'],
+                    'quote': market['quote'],
                     'type': 'perpetual' if market['swap'] else None,
                     'underlyingType': exchange.safe_number(market, 'underlyingType'),
                     'underlyingSubType': exchange.safe_number(market, 'underlyingSubType'),
                     'spot_ticker': '{}/{}'.format(market['base'], market['quote']),
+                    'spotMargin': margin_market['info']['isMarginTradingAllowed'] if margin_market else False,
                     'cash_borrow': None,
                     'future_carry': future_carry,
+                    'openInterestUsd': float(open_interest['openInterest'])*mark,
                     'expiryTime': expiryTime
                 })
 
@@ -1033,7 +1040,7 @@ class GmxAPI(VenueAPI):
             coros.append(async_wrap(lambda x: GmxAPI.glp_manager.getAumInUsdg(
                 False).call() / GmxAPI.glp.totalSupply().call())(None))
 
-            results_values = await safe_gather(coros, n=GmxAPI.safe_gather_limit)  # IT'S CRUCIAL TO MAINTAIN ORDER....
+            results_values = await safe_gather(coros, semaphore=asyncio.Semaphore(GmxAPI.safe_gather_limit))  # IT'S CRUCIAL TO MAINTAIN ORDER....
 
             functions_list = ['tokenBalances', 'poolAmounts', 'usdgAmounts', 'pricesUp', 'pricesDown', 'guaranteedUsd',
                               'reservedAmounts', 'globalShortSizes', 'globalShortAveragePrices', 'feeReserves']

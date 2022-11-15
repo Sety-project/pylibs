@@ -1,3 +1,5 @@
+import pandas as pd
+
 from tradeexecutor.venue_api import BinanceAPI
 #from utils.ftx_utils import *
 from utils.io_utils import *
@@ -5,7 +7,8 @@ from utils.api_utils import api
 from utils.async_utils import *
 from utils.ccxt_utilities import calc_basis
 
-history_start = datetime(2019, 11, 26).replace(tzinfo=timezone.utc)
+#history_start = datetime(2019, 11, 26).replace(tzinfo=timezone.utc)
+history_start = datetime(2022, 8, 16).replace(tzinfo=timezone.utc)
 
 # all rates annualized, all volumes daily in usd
 async def get_history(dirname,
@@ -14,13 +17,13 @@ async def get_history(dirname,
                       end=datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0,second=0,microsecond=0)
                       ):
     data = pd.concat(await safe_gather((
-            [async_from_parquet(dirname + os.sep + f + '_funding.parquet')
+            [async_read_csv(dirname + os.sep + f + '_funding.csv',index_col=0,parse_dates=True)
              for f in futures[futures['type'] == 'perpetual'].index] +
-            [async_from_parquet(dirname + os.sep + f + '_futures.parquet')
+            [async_read_csv(dirname + os.sep + f + '_futures.csv',index_col=0,parse_dates=True)
              for f in futures.index] +
-            [async_from_parquet(dirname + os.sep + f + '_price.parquet')
+            [async_read_csv(dirname + os.sep + f + '_price.csv',index_col=0,parse_dates=True)
              for f in futures['underlying'].unique()] +
-            [async_from_parquet(dirname + os.sep + f + '_borrow.parquet')
+            [async_read_csv(dirname + os.sep + f + '_borrow.csv',index_col=0,parse_dates=True)
              for f in (list(futures['underlying'].unique()) + ['USD'])]
     )), join='outer', axis=1)
 
@@ -35,42 +38,43 @@ async def get_history(dirname,
 async def build_history(futures,
                         exchange,
                         dirname=configLoader.get_mktdata_folder_path(),
-                        end=datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0,second=0,microsecond=0)): # Runtime/Mktdata_database
+                        end=datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0,second=0,microsecond=0),
+                        frequency: timedelta = '1m'): # Runtime/Mktdata_database
     '''for now, increments local files and then uploads to s3'''
     logger = logging.getLogger('histfeed')
     logger.info("BUILDING COROUTINES")
 
     coroutines = []
     for _, f in futures[futures['type'] == 'perpetual'].iterrows():
-        parquet_name = os.path.join(dirname, f.name + '_funding.parquet')
-        parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
-        start = max(parquet.index).replace(tzinfo=timezone.utc)+timedelta(hours=1) if parquet is not None else history_start
+        csv_name = os.path.join(dirname, f.name + '_funding.csv')
+        csv = pd.read_csv(csv_name,index_col=0,parse_dates=True) if os.path.isfile(csv_name) else None
+        start = max(csv.index).replace(tzinfo=timezone.utc)+timedelta(hours=8) if csv is not None else history_start
         if start < end:
-            logger.info("Adding coroutine " + parquet_name)
+            logger.info("Adding coroutine " + csv_name)
             coroutines.append(funding_history(f, exchange, start, end, dirname))
 
     for _, f in futures.iterrows():
-        parquet_name = os.path.join(dirname, f.name + '_futures.parquet')
-        parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
-        start = max(parquet.index).replace(tzinfo=timezone.utc) + timedelta(hours=1) if parquet is not None else history_start
+        csv_name = os.path.join(dirname, f.name + '_futures.csv')
+        csv = pd.read_csv(csv_name,index_col=0,parse_dates=True) if os.path.isfile(csv_name) else None
+        start = max(csv.index).replace(tzinfo=timezone.utc) + pd.Timedelta(frequency) if csv is not None else history_start
         if start < end:
-            logger.info("Adding coroutine " + parquet_name)
-            coroutines.append(rate_history(f, exchange, end, start, '1h', dirname))
+            logger.info("Adding coroutine " + csv_name)
+            coroutines.append(rate_history(f, exchange, end, start, frequency, dirname))
 
-    for f in futures['underlying'].unique():
-        parquet_name = os.path.join(dirname, f + '_price.parquet')
-        parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
-        start = max(parquet.index).replace(tzinfo=timezone.utc) + timedelta(hours=1) if parquet is not None else history_start
+    for f in futures['spot_ticker'].unique():
+        csv_name = os.path.join(dirname, f.replace('/','') + '_price.csv')
+        csv = pd.read_csv(csv_name,index_col=0,parse_dates=True) if os.path.isfile(csv_name) else None
+        start = max(csv.index).replace(tzinfo=timezone.utc) + pd.Timedelta(frequency) if csv is not None else history_start
         if start < end:
-            logger.info("Adding coroutine " + parquet_name)
-            coroutines.append(spot_history(f + '/USD', exchange, end, start, '1h', dirname))
+            logger.info("Adding coroutine " + csv_name)
+            coroutines.append(spot_history(f, exchange, end, start, frequency, dirname))
 
-    for f in list(futures.loc[futures['spotMargin'] == True, 'underlying'].unique()) + ['USD']:
-        parquet_name = os.path.join(dirname, f + '_borrow.parquet')
-        parquet = from_parquet(parquet_name) if os.path.isfile(parquet_name) else None
-        start = max(parquet.index).replace(tzinfo=timezone.utc) + timedelta(hours=1) if parquet is not None else history_start
+    for f in list(futures.loc[futures['spotMargin'] == True, 'underlying'].unique()) + ['USDT','BUSD']:
+        csv_name = os.path.join(dirname, f + '_borrow.csv')
+        csv = pd.read_csv(csv_name,index_col=0,parse_dates=True) if os.path.isfile(csv_name) else None
+        start = max(csv.index).replace(tzinfo=timezone.utc) + timedelta(hours=1) if csv is not None else history_start
         if start < end:
-            logger.info("Adding coroutine " + parquet_name)
+            logger.info("Adding coroutine " + csv_name)
             coroutines.append(borrow_history(f, exchange, end, start, dirname))
 
     if coroutines:
@@ -82,21 +86,15 @@ async def build_history(futures,
 
     # static values for non spot Margin underlyings
     otc_file = configLoader.get_static_params_used()
-    for f in list(futures.loc[futures['spotMargin'] == False, 'underlying'].unique()):
+    for f in list(futures.loc[futures['spotMargin'] == False, 'spot_ticker'].unique()):
         try:
-            spot_parquet = from_parquet(os.path.join(dirname, f + '_price.parquet'))
-            to_parquet(pd.DataFrame(index=spot_parquet.index,
-                                    columns=[f + '_rate_borrow'],
-                                    data=otc_file.loc[f,'borrow'] if futures.loc[f+'-PERP','spotMargin'] == 'OTC' else 999
+            spot_csv = pd.read_csv(os.path.join(dirname, f.replace('/','') + '_price.csv'),index_col=0,parse_dates=True)
+            coin = f.split('/')[0]
+            to_csv(pd.DataFrame(index=spot_csv.index,
+                                    columns=[coin + '_rate_borrow'],
+                                    data=otc_file.loc[coin,'borrow'] if futures.loc[f,'spotMargin'] == 'OTC' else 999
                                     ),
-                       os.path.join(dirname, f +'_borrow.parquet'),
-                       mode='a')
-
-            to_parquet(pd.DataFrame(index=spot_parquet.index,
-                                    columns=[f + '_rate_size'],
-                                    data=otc_file.loc[f,'size'] if futures.loc[f+'-PERP','spotMargin'] == 'OTC' else 0
-                                    ),
-                       os.path.join(dirname, f + '_borrow.parquet'),
+                       os.path.join(dirname, coin +'_borrow.csv'),
                        mode='a')
         except Exception as e:
             logger.warning(e,exc_info=True)
@@ -108,30 +106,30 @@ async def correct_history(futures,exchange,hy_history,dirname=configLoader.get_m
 
     coroutines = []
     for _, f in futures[futures['type'] == 'perpetual'].iterrows():
-        parquet_name = os.path.join(dirname, f'{f.name}_funding.parquet')
-        coroutines.append(async_to_parquet(hy_history[[exchange.market(f['symbol'])['id'] + '_rate_funding']],parquet_name))
-        logger.info("Adding coroutine for correction " + parquet_name)
+        csv_name = os.path.join(dirname, f'{f.name}_funding.csv')
+        coroutines.append(async_to_csv(hy_history[[exchange.market(f['symbol'])['id'] + '_rate_funding']],csv_name))
+        logger.info("Adding coroutine for correction " + csv_name)
 
     for _, f in futures.iterrows():
-        parquet_name = os.path.join(dirname, f'{f.name}_futures.parquet')
+        csv_name = os.path.join(dirname, f'{f.name}_futures.csv')
         future_id = exchange.market(f['symbol'])['id']
         column_names = [future_id + '_mark_' + field for field in ['o', 'h', 'l', 'c', 'volume']]
         column_names += [future_id + '_indexes_' + field for field in ['o', 'h', 'l', 'c', 'volume']]
         column_names += [future_id + '_rate_' + field for field in ['h', 'l', 'c'] + (['T'] if f['type']=='future' else [])]
-        coroutines.append(async_to_parquet(hy_history[column_names], parquet_name))
-        logger.info("Adding coroutine for correction " + parquet_name)
+        coroutines.append(async_to_csv(hy_history[column_names], csv_name))
+        logger.info("Adding coroutine for correction " + csv_name)
 
     for f in futures['underlying'].unique():
-        parquet_name = os.path.join(dirname, f'{f}_price.parquet')
+        csv_name = os.path.join(dirname, f'{f}_price.csv')
         column_names = [f + '_price_' + field for field in ['o', 'h', 'l', 'c', 'volume']]
-        coroutines.append(async_to_parquet(hy_history[column_names], parquet_name))
-        logger.info("Adding coroutine for correction " + parquet_name)
+        coroutines.append(async_to_csv(hy_history[column_names], csv_name))
+        logger.info("Adding coroutine for correction " + csv_name)
 
     for f in list(futures.loc[futures['spotMargin'] == True, 'underlying'].unique()) + ['USD']:
-        parquet_name = os.path.join(dirname, f'{f}_borrow.parquet')
+        csv_name = os.path.join(dirname, f'{f}_borrow.csv')
         column_names = [f + '_rate_' + field for field in ['borrow', 'size']]
-        coroutines.append(async_to_parquet(hy_history[column_names], parquet_name))
-        logger.info("Adding coroutine for correction " + parquet_name)
+        coroutines.append(async_to_csv(hy_history[column_names], csv_name))
+        logger.info("Adding coroutine for correction " + csv_name)
 
     # run all coroutines
     await safe_gather(coroutines)
@@ -143,26 +141,26 @@ async def borrow_history(coin,
                          end=(datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)),
                          start=(datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
                          dirname=''):
-    max_funding_data = int(500)  # in hours, limit is 500 only
-    resolution = exchange.describe()['timeframes']['1h']
+    max_funding_data = int(92)  # in days, limit is 92 only
+    resolution = pd.Timedelta(exchange.describe()['timeframes']['1d']).total_seconds()
 
     e = end.timestamp()
     s = start.timestamp()
-    f = max_funding_data * int(resolution)
+    f = max_funding_data * resolution
     start_times = [int(round(e - k * f)) for k in range(1 + int((e - s) / f)) if e - k * f > s] + [s]
 
-    raise NotImplementedError
+    lists = await safe_gather([
+        exchange.fetch_borrow_rate_history(coin,since=int(start_time*1000), limit=max_funding_data)
+            for start_time in start_times])
+    borrow = [y for x in lists for y in x]
 
-    data = pd.concat(await safe_gather([
-        fetch_borrow_rate_history(exchange,coin,start_time,start_time+f-int(resolution))
-            for start_time in start_times]),axis=0,join='outer')
-
-    data = data.astype(dtype={'time': 'int64'}).set_index('time')[['rate','size']]
-    data.rename(columns={'rate':coin+'_rate_borrow','size':coin+'_rate_size'},inplace=True)
+    data = pd.DataFrame(borrow)
+    data = data.set_index('timestamp')[['rate']]*365.25
+    data.rename(columns={'rate':coin+'_rate_borrow'},inplace=True)
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     data=data[~data.index.duplicated()].sort_index()
 
-    if dirname != '': await async_to_parquet(data, os.path.join(dirname, coin + '_borrow.parquet'),mode='a')
+    if dirname != '': await async_to_csv(data, os.path.join(dirname, coin + '_borrow.csv'),mode='a')
 
 ######### annualized funding for perps, time is fixing / payment time.
 @ignore_error
@@ -172,28 +170,29 @@ async def funding_history(future,
                           end=(datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)),
                           dirname=''):
 
-    max_funding_data = int(500)  # in hour. limit is 500 :(
-    resolution = exchange.describe()['timeframes']['1h']
+    max_funding_data = int(100)  # in hour. limit is 100 :(
+    resolution = pd.Timedelta(exchange.describe()['timeframes']['1h']).total_seconds()
 
     e = end.timestamp()
     s = start.timestamp()
-    f = max_funding_data * int(resolution)
+    f = max_funding_data * resolution
     start_times=[int(round(s+k*f)) for k in range(1+int((e-s)/f)) if s+k*f<e]
 
     lists = await safe_gather([
-        exchange.fetch_funding_rate_history(exchange.market(future['symbol'])['symbol'], params={'start_time':start_time, 'end_time':start_time+f})
+        exchange.fetch_funding_rate_history(exchange.market(future['symbol'])['symbol'], params={'startTime': start_time*1000, 'endTime': (start_time+f)*1000})
                                 for start_time in start_times])
     funding = [y for x in lists for y in x]
 
-    data = pd.DataFrame(funding)
-    data['time']=data['timestamp'].astype(dtype='int64')
-    data[exchange.market(future['symbol'])['id'] + '_rate_funding']=data['fundingRate']*365.25*24
-    data=data[['time',exchange.market(future['symbol'])['id'] + '_rate_funding']].set_index('time')
-    data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
-    data = data[~data.index.duplicated()].sort_index()
+    if len(funding)>0:
+        data = pd.DataFrame(funding)
+        data['time']=data['timestamp'].astype(dtype='int64')
+        data[exchange.market(future['symbol'])['id'] + '_rate_funding']=data['fundingRate']*365.25*8
+        data=data[['time',exchange.market(future['symbol'])['id'] + '_rate_funding']].set_index('time')
+        data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
+        data = data[~data.index.duplicated()].sort_index()
 
-    if dirname != '': await async_to_parquet(data, os.path.join(dirname,
-                                                                exchange.market(future['symbol'])['id'] + '_funding.parquet'),
+        if dirname != '': await async_to_csv(data, os.path.join(dirname,
+                                                                    exchange.market(future['symbol'])['id'] + '_funding.csv'),
                                              mode='a')
 
 #### annualized rates for futures and perp, volumes are daily
@@ -203,31 +202,30 @@ async def rate_history(future,exchange,
                  start=datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)-timedelta(days=30),
                  timeframe='1h',
                  dirname=''):
-    max_mark_data = int(1500)
-    resolution = exchange.describe()['timeframes'][timeframe]
-
+    max_mark_data = int(500)
+    resolution = pd.Timedelta(exchange.describe()['timeframes'][timeframe]).total_seconds()
 
     e = end.timestamp()
     s = start.timestamp()
-    f = max_mark_data * int(resolution)
+    f = max_mark_data * resolution
     start_times=[int(round(s+k*f)) for k in range(1+int((e-s)/f)) if s+k*f<e]
 
     mark_indexes = await safe_gather([
         exchange.fetch_ohlcv(exchange.market(future['symbol'])['symbol'], timeframe=timeframe, params=params) # volume is for max_mark_data*resolution
             for start_time in start_times
-                for params in [{'start_time':start_time, 'end_time':start_time+f-int(resolution)},
-                               {'start_time':start_time, 'end_time':start_time+f-int(resolution),'price':'index'}]])
+                for params in [{'startTime':start_time*1000, 'endTime':(start_time+f-resolution)*1000},
+                               {'start_time':start_time, 'end_time':start_time+f-resolution,'price':'index'}]])
     mark = [y for x in mark_indexes[::2] for y in x]
     indexes = [y for x in mark_indexes[1::2] for y in x]
     column_names = ['t', 'o', 'h', 'l', 'c', 'volume']
 
     ###### indexes
     indexes = pd.DataFrame([dict(zip(column_names,row)) for row in indexes], dtype=float).astype(dtype={'t': 'int64'}).set_index('t')
-    indexes['volume'] = indexes['volume']* 24 * 3600 / int(resolution)
+    indexes['volume'] = indexes['volume']* 24 * 3600 / resolution
 
     ###### marks
     mark = pd.DataFrame([dict(zip(column_names,row)) for row in mark]).astype(dtype={'t': 'int64'}).set_index('t')
-    mark['volume']=mark['volume']*24*3600/int(resolution)
+    mark['volume']=mark['volume']*24*3600/resolution
 
     mark.columns = ['mark_' + column for column in mark.columns]
     indexes.columns = ['indexes_' + column for column in indexes.columns]
@@ -263,9 +261,9 @@ async def rate_history(future,exchange,
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     data = data[~data.index.duplicated()].sort_index()
 
-    if dirname != '': await async_to_parquet(data,
+    if dirname != '': await async_to_csv(data,
                                              os.path.join(dirname,
-                                                          exchange.market(future['symbol'])['id'] + '_futures.parquet'),
+                                                          exchange.market(future['symbol'])['id'] + '_futures.csv'),
                                              mode='a')
 
 ## populates future_price or spot_price depending on type
@@ -275,30 +273,29 @@ async def spot_history(symbol, exchange,
                        start= (datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0))-timedelta(days=30),
                        timeframe='1h',
                        dirname=''):
-    max_mark_data = int(1500)
-    resolution = exchange.describe()['timeframes'][timeframe]
-
+    max_mark_data = int(500)
+    resolution = pd.Timedelta(exchange.describe()['timeframes'][timeframe]).total_seconds()
 
     e = end.timestamp()
     s = start.timestamp()
-    f = max_mark_data * int(resolution)
+    f = max_mark_data * resolution
     start_times=[int(round(s+k*f)) for k in range(1+int((e-s)/f)) if s+k*f<e]
 
     spot_lists = await safe_gather([
-        exchange.fetch_ohlcv(symbol, timeframe=timeframe, params={'start_time':start_time, 'end_time':start_time+f-int(resolution)})
+        exchange.fetch_ohlcv(symbol, timeframe=timeframe, params={'startTime':start_time*1000, 'endTime':(start_time+f-resolution)*1000})
                                 for start_time in start_times])
     spot = [y for x in spot_lists for y in x]
     column_names = ['t', 'o', 'h', 'l', 'c', 'volume']
 
     ###### spot
     data = pd.DataFrame(columns=column_names, data=spot).astype(dtype={'t': 'int64', 'volume': 'float'}).set_index('t')
-    data['volume'] = data['volume'] * 24 * 3600 / int(resolution)
-    data.columns = [symbol.replace('/USD', '') + '_price_' + column for column in data.columns]
+    data['volume'] = data['volume'] * 24 * 3600 / resolution
+    data.columns = [symbol.replace('/', '') + '_price_' + column for column in data.columns]
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     data = data[~data.index.duplicated()].sort_index()
-    if dirname!='': await async_to_parquet(data,
+    if dirname!='': await async_to_csv(data,
                                            os.path.join(dirname,
-                                                        symbol.replace('/USD', '') + '_price.parquet'),
+                                                        symbol.replace('/', '') + '_price.csv'),
                                            mode='a')
 
 @ignore_error
@@ -334,27 +331,27 @@ async def fetch_trades_history(symbol,
 
     if len(trades)==0:
         vwap = pd.DataFrame(columns=['size','volume','count','vwap','vwvol','liquidation_intensity'])
-        vwap.columns = [symbol.split('/USD')[0] + '_trades_' + column for column in vwap.columns]
+        vwap.columns = [symbol.split('/USDT')[0] + '_trades_' + column for column in vwap.columns]
         return {'symbol':exchange.market(symbol)['symbol'],
                 'coin':exchange.market(symbol)['base'],
-                'vwap':vwap[symbol.split('/USD')[0] + '_trades_'+'vwap'],
-                'vwvol': vwap[symbol.split('/USD')[0] + '_trades_'+'vwvol'],
-                'volume':vwap[symbol.split('/USD')[0] + '_trades_'+'volume'],
-                'liquidation_intensity':vwap[symbol.split('/USD')[0] + '_trades_'+'liquidation_intensity']}
+                'vwap':vwap[symbol.split('/USDT')[0] + '_trades_'+'vwap'],
+                'vwvol': vwap[symbol.split('/USDT')[0] + '_trades_'+'vwvol'],
+                'volume':vwap[symbol.split('/USDT')[0] + '_trades_'+'volume'],
+                'liquidation_intensity':vwap[symbol.split('/USDT')[0] + '_trades_'+'liquidation_intensity']}
 
     vwap = vwap_from_list(frequency, trades)
-    vwap.columns = [symbol.split('/USD')[0] + '_trades_' + column for column in vwap.columns]
+    vwap.columns = [symbol.split('/USDT')[0] + '_trades_' + column for column in vwap.columns]
     # data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     vwap = vwap[~vwap.index.duplicated()].sort_index().ffill()
 
     if dirname != '':
-        parquet_filename = os.path.join(dirname, symbol.split('/USD')[0] + "_trades.parquet")
-        vwap.to_parquet(parquet_filename)
+        csv_filename = os.path.join(dirname, symbol.split('/USDT')[0] + "_trades.csv")
+        vwap.to_csv(csv_filename)
 
-    return {'vwap':vwap[symbol.split('/USD')[0] + '_trades_vwap'],
-            'vwvol':vwap[symbol.split('/USD')[0] + '_trades_vwvol'],
-            'volume':vwap[symbol.split('/USD')[0] + '_trades_volume'],
-            'liquidation_intensity':vwap[symbol.split('/USD')[0] + '_trades_liquidation_intensity']}
+    return {'vwap':vwap[symbol.split('/USDT')[0] + '_trades_vwap'],
+            'vwvol':vwap[symbol.split('/USDT')[0] + '_trades_vwvol'],
+            'volume':vwap[symbol.split('/USDT')[0] + '_trades_volume'],
+            'liquidation_intensity':vwap[symbol.split('/USDT')[0] + '_trades_liquidation_intensity']}
 
 def vwap_from_list(frequency, trades: list[dict]) -> pd.DataFrame:
     '''needs ['size', 'price', 'liquidation', 'time' as isostring]'''
@@ -371,7 +368,6 @@ def vwap_from_list(frequency, trades: list[dict]) -> pd.DataFrame:
     vwap['vwvol'] = (vwap['square'] / vwap['size'] - vwap['vwap'] * vwap['vwap']).apply(np.sqrt)
     vwap['liquidation_intensity'] = vwap['liquidation_volume'] / vwap['volume']
     return vwap[~vwap.index.duplicated()].sort_index().ffill()
-
 
 async def history_main_wrapper(run_type, exchange_name, universe_name, nb_days=1):
     parameters = configLoader.get_executor_params(order='listen_binance', dirname='prod')
