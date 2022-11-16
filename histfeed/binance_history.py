@@ -1,14 +1,10 @@
-import pandas as pd
-
-from tradeexecutor.venue_api import BinanceAPI
-#from utils.ftx_utils import *
+from tradeexecutor.binance_api import BinanceAPI
 from utils.io_utils import *
 from utils.api_utils import api
 from utils.async_utils import *
 from utils.ccxt_utilities import calc_basis
 
-#history_start = datetime(2019, 11, 26).replace(tzinfo=timezone.utc)
-history_start = datetime(2022, 8, 16).replace(tzinfo=timezone.utc)
+history_start = datetime(2021, 11, 26).replace(tzinfo=timezone.utc)
 
 # all rates annualized, all volumes daily in usd
 async def get_history(dirname,
@@ -39,7 +35,7 @@ async def build_history(futures,
                         exchange,
                         dirname=configLoader.get_mktdata_folder_path(),
                         end=datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0,second=0,microsecond=0),
-                        frequency: timedelta = '1m'): # Runtime/Mktdata_database
+                        frequency: timedelta = '1h'): # Runtime/Mktdata_database
     '''for now, increments local files and then uploads to s3'''
     logger = logging.getLogger('histfeed')
     logger.info("BUILDING COROUTINES")
@@ -95,7 +91,7 @@ async def build_history(futures,
                                     data=otc_file.loc[coin,'borrow'] if futures.loc[f,'spotMargin'] == 'OTC' else 999
                                     ),
                        os.path.join(dirname, coin +'_borrow.csv'),
-                       mode='a')
+                       mode='a',header=False)
         except Exception as e:
             logger.warning(e,exc_info=True)
 async def correct_history(futures,exchange,hy_history,dirname=configLoader.get_mktdata_folder_path()):
@@ -160,7 +156,7 @@ async def borrow_history(coin,
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     data=data[~data.index.duplicated()].sort_index()
 
-    if dirname != '': await async_to_csv(data, os.path.join(dirname, coin + '_borrow.csv'),mode='a')
+    if dirname != '': await async_to_csv(data, os.path.join(dirname, coin + '_borrow.csv'),mode='a',header=False)
 
 ######### annualized funding for perps, time is fixing / payment time.
 @ignore_error
@@ -193,7 +189,7 @@ async def funding_history(future,
 
         if dirname != '': await async_to_csv(data, os.path.join(dirname,
                                                                     exchange.market(future['symbol'])['id'] + '_funding.csv'),
-                                             mode='a')
+                                             mode='a',header=False)
 
 #### annualized rates for futures and perp, volumes are daily
 @ignore_error
@@ -202,6 +198,8 @@ async def rate_history(future,exchange,
                  start=datetime.now(tz=timezone.utc).replace(minute=0,second=0,microsecond=0)-timedelta(days=30),
                  timeframe='1h',
                  dirname=''):
+    symbol = exchange.market(future['symbol'])['symbol']
+
     max_mark_data = int(500)
     resolution = pd.Timedelta(exchange.describe()['timeframes'][timeframe]).total_seconds()
 
@@ -211,7 +209,7 @@ async def rate_history(future,exchange,
     start_times=[int(round(s+k*f)) for k in range(1+int((e-s)/f)) if s+k*f<e]
 
     mark_indexes = await safe_gather([
-        exchange.fetch_ohlcv(exchange.market(future['symbol'])['symbol'], timeframe=timeframe, params=params) # volume is for max_mark_data*resolution
+        exchange.fetch_ohlcv(symbol, timeframe=timeframe, params=params) # volume is for max_mark_data*resolution
             for start_time in start_times
                 for params in [{'startTime':start_time*1000, 'endTime':(start_time+f-resolution)*1000},
                                {'start_time':start_time, 'end_time':start_time+f-resolution,'price':'index'}]])
@@ -229,7 +227,21 @@ async def rate_history(future,exchange,
 
     mark.columns = ['mark_' + column for column in mark.columns]
     indexes.columns = ['indexes_' + column for column in indexes.columns]
-    data = mark.join(indexes, how='inner')
+
+    ##### openInterestUsd
+    max_oi_data = 500
+    e = end.timestamp()
+    s = start.timestamp()
+    f = max_oi_data * resolution
+    start_times=[int(round(s+k*f)) for k in range(1+int((e-s)/f)) if s+k*f<e]
+
+    openInterest_list = await safe_gather([
+        exchange.fetch_open_interest_history(symbol, timeframe='5m' if timeframe=='1m' else timeframe, since=int(start_time*1000), limit=max_oi_data)
+        for start_time in start_times])
+    openInterest_list = [y for x in openInterest_list for y in x]
+    openInterest = pd.DataFrame(openInterest_list, columns=['timestamp','openInterestAmount']).astype(dtype={'timestamp': 'int64'}).set_index('timestamp')
+
+    data = mark.join(indexes, how='inner').join(openInterest, how='inner')
 
     ########## rates from index to mark
     if future['type'] == 'future':
@@ -254,9 +266,6 @@ async def rate_history(future,exchange,
     else:
         raise Exception('what is ' + future['symbol'] + ' ?')
 
-    ##### openInterestUsd
-    data['openInterestUsd_c'] = future['openInterestUsd']
-
     data.columns = [exchange.market(future['symbol'])['id'] + '_' + c for c in data.columns]
     data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
     data = data[~data.index.duplicated()].sort_index()
@@ -264,7 +273,7 @@ async def rate_history(future,exchange,
     if dirname != '': await async_to_csv(data,
                                              os.path.join(dirname,
                                                           exchange.market(future['symbol'])['id'] + '_futures.csv'),
-                                             mode='a')
+                                             mode='a',header=False)
 
 ## populates future_price or spot_price depending on type
 @ignore_error
@@ -296,7 +305,7 @@ async def spot_history(symbol, exchange,
     if dirname!='': await async_to_csv(data,
                                            os.path.join(dirname,
                                                         symbol.replace('/', '') + '_price.csv'),
-                                           mode='a')
+                                           mode='a',header=False)
 
 @ignore_error
 async def fetch_trades_history(symbol,
@@ -369,7 +378,7 @@ def vwap_from_list(frequency, trades: list[dict]) -> pd.DataFrame:
     vwap['liquidation_intensity'] = vwap['liquidation_volume'] / vwap['volume']
     return vwap[~vwap.index.duplicated()].sort_index().ffill()
 
-async def history_main_wrapper(run_type, exchange_name, universe_name, nb_days=1):
+async def history_main_wrapper(run_type, exchange_name, universe_name, nb_days=1, frequency='1h'):
     parameters = configLoader.get_executor_params(order='listen_binance', dirname='prod')
     exchange = await BinanceAPI.build(parameters['venue_api'])
 
@@ -392,7 +401,7 @@ async def history_main_wrapper(run_type, exchange_name, universe_name, nb_days=1
     # Volume Screening
     if run_type == 'build':
         logger.info("Building history for build")
-        await build_history(futures, exchange, dir_name)
+        await build_history(futures, exchange, dir_name, frequency=frequency)
         await exchange.close()
     elif run_type == 'correct':
         raise Exception('bug. does not correct')
@@ -400,7 +409,7 @@ async def history_main_wrapper(run_type, exchange_name, universe_name, nb_days=1
         hy_history = await get_history(dir_name, futures, history_start)
         end = datetime.utcnow().replace(tzinfo=timezone.utc)-timedelta(days=nb_days)
         await correct_history(futures, exchange, hy_history[:end])
-        await build_history(futures, exchange, dir_name)
+        await build_history(futures, exchange, dir_name, frequency=frequency)
         await exchange.close()
     elif run_type == 'get':
         logger.info("Getting history...")
@@ -411,12 +420,13 @@ async def history_main_wrapper(run_type, exchange_name, universe_name, nb_days=1
 @api
 def main(*args,**kwargs):
     '''
-        example: histfeed get ftx wide 5
+        example: histfeed get ftx wide 5 1h
         args:
            run_type = "build", "correct", "get"
            exchange = "ftx"
            universe = "institutional", "wide", "max", "all"
            nb_days = int
+           frequency = str
    '''
     # __logger is NOT an argument, it's provided by @api
     logger = kwargs.pop('__logger')
@@ -427,5 +437,5 @@ def main(*args,**kwargs):
         os.umask(0)
         os.makedirs(mktdata_exchange_repo, mode=0o777)
 
-    result = asyncio.run(history_main_wrapper(*args))
+    result = asyncio.run(history_main_wrapper(*args, **kwargs))
     return result
