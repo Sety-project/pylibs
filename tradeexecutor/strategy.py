@@ -10,6 +10,7 @@ from tradeexecutor.order_manager import OrderManager
 from tradeexecutor.position_manager import PositionManager
 from tradeexecutor.signal_engine import SignalEngine, GLPSignal
 from tradeexecutor.venue_api import VenueAPI
+from tradeexecutor.interface.builders import build_VenueAPI
 from utils.MyLogger import ExecutionLogger
 from utils.async_utils import safe_gather_limit, safe_gather
 from utils.io_utils import myUtcNow
@@ -61,7 +62,7 @@ class Strategy(ABC):
     @staticmethod
     async def build(parameters):
         if parameters['strategy']['type'] == 'listen':
-            venue_api = await VenueAPI.build(parameters['venue_api'])
+            venue_api = await build_VenueAPI(parameters['venue_api'])
             symbols = {'symbols': list(venue_api.static.keys())}
             result = ExecutionStrategy(symbols | parameters['strategy'],
                                        signal_engine=None,
@@ -76,7 +77,7 @@ class Strategy(ABC):
             symbols = {'symbols': signal_engine.parameters['symbols']}
             rename_logfile(symbols['symbols'][0].replace(':USD', '').replace('/USD', ''))
 
-            venue_api = await VenueAPI.build(symbols | parameters['venue_api'])
+            venue_api = await build_VenueAPI(symbols | parameters['venue_api'])
             order_manager = await OrderManager.build(symbols | parameters['order_manager'])
             position_manager = await PositionManager.build(symbols | parameters['position_manager'])
 

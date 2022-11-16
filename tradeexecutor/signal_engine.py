@@ -10,8 +10,8 @@ import pandas as pd
 from histfeed.binance_history import fetch_trades_history, vwap_from_list
 from utils.async_utils import safe_gather
 from utils.config_loader import configLoader
-from utils.io_utils import NpEncoder, myUtcNow, nested_dict_to_tuple
-from tradeexecutor.venue_api import GmxAPI
+from utils.io_utils import NpEncoder, myUtcNow
+from tradeexecutor.gmx_api import GmxAPI
 from tradeexecutor.interface.StrategyEnabler import StrategyEnabler
 
 class SignalEngine(StrategyEnabler):

@@ -1,9 +1,8 @@
 import numpy as np
 
-from riskpnl.ftx_margin import MarginCalculator
+from riskpnl.binance_margin import MarginCalculator
 from utils.io_utils import myUtcNow
 from tradeexecutor.interface.StrategyEnabler import StrategyEnabler
-from tradeexecutor.venue_api import GmxAPI
 from abc import abstractmethod
 
 class PositionManager(StrategyEnabler):

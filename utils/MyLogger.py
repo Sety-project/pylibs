@@ -2,7 +2,7 @@ from datetime import *
 
 import pandas as pd
 
-from histfeed.ftx_history import fetch_trades_history
+from histfeed.binance_history import fetch_trades_history
 from utils.ccxt_utilities import open_exchange
 from utils.io_utils import *
 from utils.async_utils import *

@@ -163,7 +163,8 @@ MyModules.register(name='histfeed',
                    args_validation=[['run_type',lambda x: x in ["build", "correct", "get"],'not in {}'.format(["build", "correct", "get"])],
                                     ['exchange',lambda x: x in ['ftx', 'binance'],'not in {}'.format(["ftx, binance"])],
                                     ['universe',lambda x: x in configLoader.get_universe_pool(),'not in {}'.format(configLoader.get_universe_pool())]],
-                   kwargs_validation={'nb_days': [lambda x: isinstance(int(x), int), 'not an int']})
+                   kwargs_validation={'nb_days': [lambda x: isinstance(int(x), int), 'not an int'],
+                                      'frequency': [lambda x: True, '']})
 MyModules.register(name='pfoptimizer',
                    testbed=["sysperp ftx subaccount=debug",
                             "basis ftx instrument_type=perpetual depth=100000",
@@ -184,7 +185,7 @@ MyModules.register(name='riskpnl',
                              "plex ftx debug period=2d"],
                    args_validation=[
                        ['run_type', lambda x: x in ["risk", "plex", "batch_summarize_exec_logs", "fromoptimal"],'not in {}'.format(["risk", "plex", "batch_summarize_exec_logs", "fromoptimal"])],
-                       ['exchange', lambda x: x in ["ftx"], 'not in {}'.format(["ftx"])],
+                       ['exchange',lambda x: x in ['ftx', 'binance'],'not in {}'.format(["ftx, binance"])],
                        ['subaccount', lambda x: True, 'not in {}'.format([""])]],
                    kwargs_validation={'nb_runs':[lambda x: isinstance(int(x),int),'integer needed'],
                                       'period':[lambda x: isinstance(parse_time_param(x),datetime.timedelta),'time period needed'],
@@ -200,7 +201,7 @@ MyModules.register(name='tradeexecutor',
                    testbed=["weights_ftx_debug_ETH.json","glp.json exchange=ftx subaccount=glp config=prod"], # ,"unwind exchange=ftx subaccount=debug config=prod"
                    args_validation=[
                        ['order', lambda x: isinstance(x,str),'not a str']],
-                   kwargs_validation={'exchange':[lambda x: x in ['ftx'],'not in {}'.format(['ftx'])],
+                   kwargs_validation={'exchange':[lambda x: x in ['ftx', 'binance'],'not in {}'.format(["ftx, binance"])],
                                       'subaccount':[lambda x: True,'not found'],
                                       'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(config_name=x))),'not found']})
 
