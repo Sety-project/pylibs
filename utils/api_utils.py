@@ -53,7 +53,7 @@ def rename_logfile(text):
     for handler in logger.handlers:
         if isinstance(handler, logging.FileHandler):
             old_name = handler.baseFilename
-            new_name = old_name.replace('.log', f'_{text}.log')
+            new_name = '_'.join(old_name.split('_')[:3] + [f'{text}.log'])
             shutil.move(old_name, new_name)
             handler.baseFilename = new_name
 
