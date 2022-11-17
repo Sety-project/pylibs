@@ -161,7 +161,7 @@ class MyModules:
 MyModules.register(name='histfeed',
                    testbed=["build binance wide 1"],
                    args_validation=[['run_type',lambda x: x in ["build", "correct", "get"],'not in {}'.format(["build", "correct", "get"])],
-                                    ['exchange',lambda x: x in ['ftx', 'binance'],'not in {}'.format(["ftx, binance"])],
+                                    ['exchange',lambda x: x in ['ftx', 'binanceusdm'],'not in {}'.format(["ftx, binance"])],
                                     ['universe',lambda x: x in configLoader.get_universe_pool(),'not in {}'.format(configLoader.get_universe_pool())]],
                    kwargs_validation={'nb_days': [lambda x: isinstance(int(x), int), 'not an int'],
                                       'frequency': [lambda x: True, '']})
@@ -173,7 +173,7 @@ MyModules.register(name='pfoptimizer',
                             "spread ftx subaccount=debug coin=ETH cash_size=10"],
                    args_validation=[
                        ['run_type', lambda x: x in ["sysperp", "backtest", "depth", "basis", "unwind","flatten","spread"],'not in {}'.format(["sysperp", "backtest", "depth", "basis", "unwind","flatten","spread"])],
-                       ['exchange', lambda x: x in ["ftx"], 'not in {}'.format(["ftx"])]],
+                       ['exchange',lambda x: x in ['ftx', 'binanceusdm'],'not in {}'.format(["ftx, binance"])]],
                    kwargs_validation={'instrument_type':[lambda x: ["perpetual", "future", "all"],'not in {}'.format(["perpetual", "future", "all"])],
                                       'subaccount':[lambda x: True,'not found'],
                                       'depth':[lambda x: isinstance(float(x),float),'need a float'],
@@ -185,7 +185,7 @@ MyModules.register(name='riskpnl',
                              "plex ftx debug period=2d"],
                    args_validation=[
                        ['run_type', lambda x: x in ["risk", "plex", "batch_summarize_exec_logs", "fromoptimal"],'not in {}'.format(["risk", "plex", "batch_summarize_exec_logs", "fromoptimal"])],
-                       ['exchange',lambda x: x in ['ftx', 'binance'],'not in {}'.format(["ftx, binance"])],
+                       ['exchange',lambda x: x in ['ftx', 'binanceusdm'],'not in {}'.format(["ftx, binance"])],
                        ['subaccount', lambda x: True, 'not in {}'.format([""])]],
                    kwargs_validation={'nb_runs':[lambda x: isinstance(int(x),int),'integer needed'],
                                       'period':[lambda x: isinstance(parse_time_param(x),datetime.timedelta),'time period needed'],
@@ -201,7 +201,7 @@ MyModules.register(name='tradeexecutor',
                    testbed=["weights_ftx_debug_ETH.json","glp.json exchange=ftx subaccount=glp config=prod"], # ,"unwind exchange=ftx subaccount=debug config=prod"
                    args_validation=[
                        ['order', lambda x: isinstance(x,str),'not a str']],
-                   kwargs_validation={'exchange':[lambda x: x in ['ftx', 'binance'],'not in {}'.format(["ftx, binance"])],
+                   kwargs_validation={'exchange':[lambda x: x in ['ftx', 'binanceusdm'],'not in {}'.format(["ftx, binanceusdm"])],
                                       'subaccount':[lambda x: True,'not found'],
                                       'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(config_name=x))),'not found']})
 
