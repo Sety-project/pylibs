@@ -2,7 +2,6 @@ from datetime import *
 
 import pandas as pd
 
-from histfeed.binance_history import fetch_trades_history
 from utils.ccxt_utilities import open_exchange
 from utils.io_utils import *
 from utils.async_utils import *
@@ -207,8 +206,8 @@ class ExecutionLogger:
                 date_end = datetime.utcfromtimestamp(end / 1000).replace(tzinfo=timezone.utc)
                 exchange = await open_exchange('ftx', 'SysPerp')  # subaccount doesn't matter
                 await exchange.load_markets()
-                trades_history_list = await safe_gather([fetch_trades_history(
-                    exchange.market(symbol)['id'], exchange, date_start, date_end, frequency=timedelta(seconds=1))
+                trades_history_list = await safe_gather([exchange.fetch_trades_history(
+                    exchange.market(symbol)['id'], date_start, date_end, frequency=timedelta(seconds=1))
                     for symbol in by_symbol['index'].values])
                 await exchange.close()
 
