@@ -4,7 +4,6 @@ from utils.async_utils import safe_gather
 from utils.io_utils import myUtcNow
 from tradeexecutor.interface.StrategyEnabler import StrategyEnabler
 
-
 class OrderManager(StrategyEnabler):
     '''OrderManager manages and records order state transitions.
     structure is {clientOrderId:[{...state dictionnary...},...]}
@@ -21,13 +20,6 @@ class OrderManager(StrategyEnabler):
         self.latest_fill_reconcile_timestamp = None
 
         self.fill_flag = False
-
-    @staticmethod
-    async def build(parameters):
-        if not parameters:
-            return None
-        else:
-            return OrderManager(parameters)
 
     def serialize(self) -> list[dict]:
         return sum(self.data.values(),[])
@@ -101,9 +93,10 @@ class OrderManager(StrategyEnabler):
         current |= {'risk_timestamp':risk_data.data[symbol]['delta_timestamp'],
                     'delta':risk_data.data[symbol]['delta'],
                     'netDelta': risk_data.coin_delta(symbol),
-                    'pv(wrong timestamp)':risk_data.pv,
-                    'margin_headroom':risk_data.margin.actual_IM,
-                    'IM_discrepancy': risk_data.margin.estimate('IM') - risk_data.margin.actual_IM}
+                    'pv(wrong timestamp)':risk_data.pv}
+            # ,
+            #         'margin_headroom':risk_data.margin.actual_IM,
+            #         'IM_discrepancy': risk_data.margin.estimate('IM') - risk_data.margin.actual_IM}
 
         ## mkt details
         if symbol in self.strategy.venue_api.tickers:
@@ -238,7 +231,7 @@ class OrderManager(StrategyEnabler):
         else:
             current['state'] = 'acknowledged'
             self.data[clientOrderId] += [current]
-            self.strategy.position_manager.margin.add_open_order(order_event)
+            #self.strategy.position_manager.margin.add_open_order(order_event)
 
     def process_fill(self, fill):
         if fill['symbol'] in self.data:

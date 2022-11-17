@@ -8,9 +8,9 @@ import ccxtpro
 
 from tradeexecutor.order_manager import OrderManager
 from tradeexecutor.position_manager import PositionManager
-from tradeexecutor.signal_engine import SignalEngine, GLPSignal
+from tradeexecutor.signal_engine import SignalEngine
 from tradeexecutor.venue_api import VenueAPI
-from tradeexecutor.interface.builders import build_VenueAPI
+from tradeexecutor.interface.builders import build_SignalEngine, build_VenueAPI, build_OrderManager, build_PositionManager
 from utils.MyLogger import ExecutionLogger
 from utils.async_utils import safe_gather_limit, safe_gather
 from utils.io_utils import myUtcNow
@@ -73,13 +73,13 @@ class Strategy(ABC):
             return result
         else:
             '''symbols come from signal_engine'''
-            signal_engine = await SignalEngine.build(parameters['signal_engine'])
+            signal_engine = await build_SignalEngine(parameters['signal_engine'])
             symbols = {'symbols': signal_engine.parameters['symbols']}
             rename_logfile(symbols['symbols'][0].replace(':USD', '').replace('/USD', ''))
 
             venue_api = await build_VenueAPI(symbols | parameters['venue_api'])
-            order_manager = await OrderManager.build(symbols | parameters['order_manager'])
-            position_manager = await PositionManager.build(symbols | parameters['position_manager'])
+            order_manager = await build_OrderManager(symbols | parameters['order_manager'])
+            position_manager = await build_PositionManager(symbols | parameters['position_manager'])
 
             if parameters['strategy']['type'] == 'execution':
                 result = ExecutionStrategy(symbols | parameters['strategy'],
@@ -164,7 +164,7 @@ class Strategy(ABC):
             self.replay_missed_messages()
 
         # critical job is done, release lock and print data if any fill happened
-        if (self.order_manager and self.order_manager.fill_flag) or isinstance(self.signal_engine, GLPSignal):
+        if (self.order_manager and self.order_manager.fill_flag) or 'GLPSignal' in str(type(self.signal_engine)):
             await self.data_logger.write_history(self.serialize())
             self.order_manager.fill_flag = False
 

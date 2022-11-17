@@ -109,10 +109,9 @@ class CeFiAPI(VenueAPI):
     # ---------------------------------- various helpers -----------------------------------------
     # --------------------------------------------------------------------------------------------
 
+    @abstractmethod
     def mid(self,symbol):
-        if symbol == 'USD/USD': return 1.0
-        data = self.tickers[symbol] if symbol in self.tickers else self.markets[symbol]['info']
-        return 0.5*(float(data['bid'])+float(data['ask']))
+        raise NotImplementedError
 
     def sweep_price_atomic(self, symbol, sizeUSD, include_taker_vs_maker_fee = False):
         ''' fast version of mkt_at_size for use in executer

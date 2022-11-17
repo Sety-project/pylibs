@@ -3,8 +3,10 @@ from utils.io_utils import myUtcNow
 
 from tradeexecutor.binance_api import BinanceAPI
 from tradeexecutor.gmx_api import GmxAPI
-from tradeexecutor.signal_engine import SignalEngine, ExternalSignal, SpreadTradeSignal, GLPSignal
-from tradeexecutor.position_manager import PositionManager, FtxPositionManager, GMXPositionManager
+from tradeexecutor.external_signal_engine import ExternalSignal
+from tradeexecutor.spreaddistribution_signal_engine import SpreadTradeSignal
+from tradeexecutor.glp_signal_engine import GLPSignal
+from tradeexecutor.position_manager import FtxPositionManager, BinancePositionManager, GMXPositionManager
 from tradeexecutor.order_manager import OrderManager
 
 async def build_VenueAPI(parameters):
@@ -40,7 +42,7 @@ async def build_VenueAPI(parameters):
     elif parameters['exchange'] == 'gmx':
         exchange = GmxAPI(parameters)
     else:
-        raise NotImplementedError
+        raise ValueError
 
     return exchange
 
@@ -55,14 +57,14 @@ async def build_SignalEngine(parameters):
         result = GLPSignal(parameters)
         await parameters['parents']['GLP'].venue_api.reconcile()
     else:
-        return None
+        raise ValueError
 
     await result.set_weights()
     result.parameters['symbols'] = list(result.data.keys())
 
-    result.orderbook = {symbol: collections.deque(maxlen=SignalEngine.cache_size)
+    result.orderbook = {symbol: collections.deque(maxlen=result.cache_size)
                       for symbol in parameters['symbols']}
-    result.trades = {symbol: collections.deque(maxlen=SignalEngine.cache_size)
+    result.trades = {symbol: collections.deque(maxlen=result.cache_size)
                      for symbol in parameters['symbols']}
 
     return result
@@ -70,10 +72,14 @@ async def build_SignalEngine(parameters):
 async def build_PositionManager(parameters):
     if parameters['exchange'] == 'gmx':
         result = GMXPositionManager(parameters)
-    else:
+    elif parameters['exchange'] == 'binanceusdm':
+        result = BinancePositionManager(parameters)
+    elif parameters['exchange'] == 'ftx':
         result = FtxPositionManager(parameters)
+    else:
+        raise ValueError
 
-    result.limit = PositionManager.LimitBreached(parameters['check_frequency'], parameters['delta_limit'])
+    result.limit = result.LimitBreached(parameters['check_frequency'], parameters['delta_limit'])
 
     for symbol in parameters['symbols']:
         result.data[symbol] = {'delta': 0,
