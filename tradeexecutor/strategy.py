@@ -1,6 +1,5 @@
 import asyncio, logging, threading, retry
 from abc import ABC, abstractmethod
-from typing import Union
 
 import numpy as np
 import pandas as pd
@@ -99,6 +98,8 @@ class Strategy(ABC):
                                           venue_api,
                                           order_manager,
                                           position_manager)
+            else:
+                raise ValueError
             await result.reconcile()
 
             if parameters['strategy']['type'] == 'hedged_lp':

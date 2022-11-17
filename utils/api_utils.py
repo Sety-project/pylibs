@@ -4,7 +4,7 @@ from utils.config_loader import configLoader
 
 def build_logging(app_name,
                   log_date=datetime.datetime.utcnow(),
-                  log_mapping={logging.INFO:'info.log',logging.WARNING:'warning.log',logging.CRITICAL:'program_flow.log'}):
+                  log_mapping=None):
     '''log_mapping={logging.DEBUG:'debug.log'...
     3 handlers: >=debug, ==info and >=warning
     if not log_date no date in filename'''
@@ -26,6 +26,8 @@ def build_logging(app_name,
     logger = logging.getLogger(app_name)
 
     # logs
+    if log_mapping is None:
+        log_mapping = {logging.INFO:'info.log',logging.WARNING:'warning.log',logging.CRITICAL:'program_flow.log'}
     for level,filename in log_mapping.items():
         handler = logging.FileHandler(os.path.join(os.sep,log_path,f'{log_date.strftime("%Y%m%d_%H%M%S")}_{filename}' if log_date else filename), mode='w')
         handler.setLevel(level)

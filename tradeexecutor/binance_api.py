@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 
 import ccxtpro
-from tradeexecutor.venue_api import CeFiAPI, PegRule, VenueAPI, loop, intercept_message_during_reconciliation
+from tradeexecutor.venue_api import CeFiAPI, PegRule, VenueAPI
 from utils.async_utils import safe_gather, safe_gather_limit
 from utils.ccxt_utilities import api_params, calc_basis
 from utils.config_loader import configLoader
@@ -569,7 +569,7 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
                                         for key in ['clientOrderId','symbol','side','amount','remaining','price']})  # may be needed
 
         try:
-            status = await super().cancel_order(None,params={'clientOrderId':clientOrderId})
+            status = await super().cancel_order('',params={'clientOrderId':clientOrderId})
             self.strategy.order_manager.cancel_sent({'clientOrderId':clientOrderId,
                                         'symbol':symbol,
                                         'status':status,
@@ -588,7 +588,7 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
             return False
         except Exception as e:
             self.strategy.logger.info(f'{clientOrderId} failed to cancel: {str(e)} --> retrying')
-            await asyncio.sleep(BinanceAPI.delay())
+            await asyncio.sleep(0.2)
             return await self.cancel_order(clientOrderId, trigger+'+')
         else:
             return True

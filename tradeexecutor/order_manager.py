@@ -90,10 +90,10 @@ class OrderManager(StrategyEnabler):
 
         ## risk details
         risk_data = self.strategy.position_manager
-        current |= {'risk_timestamp':risk_data.data[symbol]['delta_timestamp'],
-                    'delta':risk_data.data[symbol]['delta'],
+        current |= {'risk_timestamp': risk_data.data[symbol]['delta_timestamp'],
+                    'delta': risk_data.data[symbol]['delta'],
                     'netDelta': risk_data.coin_delta(symbol),
-                    'pv(wrong timestamp)':risk_data.pv}
+                    'pv(wrong timestamp)': risk_data.pv}
             # ,
             #         'margin_headroom':risk_data.margin.actual_IM,
             #         'IM_discrepancy': risk_data.margin.estimate('IM') - risk_data.margin.actual_IM}
