@@ -6,7 +6,9 @@ from tradeexecutor.gmx_api import GmxAPI
 from tradeexecutor.external_signal_engine import ExternalSignal
 from tradeexecutor.spreaddistribution_signal_engine import SpreadTradeSignal
 from tradeexecutor.glp_signal_engine import GLPSignal
-from tradeexecutor.position_manager import FtxPositionManager, BinancePositionManager, GMXPositionManager
+from tradeexecutor.ftx_position_manager import FtxPositionManager
+from tradeexecutor.binance_position_manager import BinancePositionManager
+from tradeexecutor.gmx_position_manager import GMXPositionManager
 from tradeexecutor.order_manager import OrderManager
 
 async def build_VenueAPI(parameters):
