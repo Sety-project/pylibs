@@ -1,4 +1,7 @@
 from datetime import timezone, datetime, timedelta
+
+import ccxt.base.errors
+
 from utils.io_utils import ignore_error, async_to_csv, myUtcNow
 import dateutil, os, asyncio
 
@@ -93,11 +96,15 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
                     'perpetual': bool(self.safe_value(market, 'swap')),
                     'priceIncrement': float(next(_filter for _filter in market['info']['filters']
                                                  if _filter['filterType'] == 'PRICE_FILTER')['tickSize']),
-                    'sizeIncrement': float(next(_filter for _filter in market['info']['filters']
-                                                if _filter['filterType'] == 'LOT_SIZE')['stepSize']),
+                    'sizeIncrement': max(float(next(_filter for _filter in market['info']['filters']
+                                                    if _filter['filterType'] == 'LOT_SIZE')['minQty']),
+                                         float(next(_filter for _filter in market['info']['filters']
+                                                    if _filter['filterType'] == 'MIN_NOTIONAL')['notional'])/mark),
                     'mktSizeIncrement':
-                        float(next(_filter for _filter in market['info']['filters']
-                             if _filter['filterType'] == 'MARKET_LOT_SIZE')['stepSize']),
+                        max(float(next(_filter for _filter in market['info']['filters']
+                                       if _filter['filterType'] == 'MARKET_LOT_SIZE')['minQty']),
+                            float(next(_filter for _filter in market['info']['filters']
+                                       if _filter['filterType'] == 'MIN_NOTIONAL')['notional']) / mark),
                     'underlying': market['base'],
                     'quote': market['quote'],
                     'type': 'perpetual' if market['swap'] else None,
@@ -132,35 +139,39 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
     async def reconcile(self):
         # fetch mark,spot and balances as closely as possible
         # shoot rest requests
-        n_requests = int(safe_gather_limit / 3)
-        p = [getattr(self, coro)(params={'dummy': i})
-             for i in range(n_requests)
-             for coro in ['fetch_tickers', 'fapiPrivateV2GetAccount', 'dapiPrivateGetAccount']]
+        p = [self.fetch_tickers(),
+             self.fetch_account_positions(params={'type': 'future', 'all': True}),
+             self.fetch_account_positions(params={'type': 'delivery', 'all': True})]
         results = await safe_gather(p, semaphore=self.strategy.rest_semaphore)
 
         # avg to reduce impact of latency
         markets_list = []
         for result in results[0::3]:
-            res = pd.DataFrame(list(result.values()), columns=['symbol','average']).set_index('symbol')
+            res = pd.DataFrame(list(result.values()), columns=['symbol', 'average'])
+            res['symbol'] = res['symbol'].apply(lambda x: self.market(x)['symbol'])
+            res.set_index('symbol', inplace=True)
             markets_list.append(res['average'])
         markets = (sum(markets_list) / len(markets_list))
 
-        balances_list = [pd.DataFrame(r['assets'], columns=['asset','walletBalance']).set_index('asset').astype(float)
-                         for r in results[1::3]] + \
-                        [pd.DataFrame(r['assets'], columns=['asset','walletBalance']).set_index('asset').astype(float)
-                         for r in results[2::3]]
-        balances = sum(balances_list) / len(balances_list)
-        var = sum([bal * bal for bal in balances_list]) / len(balances_list) - balances * balances
-        balances = balances[balances['walletBalance'] != 0.0].fillna(0.0)['walletBalance']
+        fapi_balances = pd.Series(results[1]['assets']['total'])
+        fapi_balances = fapi_balances[fapi_balances != 0.0].dropna()
 
-        positions_list = [pd.DataFrame(r['positions'], columns=['symbol','positionAmt']).set_index('symbol').astype(float)
-                          for r in results[1::3]] + \
-                         [pd.DataFrame(r['positions'], columns=['symbol', 'positionAmt']).set_index('symbol').astype(float)
-                             for r in results[2::3]]
+        dapi_balances = pd.Series(results[2]['assets']['total'])
+        dapi_balances = dapi_balances[dapi_balances != 0.0].dropna()
 
-        positions = sum(positions_list) / len(positions_list)
-        var = sum([pos * pos for pos in positions_list]) / len(positions_list) - positions * positions
-        positions = positions[positions['positionAmt'] != 0.0].fillna(0.0)['positionAmt']
+        balances = pd.concat([fapi_balances, dapi_balances], axis=1, join='outer').sum(axis=1).dropna()
+        balances = balances[balances != 0]
+
+        fapi_positions = pd.DataFrame(results[1]['positions'], columns=['symbol', 'contracts', 'side']).set_index('symbol')
+        fapi_positions = fapi_positions[fapi_positions['side'].isin(['long','short'])]
+        fapi_positions['positionAmt'] = fapi_positions.apply(lambda p: p['contracts'] if p['side'] == 'long' else -p['contracts'],axis=1)
+
+        dapi_positions = pd.DataFrame(results[2]['positions'], columns=['symbol', 'contracts', 'side']).set_index('symbol')
+        dapi_positions = dapi_positions[dapi_positions['side'].isin(['long','short'])]
+        dapi_positions['positionAmt'] = dapi_positions.apply(lambda p: p['contracts'] if p['side'] == 'long' else -p['contracts'],axis=1)
+
+        positions = pd.concat([fapi_positions,dapi_positions],axis=0)['positionAmt'].dropna()
+        positions = positions[positions != 0]
 
         self.state.markets = markets.to_dict()
         self.state.balances = balances.to_dict()
@@ -169,6 +180,121 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
     # --------------------------------------------------------------------------------------------
     # ---------------------------------- various helpers -----------------------------------------
     # --------------------------------------------------------------------------------------------
+
+    async def fetch_account_positions(self, symbols=None, params={'all':False}):
+        """
+        override of ccxt to yield balance and positions
+        fetch account positions
+        :param [str]|None symbols: list of unified market symbols
+        :param dict params: extra parameters specific to the binance api endpoint
+        :returns dict: data on account positions
+        """
+        if symbols is not None:
+            if not isinstance(symbols, list):
+                raise ccxt.base.errors.ArgumentsRequired(self.id + ' fetchPositions() requires an array argument for symbols')
+        await self.load_markets()
+        await self.load_leverage_brackets(False, params)
+        method = None
+        defaultType = self.safe_string(self.options, 'defaultType', 'future')
+        type = self.safe_string(params, 'type', defaultType)
+        query = self.omit(params, 'type')
+        if type == 'future':
+            method = 'fapiPrivateGetAccount'
+        elif type == 'delivery':
+            method = 'dapiPrivateGetAccount'
+        else:
+            raise ccxt.base.errors.NotSupported(self.id + ' fetchPositions() supports linear and inverse contracts only')
+        account = await getattr(self, method)(query)
+        positions = self.parse_account_positions(account)
+
+        # legacy behaviour
+        if not params['all']:
+            symbols = self.market_symbols(symbols)
+            return self.filter_by_array(positions, 'symbol', symbols, False)
+        else:
+            account['assets'] = self.parse_balance(account)
+            symbols = self.market_symbols(symbols)
+            account['positions'] = self.filter_by_array(positions, 'symbol', symbols, False)
+            return account
+
+    async def fetch_borrow_rate_history(self, code, since=None, limit=None, params={}):
+        """ fix interface bug in ccxt
+        retrieves a history of a currencies borrow interest rate at specific time slots
+        :param str code: unified currency code
+        :param int|None since: timestamp for the earliest borrow rate
+        :param int|None limit: the maximum number of `borrow rate structures <https://docs.ccxt.com/en/latest/manual.html#borrow-rate-structure>` to retrieve
+        :param dict params: extra parameters specific to the exchange api endpoint
+        :returns [dict]: an array of `borrow rate structures <https://docs.ccxt.com/en/latest/manual.html#borrow-rate-structure>`
+        """
+        await self.load_markets()
+        if limit is None:
+            limit = 93
+        elif limit > 93:
+            # Binance API says the limit is 100, but "Illegal characters found in a parameter." is returned when limit is > 93
+            raise ccxt.base.errors.BadRequest(self.id + ' fetchBorrowRateHistory() limit parameter cannot exceed 92')
+        currency = self.currency(code)
+        request = {
+            'asset': currency['id'],
+            'limit': limit,
+        }
+        if since is not None:
+            request['startTime'] = since
+            endTime = self.sum(since, limit * 86400000) - 1  # required when startTime is further than 93 days in the past
+            now = self.milliseconds()
+            request['endTime'] = min(endTime, now)  # cannot have an endTime later than current time
+        response = await self.sapiGetMarginInterestRateHistory(self.extend(request, params))
+        #
+        #     [
+        #         {
+        #             "asset": "USDT",
+        #             "timestamp": 1638230400000,
+        #             "dailyInterestRate": "0.0006",
+        #             "vipLevel": 0
+        #         },
+        #     ]
+        #
+        return self.parse_borrow_rate_history(response, code, since, limit)
+
+    async def fetch_open_orders(self, symbol=None, since=None, limit=None, params={}):
+        """ fix bug in ccxt
+        fetch all unfilled currently open orders
+        :param str|None symbol: unified market symbol
+        :param int|None since: the earliest time in ms to fetch open orders for
+        :param int|None limit: the maximum number of  open orders structures to retrieve
+        :param dict params: extra parameters specific to the binance api endpoint
+        :param str|None params['marginMode']: 'cross' or 'isolated', for spot margin trading
+        :returns [dict]: a list of `order structures <https://docs.ccxt.com/en/latest/manual.html#order-structure>`
+        """
+        await self.load_markets()
+        market = None
+        request = {}
+        marginMode, query = self.handle_margin_mode_and_params('fetchOpenOrders', params)
+        if symbol is not None:
+            market = self.market(symbol)
+            request['symbol'] = market['id']
+            defaultType = self.safe_string_2(self.options, 'fetchOpenOrders', 'defaultType', 'spot')
+        elif self.options['warnOnFetchOpenOrdersWithoutSymbol']:
+            symbols = self.symbols
+            numSymbols = len(symbols)
+            fetchOpenOrdersRateLimit = int(numSymbols / 2)
+            raise ccxt.base.errors.ExchangeError(self.id + ' fetchOpenOrders() WARNING: fetching open orders without specifying a symbol is rate-limited to one call per ' + str(fetchOpenOrdersRateLimit) + ' seconds. Do not call self method frequently to avoid ban. Set ' + self.id + '.options["warnOnFetchOpenOrdersWithoutSymbol"] = False to suppress self warning message.')
+        else:
+            defaultType = self.safe_string_2(self.options, 'fetchOpenOrders', 'defaultType', 'spot')
+        type = self.safe_string(query, 'type', defaultType)
+        requestParams = self.omit(query, 'type')
+        method = 'privateGetOpenOrders'
+        if type == 'future':
+            method = 'fapiPrivateGetOpenOrders'
+        elif type == 'delivery':
+            method = 'dapiPrivateGetOpenOrders'
+        elif type == 'margin' or marginMode is not None:
+            method = 'sapiGetMarginOpenOrders'
+            if marginMode == 'isolated':
+                request['isIsolated'] = True
+                if symbol is None:
+                    raise ccxt.base.errors.ArgumentsRequired(self.id + ' fetchOpenOrders() requires a symbol argument for isolated markets')
+        response = await getattr(self, method)(self.extend(request, requestParams))
+        return self.parse_orders(response, market, since, limit)
 
     def mid(self,symbol):
         if symbol == 'USDT/USDT': return 1.0
@@ -569,7 +695,7 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
                                         for key in ['clientOrderId','symbol','side','amount','remaining','price']})  # may be needed
 
         try:
-            status = await super().cancel_order('',params={'clientOrderId':clientOrderId})
+            status = await super().cancel_order(id=None, symbol=symbol, params={'origClientOrderId': clientOrderId})
             self.strategy.order_manager.cancel_sent({'clientOrderId':clientOrderId,
                                         'symbol':symbol,
                                         'status':status,
