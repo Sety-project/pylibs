@@ -9,13 +9,13 @@ class MarginCalculator:
     def __init__(self, account_leverage, collateralWeight, imfFactor):  # collateralWeight,imfFactor by symbol
         # Load defaults params
 
-        self._account_leverage = account_leverage
-        self._collateralWeight = {f'{coin}/USD': collateralWeight[coin]
-                                  for coin, data in collateralWeight.items() } |{'USD/USD' :1.0}
-        self._imfFactor = imfFactor | {'USD/USD:USD':0.0}
-        self._collateralWeightInitial = {f'{coin}/USD': collateralWeightInitial
-            ({'underlying': coin, 'collateralWeight': data})
-                                         for coin, data in collateralWeight.items() } |{'USD/USD' :1.0}
+        # TODO: self._account_leverage = account_leverage
+        # self._collateralWeight = {f'{coin}/USD': collateralWeight[coin]
+        #                           for coin, data in collateralWeight.items() } |{'USD/USD' :1.0}
+        # self._imfFactor = imfFactor | {'USD/USD:USD':0.0}
+        # self._collateralWeightInitial = {f'{coin}/USD': collateralWeightInitial
+        #     ({'underlying': coin, 'collateralWeight': data})
+        #                                  for coin, data in collateralWeight.items() } |{'USD/USD' :1.0}
 
         self.actual_futures_IM = None   # dict, keys by id not symbol
         self.actual_IM = None           # float
@@ -35,9 +35,9 @@ class MarginCalculator:
         '''factory from exchange'''
         # get static parameters
         futures = pd.DataFrame(await BinanceAPI.Static.fetch_futures(exchange))
-        account_leverage = float(futures.iloc[0]['account_leverage'])
-        collateralWeight = futures.set_index('underlying')['collateralWeight'].to_dict()
-        imfFactor = futures.set_index('new_symbol')['imfFactor'].to_dict()
+        account_leverage = 0#TODO:  float(futures.iloc[0]['account_leverage'])
+        collateralWeight = 0# TODO: futures.set_index('underlying')['collateralWeight'].to_dict()
+        imfFactor = 0# TODO: futures.set_index('new_symbol')['imfFactor'].to_dict()
         initialized = MarginCalculator(account_leverage, collateralWeight, imfFactor, )
         initialized.type_func = lambda s: exchange.markets[s]['type']
         initialized.mid_func = exchange.mid
@@ -58,8 +58,8 @@ class MarginCalculator:
 
         if balances is None or positions is None:
             await exchange.reconcile()
-            balances = exchange.state.balances['total']
-            positions = exchange.state.positions['netSize']
+            balances = exchange.state.balances
+            positions = exchange.state.positions
 
         for name,position in positions.items():
             symbol = exchange.market(name)['symbol']
@@ -74,24 +74,19 @@ class MarginCalculator:
         '''reset open orders and add all orders by side'''
         self.open_orders = dict()
 
-        external_orders = await exchange.fetch_open_orders()
+        exchange.options['warnOnFetchOpenOrdersWithoutSymbol'] = False
+        external_orders = sum([await exchange.fetch_open_orders(params={'type':instrument_type}) for instrument_type in ['future','delivery','margin']],[])
         for order in external_orders:
             self.add_open_order(order)
 
-    async def update_actual(self, exchange):
-        account_information = (await exchange.privateGetAccount())['result']
+    async def update_actual(self, exchange: BinanceAPI):
+        account_information = await exchange.fetch_account_positions(params={'all':True})
 
-        self.actual_futures_IM = {position['future']: float(position['collateralUsed'])
-                                  for position in account_information['positions'] if float(position['netSize']) != 0}
-        totalPositionSize = float(account_information['totalPositionSize']) if float(
-            account_information['totalPositionSize']) > 0 else 0.0
-        openMarginFraction = float(account_information['openMarginFraction']) if account_information[
-            'openMarginFraction'] else 0.0
-        self.actual_IM = float(totalPositionSize) * (
-                float(openMarginFraction) - float(account_information['initialMarginRequirement']))
-        self.actual_MM = float(totalPositionSize) * (
-                float(openMarginFraction) - float(account_information['maintenanceMarginRequirement']))
-        pv = account_information['totalAccountValue']
+        self.actual_futures_IM = {position['symbol']: position['initialMargin']
+                                  for position in account_information['positions'] if position['contracts'] != 0}
+        self.actual_IM = account_information['totalInitialMargin']
+        self.actual_MM = account_information['totalMaintMargin']
+        pv = float(account_information['totalWalletBalance'])
 
     # --------------- quick update methods -------------
 
@@ -178,126 +173,3 @@ class MarginCalculator:
             symbol, _size, mid) for _size in size_list_before)
 
         return new_margin - old_margin
-
-class BasisMarginCalculator(MarginCalculator):
-    '''implement specific contraints for carry trades, w/risk mgmt
-    x will be spot weights in USD
-    spot_marks, future_marks'''
-
-    def __init__(self, account_leverage, collateralWeight, imfFactor,
-                 equity, spot_marks, future_marks):
-        super().__init__(account_leverage, collateralWeight, imfFactor)
-
-        self._equity = equity
-        self.spot_marks = spot_marks
-        self.future_marks = future_marks
-
-        pf_params = configLoader.get_pfoptimizer_params()
-        self._long_blowup = float(pf_params['LONG_BLOWUP']['value'])
-        self._short_blowup = float(pf_params['SHORT_BLOWUP']['value'])
-        self._nb_blowups = int(pf_params['NB_BLOWUPS']['value'])
-        self._open_order_headroom = float(pf_params['OPEN_ORDERS_HEADROOM']['value'])
-
-    def futureMargins(self, weights):
-        '''weights = {symbol: 'weight, 'mark'''
-        im_fut = {symbol:
-            abs(data['weight']) * max(1.0 / self._account_leverage,
-                                      self._imfFactor[symbol] * np.sqrt(abs(data['weight']) / data['mark']))
-            for symbol, data in weights.items()}
-        mm_fut = {symbol:
-            max([0.03 * data['weight'], 0.6 * im_fut[symbol]])
-            for symbol, data in weights.items()}
-
-        return (im_fut, mm_fut)
-
-    def spotMargins(self, weights):
-        # https://help.ftx.com/hc/en-us/articles/360031149632
-        collateral = {coin+'/USD':
-            data['weight'] if data['weight'] < 0
-            else data['weight'] * min(self._collateralWeight[coin+'/USD'],
-                                      1.1 / (1 + self._imfFactor[coin + '/USD:USD'] * np.sqrt(
-                                          abs(data['weight']) / data['mark'])))
-            for coin, data in weights.items()}
-        # https://help.ftx.com/hc/en-us/articles/360053007671-Spot-Margin-Trading-Explainer
-        im_short = {coin+'/USD':
-            0 if data['weight'] > 0
-            else -data['weight'] * max(1.1 / self._collateralWeightInitial[coin+'/USD'] - 1,
-                                       self._imfFactor[coin + '/USD:USD'] * np.sqrt(abs(data['weight']) / data['mark']))
-            for coin, data in weights.items()}
-        mm_short = {coin+'/USD':
-            0 if data['weight'] > 0
-            else -data['weight'] * max(1.03 / self._collateralWeightInitial[coin+'/USD'] - 1,
-                                       0.6 * self._imfFactor[coin + '/USD:USD'] * np.sqrt(
-                                           abs(data['weight']) / data['mark']))
-            for coin, data in weights.items()}
-
-        return (collateral, im_short, mm_short)
-
-    def shockedEstimate(self, x):
-        ''' blowsup carry trade with a spike situation on the nb_blowups biggest deltas
-         long: new freeColl = (1+ds)w-(ds+blow)-fut_mm(1+ds+blow)
-         freeColl move = w ds-(ds+blow)-mm(ds+blow) = blow(1-mm) -ds(1-w+mm) ---> ~blow
-         short: new freeColl = -(1+ds)+(ds+blow)-fut_mm(1+ds+blow)-spot_mm(1+ds)
-         freeColl move = blow - fut_mm(ds+blow)-spot_mm ds = blow(1-fut_mm)-ds(fut_mm+spot_mm) ---> ~blow
-        '''
-        future_weights = {symbol: {'weight': -x[i], 'mark': self.future_marks[symbol]}
-                          for i, symbol in enumerate(self.future_marks)}
-        spot_weights = {coin: {'weight': x[i], 'mark': self.spot_marks[coin]}
-                        for i, coin in enumerate(self.spot_marks)}
-        usd_balance = self._equity - sum(x)
-
-        # blowup symbols are _nb_blowups the biggest weights
-        blowup_idx = np.argpartition(np.apply_along_axis(abs, 0, x),
-                                     -self._nb_blowups)[-self._nb_blowups:]
-        blowups = np.zeros(len(x))
-        for j in range(len(blowup_idx)):
-            i = blowup_idx[j]
-            blowups[i] = x[i] * self._long_blowup if x[i] > 0 else -x[i] * self._short_blowup
-
-        # assume all coins go either LONG_BLOWUP or SHORT_BLOWUP..what is the margin impact incl future pnl ?
-        # up...
-        future_up = {
-            symbol: {'weight': data['weight'] * (1 + self._long_blowup), 'mark': data['mark'] * (1 + self._long_blowup)}
-            for symbol, data in future_weights.items()}
-        spot_up = {
-            coin: {'weight': data['weight'] * (1 + self._long_blowup), 'mark': data['mark'] * (1 + self._long_blowup)}
-            for coin, data in spot_weights.items()}
-        (collateral_up, im_short_up, mm_short_up) = self.spotMargins(spot_up)
-        (im_fut_up, mm_fut_up) = self.futureMargins(future_up)
-        sum_MM_up = sum(x for x in collateral_up.values()) - \
-                    sum(x for x in mm_fut_up.values()) - \
-                    sum(x for x in mm_short_up.values()) - \
-                    sum(x) * self._long_blowup  # add futures pnl
-
-        # down...
-        future_down = {
-            symbol: {'weight': data['weight'] * (1 - self._short_blowup), 'mark': data['mark'] * (1 - self._short_blowup)}
-            for symbol, data in future_weights.items()}
-        spot_down = {
-            coin: {'weight': data['weight'] * (1 - self._short_blowup), 'mark': data['mark'] * (1 - self._short_blowup)}
-            for coin, data in spot_weights.items()}
-        (collateral_down, im_short_down, mm_short_down) = self.spotMargins(spot_down)
-        (im_fut_down, mm_fut_down) = self.futureMargins(future_down)
-        sum_MM_down = sum(x for x in collateral_down.values()) - \
-                      sum(x for x in mm_fut_down.values()) - \
-                      sum(x for x in mm_short_down.values()) + \
-                      sum(x) * self._short_blowup  # add the futures pnl
-
-        # flat + a blowup_idx only shock
-        (collateral, im_short, mm_short) = self.spotMargins(spot_weights)
-        (im_fut, mm_fut) = self.futureMargins(future_weights)
-        MM = pd.DataFrame([collateral]).T - pd.DataFrame([mm_short]).T
-        MM = pd.concat([MM, -pd.DataFrame([mm_fut]).T])  # MM.append(-pd.DataFrame([mm_fut]).T)
-        sum_MM = sum(MM[0]) - sum(blowups)  # add the futures pnl
-
-        # aggregate
-        IM = pd.DataFrame([collateral]).T - pd.DataFrame([im_short]).T
-        IM = pd.concat([IM, -pd.DataFrame([im_fut]).T])  # IM.append(-pd.DataFrame([im_fut]).T)
-        totalIM = usd_balance - 0.1 * max([0, -usd_balance]) + sum(
-            IM[0]) - self._equity * self._open_order_headroom
-        totalMM = usd_balance - 0.03 * max([0, -usd_balance]) + min([sum_MM, sum_MM_up, sum_MM_down])
-
-        return {'totalIM': totalIM,
-                'totalMM': totalMM,
-                'IM': IM,
-                'MM': MM}
