@@ -2,7 +2,7 @@ import time as t
 
 import dateutil.parser
 
-from tradeexecutor.interface.venue_api import FtxAPI
+from tradeexecutor.ftx.api import FtxAPI
 from utils.ftx_utils import *
 from utils.MyLogger import *
 from utils.api_utils import api
