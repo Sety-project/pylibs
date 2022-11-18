@@ -3,7 +3,7 @@ import asyncio, urllib, itertools, json
 from web3 import Web3
 from utils.async_utils import safe_gather, async_wrap
 from utils.io_utils import myUtcNow
-from tradeexecutor.venue_api import VenueAPI
+from tradeexecutor.interface.venue_api import VenueAPI
 
 class GmxAPI(VenueAPI):
     GLPAdd = "0x01234181085565ed162a948b6a5e88758CD7c7b8"

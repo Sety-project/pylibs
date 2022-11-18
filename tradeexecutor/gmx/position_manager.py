@@ -1,5 +1,5 @@
 from utils.io_utils import myUtcNow
-from tradeexecutor.position_manager import PositionManager
+from tradeexecutor.interface.position_manager import PositionManager
 
 class GMXPositionManager(PositionManager):
     def __init__(self,parameters):

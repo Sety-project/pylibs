@@ -1,15 +1,15 @@
 import collections
 from utils.io_utils import myUtcNow
 
-from tradeexecutor.binance_api import BinanceAPI
-from tradeexecutor.gmx_api import GmxAPI
+from tradeexecutor.binance.api import BinanceAPI
+from tradeexecutor.gmx.api import GmxAPI
 from tradeexecutor.external_signal_engine import ExternalSignal
 from tradeexecutor.spreaddistribution_signal_engine import SpreadTradeSignal
-from tradeexecutor.glp_signal_engine import GLPSignal
-from tradeexecutor.ftx_position_manager import FtxPositionManager
-from tradeexecutor.binance_position_manager import BinancePositionManager
-from tradeexecutor.gmx_position_manager import GMXPositionManager
-from tradeexecutor.order_manager import OrderManager
+from tradeexecutor.gmx.signal_engine import GLPSignal
+from tradeexecutor.ftx.position_manager import FtxPositionManager
+from tradeexecutor.binance.position_manager import BinancePositionManager
+from tradeexecutor.gmx.position_manager import GMXPositionManager
+from tradeexecutor.interface.order_manager import OrderManager
 
 async def build_VenueAPI(parameters):
     if parameters['exchange'] == 'ftx':

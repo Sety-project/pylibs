@@ -4,7 +4,7 @@ import pandas as pd
 
 from utils.async_utils import safe_gather
 from utils.io_utils import myUtcNow
-from tradeexecutor.signal_engine import SignalEngine
+from tradeexecutor.interface.signal_engine import SignalEngine
 
 class ExternalSignal(SignalEngine):
     def __init__(self, parameters):

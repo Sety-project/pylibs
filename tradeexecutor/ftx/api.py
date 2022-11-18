@@ -1,17 +1,16 @@
 from datetime import timezone, datetime
-import dateutil, itertools, json
+import dateutil
 
 import numpy as np
 import pandas as pd
 
 import ccxtpro
-from web3 import Web3
-from utils.async_utils import safe_gather, async_wrap, safe_gather_limit
+from utils.async_utils import safe_gather, safe_gather_limit
 from utils.ccxt_utilities import api_params, calc_basis
 from utils.config_loader import configLoader
 from utils.ftx_utils import getUnderlyingType
 from utils.io_utils import myUtcNow
-from tradeexecutor.venue_api import CeFiAPI, PegRule, VenueAPI, loop, intercept_message_during_reconciliation
+from tradeexecutor.interface.venue_api import CeFiAPI, PegRule, VenueAPI, loop, intercept_message_during_reconciliation
 
 class FtxAPI(CeFiAPI, ccxtpro.Exchange):
     '''VenueAPI implements rest calls and websocket loops to observe raw market data / order events and place orders

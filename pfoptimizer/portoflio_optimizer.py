@@ -4,8 +4,7 @@ import datetime
 from pfoptimizer.ftx_snap_basis import *
 from riskpnl.ftx_risk_pnl import *
 from utils.ftx_utils import find_spot_ticker
-from tradeexecutor.venue_api import FtxAPI, VenueAPI
-from tradeexecutor.strategy import Strategy
+from tradeexecutor.interface.venue_api import FtxAPI
 from utils.config_loader import *
 from histfeed.ftx_history import get_history
 from utils.ccxt_utilities import open_exchange

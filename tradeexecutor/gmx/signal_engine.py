@@ -1,5 +1,5 @@
 import collections
-from tradeexecutor.gmx_api import GmxAPI
+from tradeexecutor.gmx.api import GmxAPI
 from tradeexecutor.external_signal_engine import ExternalSignal
 
 class GLPSignal(ExternalSignal):

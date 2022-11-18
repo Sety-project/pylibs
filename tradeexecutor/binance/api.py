@@ -9,8 +9,8 @@ import numpy as np
 import pandas as pd
 
 import ccxtpro
-from tradeexecutor.venue_api import CeFiAPI, PegRule, VenueAPI
-from utils.async_utils import safe_gather, safe_gather_limit
+from tradeexecutor.interface.venue_api import CeFiAPI, PegRule, VenueAPI
+from utils.async_utils import safe_gather
 from utils.ccxt_utilities import api_params, calc_basis
 from utils.config_loader import configLoader
 
@@ -207,7 +207,7 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
         account = await getattr(self, method)(query)
         positions = self.parse_account_positions(account)
 
-        # legacy behaviour
+        # cash_carry_legacy behaviour
         if not params['all']:
             symbols = self.market_symbols(symbols)
             return self.filter_by_array(positions, 'symbol', symbols, False)

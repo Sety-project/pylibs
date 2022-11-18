@@ -1,38 +1,13 @@
 import numpy as np
 
-from riskpnl.binance_margin import MarginCalculator
+from tradeexecutor.binance.margin import MarginCalculator
 from utils.io_utils import myUtcNow
-from tradeexecutor.position_manager import PositionManager
+from tradeexecutor.interface.position_manager import PositionManager
 
-class FtxPositionManager(PositionManager):
+class BinancePositionManager(PositionManager):
     def __init__(self,parameters):
         super().__init__(parameters)
         self.markets = None
-
-    def process_fill(self, fill):
-        symbol = fill['symbol']
-        px = fill['price']
-        fill_size = fill['amount'] * (1 if fill['side'] == 'buy' else -1)
-
-        # update risk_state
-        if symbol not in self.data:
-            self.data[symbol] = {'delta': 0, 'delta_id': 0, 'delta_timestamp': myUtcNow()}
-        data = self.data[symbol]
-        data['delta'] += fill_size * px
-        data['delta_id'] = max(data['delta_id'], int(fill['order']))
-        data['delta_timestamp'] = fill['timestamp']
-
-        # update margin
-        self.margin.add_instrument(symbol, fill_size)
-
-        if 'verbose' in self.strategy.parameters['options'] and symbol in self.strategy.data:
-            current = self.data[symbol]['delta']
-            target = self.strategy.data[symbol]['target'] * px if 'target' in self.strategy.data[symbol] else None
-            self.strategy.logger.warning('{} risk at {} ms: [current {}, target {}]'.format(
-                symbol,
-                self.data[symbol]['delta_timestamp'],
-                current,
-                target))
 
     async def reconcile(self):
         '''needs a reconciled venueAPI
@@ -59,10 +34,10 @@ class FtxPositionManager(PositionManager):
 
         # delta is noisy for perps, so override to delta 1.
         self.pv = 0
-        for coin, balance in state.balances['total'].items():
-            if coin != 'USD':
-                symbol = coin + '/USD'
-                mid = state.markets['price'][self.strategy.venue_api.market_id(symbol)]
+        for coin, balance in state.balances.items():
+            if coin not in ['USDT','BUSD'] and balance != 0.0:
+                symbol = coin + '/USDT'
+                mid = state.markets[symbol]
                 delta = balance * mid
                 if symbol not in self.data:
                     self.data[symbol] = {'delta_id': 0}
@@ -70,10 +45,14 @@ class FtxPositionManager(PositionManager):
                 self.data[symbol]['delta_timestamp'] = risk_timestamp
                 self.pv += delta
 
-        self.pv += state.balances['total']['USD']  # doesn't contribute to delta, only pv !
+        # doesn't contribute to delta, only pv !
+        for stablecoin in ['USDT', 'BUSD']:
+            if stablecoin in state.balances:
+                self.pv += state.balances[stablecoin]
 
-        for name, position in state.positions['netSize'].items():
-            symbol = self.strategy.venue_api.market(name)['symbol']
+        for symbol, position in state.positions.items():
+            if position == 0.0:
+                continue
             delta = position * self.strategy.venue_api.mid(symbol)
 
             if symbol not in self.data:
@@ -82,8 +61,8 @@ class FtxPositionManager(PositionManager):
             self.data[symbol]['delta_timestamp'] = risk_timestamp
 
         # update IM
-        await self.margin.refresh(self.strategy.venue_api, balances=state.balances['total'], positions=state.positions['netSize'],
-                                  im_buffer=self.parameters['im_buffer'] * self.pv)
+        await self.margin.refresh(self.strategy.venue_api, balances=state.balances, positions=state.positions,
+                                   im_buffer=self.parameters['im_buffer'] * self.pv)
 
         delta_error = {symbol: self.data[symbol]['delta'] - (previous_delta[symbol]['delta'] if symbol in previous_delta else 0)
                        for symbol in self.data}
@@ -92,12 +71,37 @@ class FtxPositionManager(PositionManager):
                                        'delta': self.data[symbol_]['delta'],
                                        'netDelta': self.coin_delta(symbol_),
                                        'pv': self.pv,
-                                       'estimated_IM': self.margin.estimate('IM'),
-                                       'actual_IM': self.margin.actual_IM,
+                                       #TODO:  'estimated_IM': self.margin.estimate('IM'),
+                                       #TODO:  'actual_IM': self.margin.actual_IM,
                                        'pv_error': self.pv - (previous_pv or 0),
                                        'total_delta_error': sum(delta_error.values())}
                                       for symbol_ in self.data]
         self.check_limit()
+
+    def process_fill(self, fill):
+        symbol = fill['symbol']
+        px = fill['price']
+        fill_size = fill['amount'] * (1 if fill['side'] == 'buy' else -1)
+
+        # update risk_state
+        if symbol not in self.data:
+            self.data[symbol] = {'delta': 0, 'delta_id': 0, 'delta_timestamp': myUtcNow()}
+        data = self.data[symbol]
+        data['delta'] += fill_size * px
+        data['delta_id'] = max(data['delta_id'], int(fill['order']))
+        data['delta_timestamp'] = fill['timestamp']
+
+        # update margin
+        self.margin.add_instrument(symbol, fill_size)
+
+        if 'verbose' in self.strategy.parameters['options'] and symbol in self.strategy.data:
+            current = self.data[symbol]['delta']
+            target = self.strategy.data[symbol]['target'] * px if 'target' in self.strategy.data[symbol] else None
+            self.strategy.logger.warning('{} risk at {} ms: [current {}, target {}]'.format(
+                symbol,
+                self.data[symbol]['delta_timestamp'],
+                current,
+                target))
 
     def check_limit(self):
         absolute_risk = dict()
@@ -108,10 +112,11 @@ class FtxPositionManager(PositionManager):
         if sum(absolute_risk.values()) > self.pv * self.limit.delta_limit:
             self.strategy.logger.info(
                 f'absolute_risk {absolute_risk} > {self.pv * self.limit.delta_limit}')
-        if self.margin.actual_IM < self.pv / 100:
-            self.strategy.logger.info(f'IM {self.margin.actual_IM}  < 1%')
+        # if self.margin.actual_IM < self.pv / 100:
+        #     self.strategy.logger.info(f'IM {self.margin.actual_IM}  < 1%')
 
     def trim_to_margin(self, weights: dict):
+        return weights
         '''trim size to margin allocation (equal for all running symbols)'''
         marginal_IM = sum([self.margin.order_marginal_cost(symbol,
                                                            size,
@@ -146,26 +151,26 @@ class FtxPositionManager(PositionManager):
                        if self.markets[symbol_]['base'] == coin)
 
     def delta_bounds(self, symbol):
-        ''''''
+        '''simpler for binance, for now'''
         coinDelta = self.coin_delta(symbol)
         coin = self.markets[symbol]['base']
-        coin_delta_plus = coinDelta + sum(self.margin.open_orders[symbol_]['longs']
-                                        for symbol_ in self.margin.open_orders
-                                        if self.markets[symbol_]['base'] == coin)
-        coin_delta_minus = coinDelta + sum(self.margin.open_orders[symbol_]['shorts']
-                                         for symbol_ in self.margin.open_orders
-                                         if self.markets[symbol_]['base'] == coin)
+        # coin_delta_plus = coinDelta + sum(self.margin.open_orders[symbol_]['longs']
+        #                                 for symbol_ in self.margin.open_orders
+        #                                 if self.markets[symbol_]['base'] == coin)
+        # coin_delta_minus = coinDelta + sum(self.margin.open_orders[symbol_]['shorts']
+        #                                  for symbol_ in self.margin.open_orders
+        #                                  if self.markets[symbol_]['base'] == coin)
         total_delta = sum(self.adjusted_delta(symbol_)
                           for symbol_, data in self.data.items())
-        total_delta_plus = total_delta + sum(self.margin.open_orders[symbol_]['longs']
-                                             for symbol_ in self.margin.open_orders)
-        total_delta_minus = total_delta + sum(self.margin.open_orders[symbol_]['shorts']
-                                              for symbol_ in self.margin.open_orders)
+        # total_delta_plus = total_delta + sum(self.margin.open_orders[symbol_]['longs']
+        #                                      for symbol_ in self.margin.open_orders)
+        # total_delta_minus = total_delta + sum(self.margin.open_orders[symbol_]['shorts']
+        #                                       for symbol_ in self.margin.open_orders)
 
         global_delta = coinDelta + self.parameters['global_beta'] * (total_delta - coinDelta)
-        global_delta_plus = coin_delta_plus + self.parameters['global_beta'] * (total_delta_plus - coin_delta_plus)
-        global_delta_minus = coin_delta_minus + self.parameters['global_beta'] * (total_delta_minus - coin_delta_minus)
+        # global_delta_plus = coin_delta_plus + self.parameters['global_beta'] * (total_delta_plus - coin_delta_plus)
+        # global_delta_minus = coin_delta_minus + self.parameters['global_beta'] * (total_delta_minus - coin_delta_minus)
 
         return {'global_delta': global_delta,
-                'global_delta_plus': global_delta_plus,
-                'global_delta_minus': global_delta_minus}
+                'global_delta_plus': global_delta,
+                'global_delta_minus': global_delta}

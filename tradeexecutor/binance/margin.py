@@ -1,4 +1,4 @@
-from tradeexecutor.binance_api import BinanceAPI
+from tradeexecutor.binance.api import BinanceAPI
 from utils.ftx_utils import *
 from utils.config_loader import *
 

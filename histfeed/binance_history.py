@@ -1,4 +1,4 @@
-from tradeexecutor.binance_api import BinanceAPI
+from tradeexecutor.binance.api import BinanceAPI
 from tradeexecutor.interface.builders import build_VenueAPI
 from utils.io_utils import *
 from utils.api_utils import api
@@ -175,7 +175,7 @@ def main(*args,**kwargs):
         example: histfeed get ftx wide 5 1h
         args:
            run_type = "build", "correct", "get"
-           exchange = "ftx"
+           exchange = "binanceusdm"
            universe = "institutional", "wide", "max", "all"
            nb_days = int
            frequency = str

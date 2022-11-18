@@ -5,10 +5,10 @@ import numpy as np
 import pandas as pd
 import ccxtpro
 
-from tradeexecutor.order_manager import OrderManager
-from tradeexecutor.position_manager import PositionManager
-from tradeexecutor.signal_engine import SignalEngine
-from tradeexecutor.venue_api import VenueAPI
+from tradeexecutor.interface.order_manager import OrderManager
+from tradeexecutor.interface.position_manager import PositionManager
+from tradeexecutor.interface.signal_engine import SignalEngine
+from tradeexecutor.interface.venue_api import VenueAPI
 from tradeexecutor.interface.builders import build_SignalEngine, build_VenueAPI, build_OrderManager, build_PositionManager
 from utils.MyLogger import ExecutionLogger
 from utils.async_utils import safe_gather_limit, safe_gather

@@ -1,8 +1,7 @@
-import numpy as np
 import scipy.optimize as opt
-from riskpnl.ftx_margin import BasisMarginCalculator
+from tradeexecutor.ftx.margin import BasisMarginCalculator
 from histfeed.ftx_history import *
-from tradeexecutor.venue_api import FtxAPI
+from tradeexecutor.interface.venue_api import FtxAPI
 
 finite_diff_rel_step = 1e-4
 

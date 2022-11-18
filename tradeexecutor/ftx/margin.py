@@ -1,4 +1,4 @@
-from tradeexecutor.venue_api import FtxAPI
+from tradeexecutor.interface.venue_api import FtxAPI
 from utils.ftx_utils import *
 from utils.config_loader import *
 
