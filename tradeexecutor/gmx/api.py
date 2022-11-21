@@ -79,7 +79,7 @@ class GmxAPI(VenueAPI):
                 return aum / self.totalSupply['total']
 
         def partial_delta(self, key: str, normalized: bool=False) -> float:
-            ''' delta in token
+            ''' delta in token, includes rewards
             delta =  poolAmount - reservedAmounts + globalShortSizes/globalShortAveragePrices
             ~ what's ours + (collateral - N)^{longs}'''
             if normalized:  # this uses normalized input
@@ -89,6 +89,8 @@ class GmxAPI(VenueAPI):
                         result += self.poolAmounts[token]
                         if data['volatile']:
                             result += (- self.reservedAmounts[token] + self.globalShortSizes[token] / self.globalShortAveragePrices[token])
+                        if token == 'WAVAX':
+                            result += self.rewards['WAVAX']
                 return result / self.totalSupply['total']
             else:
                 result = self.poolAmounts[key]
@@ -97,24 +99,6 @@ class GmxAPI(VenueAPI):
                 if key == 'WAVAX':
                     result += self.rewards['WAVAX']
                 return result / self.totalSupply['total']
-        # def add_weights(self) -> None:
-        #     weight_contents = urllib.request.urlopen("https://gmx-avax-server.uc.r.appspot.com/tokens").read()
-        #     weight_json = json.loads(weight_contents)
-        #     sillyMapping = {'MIM': 'MIM',
-        #                     'BTC.b': 'BTC_E',
-        #                     'ETH': 'WETH',
-        #                     'BTC': 'WBTC',
-        #                     'USDC.e': 'USDC_E',
-        #                     'AVAX': 'WAVAX',
-        #                     'USDC': 'USDC'}
-        #
-        #     for cur_contents in weight_json:
-        #         token = sillyMapping[cur_contents['data']['symbol']]
-        #         self.check[token]['weight'] = float(cur_contents["data"]["usdgAmount"]) / float(
-        #             cur_contents["data"]["maxPrice"])
-        #         for attribute in ['fundingRate', 'poolAmounts', 'reservedAmount', 'redemptionAmount', 'globalShortSize',
-        #                           'guaranteedUsd']:
-        #             self.check[token][attribute] = float(cur_contents['data'][attribute])
 
         def add_weights(self) -> None:
             weight_contents = urllib.request.urlopen("https://gmx-avax-server.uc.r.appspot.com/tokens").read()
