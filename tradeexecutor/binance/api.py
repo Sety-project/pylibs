@@ -296,9 +296,15 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
         response = await getattr(self, method)(self.extend(request, requestParams))
         return self.parse_orders(response, market, since, limit)
 
+    def parse_trade(self, trade, market=None):
+        result = super().parse_trade(trade, market)
+        if 'info' in trade and 'c' in trade['info']:
+            result |= {'clientOrderId': trade['info']['c']}
+        return result
+
     def mid(self,symbol):
         if symbol == 'USDT/USDT': return 1.0
-        data = self.tickers[symbol] if symbol in self.tickers else self.state.markets[symbol]
+        data = self.tickers[symbol]['mid'] if symbol in self.tickers else self.state.markets[symbol]
         return data
 
     ### only perps, only borrow and funding, only hourly, time is fixing / payment time.
@@ -616,9 +622,7 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
         order_side = 'buy' if size>0 else 'sell'
         if len(event_histories)==0:
             await self.create_order(symbol, 'limit', order_side, abs(size), price=edit_price,
-                                                  params={'postOnly': not isTaker,
-                                                          'ioc': isTaker,
-                                                          'comment':edit_price_depth if isTaker else 'new'})
+                                                  params={'comment':edit_price_depth if isTaker else 'new'})
         # if only one and it's editable, stopout or peg or wait
         elif len(event_histories)==1 \
                 and (self.strategy.order_manager.latest_value(event_histories[0][-1]['clientOrderId'], 'remaining') >= sizeIncrement) \
@@ -633,17 +637,13 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
                 price = self.sweep_price_atomic(symbol, size * mid)
                 await self.create_order(symbol, 'limit', order_side, abs(size),
                                                  price = price,
-                                                 params={'postOnly':False,
-                                                         'ioc':True,
-                                                         'comment':edit_price_depth if isTaker else 'stop'},
+                                                 params={'comment':edit_price_depth if isTaker else 'stop'},
                                                  previous_clientOrderId = order['clientOrderId'])
             # peg limit order
             elif order_distance > edit_trigger and abs(edit_price - order['price']) >= priceIncrement:
                 await self.create_order(symbol, 'limit', order_side, abs(size),
                                                 price=edit_price,
-                                                params={'postOnly': True,
-                                                        'ioc':False,
-                                                        'comment':'chase'},
+                                                params={'comment':'chase'},
                                                 previous_clientOrderId=order['clientOrderId'])
 
     async def create_order(self, symbol, type, side, amount, price=None, params=dict(),previous_clientOrderId=None,peg_rule: PegRule=None):

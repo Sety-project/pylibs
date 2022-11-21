@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from utils.async_utils import safe_gather
 from utils.io_utils import myUtcNow
 from tradeexecutor.interface.StrategyEnabler import StrategyEnabler
+from tradeexecutor.interface.venue_api import CeFiAPI
 
 class OrderManager(StrategyEnabler):
     '''OrderManager manages and records order state transitions.
@@ -42,8 +43,8 @@ class OrderManager(StrategyEnabler):
     def find_clientID_from_fill(self,fill):
         '''find order by id, even if still in flight
         all layers events must carry id if known !! '''
-        if 'clientOrderId' in fill:
-            found = fill['clientOrderId']
+        if 'c' in fill['info']:
+            found = fill['info']['c']
             assert (found in self.data),f'{found} unknown'
         else:
             try:
@@ -103,6 +104,7 @@ class OrderManager(StrategyEnabler):
             mkt_data = self.strategy.venue_api.tickers[symbol]
             timestamp = mkt_data['timestamp']
         else:
+            raise Exception(f'{symbol} not in tickers. not initialized?')
             mkt_data = self.strategy.venue_api.markets[symbol]['info']|{'bidVolume':0,'askVolume':0}#TODO: should have all risk group
             timestamp = self.strategy.parameters['timestamp']
         current |= {'mkt_timestamp': timestamp} \
@@ -234,10 +236,14 @@ class OrderManager(StrategyEnabler):
             #self.strategy.position_manager.margin.add_open_order(order_event)
 
     def process_fill(self, fill):
-        if fill['symbol'] in self.data:
-            fill['clientOrderId'] = fill['info']['clientOrderId']
+        if self.find_clientID_from_fill(fill) in self.data:
+            fill['clientOrderId'] = self.find_clientID_from_fill(fill)
             fill['comment'] = 'websocket_fill'
             self.fill(fill)
+        else:
+            self.strategy.logger.warning('externally triggered at {}: {} {} {} {} at {}'.format(fill['datetime'],
+                                                                         fill['type'], fill['side'], fill['amount'], fill['symbol'],
+                                                                         fill['price']))
 
     def fill(self,order_event):
         '''order_event: id, trigger,timestamp,amount,order,symbol'''
@@ -296,11 +302,10 @@ class OrderManager(StrategyEnabler):
     async def reconcile(self):
         '''reconciliations to an exchange
         run sequentially to avoid race conditions
-        only runs for ftx.'''
-        if self.strategy.venue_api.get_id() != 'ftx':
-            return
-        await self.reconcile_fills()
-        await self.reconcile_orders()
+        only runs for CeFi.'''
+        if isinstance(self.strategy.venue_api, CeFiAPI):
+            await self.reconcile_fills()
+            await self.reconcile_orders()
 
     async def reconcile_fills(self):
         '''fetch fills, to recover missed messages'''
@@ -329,10 +334,10 @@ class OrderManager(StrategyEnabler):
                 found = order['clientOrderId']
                 assert (found in self.data), f'{found} unknown'
 
-        # remove zombie orders (we beleive they are live but they are not open)
+        # remove zombie orders (we believe they are live but they are not open)
         # should not happen so we put it in the logs
-        internal_order_external_status = await safe_gather([self.strategy.venue_api.fetch_order(id=None, params={'clientOrderId':clientOrderId})
-                                                   for clientOrderId in internal_order_internal_status.keys()],
+        internal_order_external_status = await safe_gather([self.strategy.venue_api.fetch_order(id=None, symbol=data['symbol'], params={'clientOrderId':clientOrderId})
+                                                   for clientOrderId,data in internal_order_internal_status.items()],
                                                            semaphore=self.strategy.rest_semaphore,
                                                            return_exceptions=True)
         for clientOrderId,external_status in zip(internal_order_internal_status.keys(),internal_order_external_status):

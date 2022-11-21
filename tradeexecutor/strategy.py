@@ -223,13 +223,15 @@ class ExecutionStrategy(Strategy):
             for key, value in data.items():
                 self.data[symbol][key] = value
 
-        no_delta = [abs(self.position_manager.adjusted_delta(symbol)) < self.parameters['significance_threshold'] * self.position_manager.pv
-                    for symbol in self.data]
-        no_target = [abs(data['target']*data['benchmark']) < self.parameters['significance_threshold'] * self.position_manager.pv
-                    for symbol, data in self.data.items()]
-        if all(no_delta) and all(no_target):
-            raise Strategy.NothingToDo(
-                f'no {self.data.keys()} delta and no {self.data} order --> shutting down bot')
+        # disable NothingToDo, as signal can change
+        if False:
+            no_delta = [abs(self.position_manager.adjusted_delta(symbol)) < self.parameters['significance_threshold'] * self.position_manager.pv
+                        for symbol in self.data]
+            no_target = [abs(data['target']*data['benchmark']) < self.parameters['significance_threshold'] * self.position_manager.pv
+                        for symbol, data in self.data.items()]
+            if all(no_delta) and all(no_target):
+                raise Strategy.NothingToDo(
+                    f'no {self.data.keys()} delta and no {self.data} order --> shutting down bot')
 
         if not self.signal_engine.vwap:
             await self.signal_engine.initialize_vwap()
