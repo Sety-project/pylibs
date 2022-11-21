@@ -559,7 +559,7 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
         data['liquidation_volume'] = None
         data['time'] = data['datetime'].apply(lambda t: dateutil.parser.isoparse(t).replace(tzinfo=timezone.utc))
         data.set_index('time', inplace=True)
-        vwap = data[['amount', 'volume', 'square', 'count', 'liquidation_volume']].resample(frequency).sum()
+        vwap = data[['amount', 'volume', 'square', 'count', 'liquidation_volume']].resample(frequency).sum(numeric_only=True)
         vwap['vwap'] = vwap['volume'] / vwap['amount']
         vwap['vwvol'] = (vwap['square'] / vwap['amount'] - vwap['vwap'] * vwap['vwap']).apply(np.sqrt)
         vwap['liquidation_intensity'] = None
