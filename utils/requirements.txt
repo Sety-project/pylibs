@@ -22,7 +22,7 @@ bitarray==2.6.0
 bleach==5.0.1
 botocore==1.24.21
 cachetools==4.2.2
-ccxt==2.1.79 # =1.88.18
+ccxt==2.2.1 # =1.88.18
 ccxtpro==1.0.1
 certifi==2022.9.14
 cffi==1.15.1
