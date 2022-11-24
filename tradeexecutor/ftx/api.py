@@ -233,6 +233,29 @@ class FtxAPI(CeFiAPI, ccxtpro.Exchange):
         self.state.balances = balances.to_dict()
         self.state.positions = positions.to_dict()
 
+    def replay_missed_messages(self):
+        # replay missed _messages.
+        while self.message_missed:
+            message = self.message_missed.popleft()
+            data = message['data']
+            channel = message['channel']
+            self.logger.warning(f'replaying {channel} after recon')
+            if channel == 'fills':
+                fill = self.parse_trade(data)
+                self.strategy.position_manager.process_fill(fill | {'orderTrigger': 'replayed'})
+                self.strategy.order_manager.process_fill(fill | {'orderTrigger': 'replayed'})
+            elif channel == 'orders':
+                order = self.parse_order(data)
+                if order['symbol'] in self.data:
+                    self.strategy.order_manager.acknowledgment(order | {'comment': 'websocket_acknowledgment','orderTrigger': 'replayed'})
+            # we don't intercept the mktdata anyway...
+            elif channel == 'orderbook':
+                pass
+                #self.populate_ticker(message['symbol'], message)
+            elif channel == 'trades':
+                pass
+                #self.signal_engine.trades_cache[message['symbol']].append(message)
+
     # --------------------------------------------------------------------------------------------
     # ---------------------------------- various helpers -----------------------------------------
     # --------------------------------------------------------------------------------------------
@@ -472,7 +495,7 @@ class FtxAPI(CeFiAPI, ccxtpro.Exchange):
                                             'comment': comment},
                                     peg_rule=peg_rule)
 
-    async def create_taker_hedge(self,symbol, size, comment='taker_hedge'):
+    async def create_taker_hedge(self,symbol, size, comment='takerhedge'):
         '''trade and cancel. trade may be partial and cancel may have failed !!'''
         sweep_price = self.sweep_price_atomic(symbol, size * self.mid(symbol))
         coro = [self.create_order(symbol, 'limit', ('buy' if size>0 else 'sell'), abs(size), price=sweep_price,
