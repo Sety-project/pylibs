@@ -26,7 +26,7 @@ class Strategy(ABC):
             super().__init__(text)
     def __init__(self, parameters, signal_engine, venue_api, order_manager, position_manager):
         '''Strategy contructor also opens channels btw objects (a simple member data for now)'''
-        self.data: dict = dict({key: None for key in parameters['symbols']})
+        self.data: dict = dict({key: dict() for key in parameters['symbols']})
         self.parameters: dict = parameters
         self.timestamp: float = None
         self.parents: dict[str, Strategy] = parameters.pop('parents') if 'parents' in parameters else dict()
@@ -80,29 +80,15 @@ class Strategy(ABC):
             order_manager = await build_OrderManager(symbols | parameters['order_manager'])
             position_manager = await build_PositionManager(symbols | parameters['position_manager'])
 
-            if parameters['strategy']['type'] == 'execution':
-                result = ExecutionStrategy(symbols | parameters['strategy'],
-                                       signal_engine,
-                                       venue_api,
-                                       order_manager,
-                                       position_manager)
-            elif parameters['strategy']['type'] == 'spread_distribution':
-                result = AlgoStrategy(symbols | parameters['strategy'],
-                                           signal_engine,
-                                           venue_api,
-                                           order_manager,
-                                           position_manager)
-            elif parameters['strategy']['type'] == 'hedged_lp':
-                result = HedgedLPStrategy(symbols | parameters['strategy'],
-                                          signal_engine,
-                                          venue_api,
-                                          order_manager,
-                                          position_manager)
-            else:
-                raise ValueError
+            result = globals()['{}Strategy'.format(parameters['strategy']['type'])](symbols | parameters['strategy'],
+                                                               signal_engine,
+                                                               venue_api,
+                                                               order_manager,
+                                                               position_manager)
+
             await result.reconcile()
 
-            if parameters['strategy']['type'] == 'hedged_lp':
+            if parameters['strategy']['type'] == 'HedgedLP':
                 parameters['hedge_strategy']['strategy']['parents'] = {'GLP': result}
                 parameters['hedge_strategy']['signal_engine']['parents'] = {'GLP': result}
                 hedge_strategy = await Strategy.build(parameters['hedge_strategy'])
@@ -162,7 +148,7 @@ class Strategy(ABC):
             if self.position_manager: await self.position_manager.reconcile()
             if self.order_manager: await self.order_manager.reconcile()
             if self.signal_engine: await self.update_quoter_parameters()
-            self.replay_missed_messages()
+            self.venue_api.replay_missed_messages()
 
         # critical job is done, release lock and print data if any fill happened
         if (self.order_manager and self.order_manager.fill_flag) or 'GLPSignal' in str(type(self.signal_engine)):
@@ -182,29 +168,6 @@ class Strategy(ABC):
         self.position_manager.process_fill(fill)
         self.order_manager.process_fill(fill)
         await asyncio.sleep(0)
-
-    def replay_missed_messages(self):
-        # replay missed _messages.
-        while self.venue_api.message_missed:
-            message = self.venue_api.message_missed.popleft()
-            data = message['data']
-            channel = message['channel']
-            self.logger.warning(f'replaying {channel} after recon')
-            if channel == 'fills':
-                fill = self.venue_api.parse_trade(data)
-                self.position_manager.process_fill(fill | {'orderTrigger': 'replayed'})
-                self.order_manager.process_fill(fill | {'orderTrigger': 'replayed'})
-            elif channel == 'orders':
-                order = self.venue_api.parse_order(data)
-                if order['symbol'] in self.data:
-                    self.order_manager.acknowledgment(order | {'comment': 'websocket_acknowledgment','orderTrigger': 'replayed'})
-            # we don't intercept the mktdata anyway...
-            elif channel == 'orderbook':
-                pass
-                #self.populate_ticker(message['symbol'], message)
-            elif channel == 'trades':
-                pass
-                #self.signal_engine.trades_cache[message['symbol']].append(message)
 
 class ExecutionStrategy(Strategy):
     '''specialized to execute externally generated client orders'''
@@ -459,7 +422,7 @@ class AlgoStrategy(Strategy):
         # only react to limit orders being filled
         symbol = fill['symbol']
         if symbol in self \
-                and self.order_manager.latest_value(self.order_manager.find_clientID_from_fill(fill),'comment') != 'taker_hedge':
+                and self.order_manager.latest_value(self.order_manager.find_clientID_from_fill(fill),'comment') != 'takerhedge':
             other_symbol = AlgoStrategy.get_other_symbol(symbol)
             await self.venue_api.create_taker_hedge(other_symbol, -fill['amount'])
 
@@ -483,3 +446,41 @@ class HedgedLPStrategy(ExecutionStrategy):
         for symbol,data in self.signal_engine.data.items():
             for key, value in data.items():
                 self.data[symbol][key] = value
+
+class TakerHedgeStrategy(Strategy):
+    '''specialized to execute externally generated client orders'''
+    async def update_quoter_parameters(self):
+        '''updates key/values from signal'''
+        self.timestamp = myUtcNow()
+
+        # overwrite key/value from signal_engine
+        for symbol, data in self.signal_engine.data.items():
+            for key, value in data.items():
+                self.data[symbol][key] = value
+
+        nowtime = myUtcNow()
+        for symbol, data in self.data.items():
+            data['timestamp'] = nowtime
+            data['update_time_delta'] = data['target'] - self.position_manager.adjusted_delta(symbol) / self.venue_api.mid(symbol)
+
+    async def process_order_book_update(self, symbol, orderbook):
+        '''
+            leverages orderbook and risk to issue an order
+            Critical loop, needs to go quick
+            self.lock[f'{symbol}']: careful not to act if another orderbook update triggers again during execution
+        '''
+        await super().process_order_book_update(symbol,orderbook)
+        data = self.data[symbol]
+        mid = 0.5*(orderbook['bids'][0][0]+orderbook['asks'][0][0])
+
+        if self.lock[f'{symbol}'].locked() or self.lock[f'reconciling'].locked():
+            return
+
+        with self.lock[f'{symbol}']:
+            # size to do:
+            original_size = data['target'] - self.position_manager.adjusted_delta(symbol) / mid
+            if abs(original_size) < self.parents['GLP'].parameters['delta_buffer'] * self.parents['GLP'].position_manager.pv / mid \
+                    or abs(original_size) < self.venue_api.static[symbol]['sizeIncrement']:
+                return
+
+            await self.venue_api.create_taker_hedge(symbol, original_size)
