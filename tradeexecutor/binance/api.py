@@ -177,6 +177,21 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
         self.state.balances = balances.to_dict()
         self.state.positions = positions.to_dict()
 
+    def replay_missed_messages(self):
+        # replay missed _messages.
+        while self.message_missed:
+            data = self.message_missed.popleft()
+            channel = data['x']
+            self.logger.warning(f'replaying {channel} after recon')
+            if channel == 'TRADE':
+                fill = self.parse_trade(data)
+                self.strategy.position_manager.process_fill(fill | {'orderTrigger': 'replayed'})
+                self.strategy.order_manager.process_fill(fill | {'orderTrigger': 'replayed'})
+            elif channel == 'NEW':
+                order = self.parse_order(data)
+                if order['symbol'] in self.data:
+                    self.strategy.order_manager.acknowledgment(order | {'comment': 'websocket_acknowledgment','orderTrigger': 'replayed'})
+
     # --------------------------------------------------------------------------------------------
     # ---------------------------------- various helpers -----------------------------------------
     # --------------------------------------------------------------------------------------------
@@ -646,10 +661,29 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
                                                 params={'comment':'chase'},
                                                 previous_clientOrderId=order['clientOrderId'])
 
+    async def create_taker_hedge(self,symbol, size, comment='takerhedge'):
+        '''cancel and trade.
+        risk: trade may be partial and cancel may have failed !!'''
+        # remove open order dupes is any (shouldn't happen)
+        pending_new_histories = self.strategy.order_manager.filter_order_histories([symbol],
+                                                                                   self.strategy.order_manager.openStates)
+        if len(pending_new_histories)>0:
+            self.strategy.logger.info('orders {} should not be open'.format(
+                [order[-1]['clientOrderId'] for order in pending_new_histories]))
+            return
+
+        # sweep_price = self.sweep_price_atomic(symbol, size * self.mid(symbol))
+        coro = [self.create_order(symbol, 'market', ('buy' if size > 0 else 'sell'), abs(size), price=None,
+                                  params={'comment': comment})]
+        cancelable_orders = await self.fetch_open_orders(symbol)
+        coro += [self.cancel_order(order['clientOrderId'], 'cancel_symbol')
+                 for order in cancelable_orders]
+        if len(cancelable_orders)>0: print(f'cancelable_orders {cancelable_orders}')
+        await safe_gather(coro, semaphore=self.strategy.rest_semaphore)
+
     async def create_order(self, symbol, type, side, amount, price=None, params=dict(),previous_clientOrderId=None,peg_rule: PegRule=None):
         '''if not new, cancel previous first
-        if acknowledged, place order. otherwise just reconcile
-        orders_pending_new is blocking'''
+        if acknowledged, place order.'''
         if previous_clientOrderId is not None:
             await self.cancel_order(previous_clientOrderId, 'edit')
 
