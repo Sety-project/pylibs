@@ -80,6 +80,10 @@ class VenueAPI(StrategyEnabler):
     @abstractmethod
     async def reconcile(self):
         raise NotImplementedError
+
+    def replay_missed_messages(self):
+        pass
+
     def serialize(self):
         raise NotImplementedError
 
