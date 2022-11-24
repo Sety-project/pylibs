@@ -10,7 +10,7 @@ class OrderManager(StrategyEnabler):
     structure is {clientOrderId:[{...state dictionnary...},...]}
     able to reconcile to an exchange'''
     allStates = {'pending_new', 'pending_cancel', 'sent', 'cancel_sent', 'pending_replace', 'acknowledged', 'partially_filled', 'filled', 'canceled', 'rejected'}
-    openStates = {'pending_new', 'sent', 'pending_cancel', 'pending_replace', 'acknowledged', 'partially_filled'}
+    openStates = {'pending_new', 'pending_cancel', 'sent', 'cancel_sent', 'pending_replace', 'acknowledged', 'partially_filled'}
     acknowledgedStates = {'acknowledged', 'partially_filled'}
     cancelableStates = {'sent', 'acknowledged', 'partially_filled'}
 
@@ -232,7 +232,7 @@ class OrderManager(StrategyEnabler):
         #     self.fill(current)
         else:
             current['state'] = 'acknowledged'
-            self.data[clientOrderId] += [current]
+            self.data[clientOrderId] = (self.data[clientOrderId] if clientOrderId in self.data else []) + [current]
             #self.strategy.position_manager.margin.add_open_order(order_event)
 
     def process_fill(self, fill):
