@@ -26,7 +26,7 @@ class BinancePositionManager(PositionManager):
             await parent.venue_api.reconcile()
 
         state = self.strategy.venue_api.state
-        self.delta_adjustment = {key: sum(parent.venue_api.state.partial_delta(key, normalized=True) * parent.position_manager.adjusted_delta(lp_token) * self.strategy.venue_api.mid(key)
+        self.delta_adjustment = {key: sum(parent.venue_api.state.partial_delta(key, normalized=True) * parent.position_manager.data[lp_token]['delta'] * self.strategy.venue_api.mid(key)
                                           for lp_token, parent in self.strategy.parents.items())
                                  for key in self.data}
 
