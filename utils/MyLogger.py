@@ -40,7 +40,7 @@ class ExecutionLogger:
             await file.write(json.dumps(new_records, cls=NpEncoder))
 
     @staticmethod
-    def batch_summarize_exec_logs(exchange='ftx', subaccount='', dirname=os.path.join(os.sep, 'tmp', '', 'tradeexecutor'),
+    def batch_summarize_exec_logs(exchange='binanceusdm', subaccount='', dirname=os.path.join(os.sep, 'tmp', '', 'tradeexecutor'),
                                   start=datetime(1970, 1, 1),
                                   end=datetime.now(),
                                   rebuild=True,
@@ -131,7 +131,7 @@ class ExecutionLogger:
                 temp_events[clientOrderId] = dict()
                 symbol_signal = signal_engine[signal_engine['symbol']==clientOrderId_data['symbol'].unique()[0]]
                 temp_events[clientOrderId]['inception_event'] = clientOrderId_data[clientOrderId_data['state'] == 'pending_new'].iloc[0]
-                order_timestamp = symbol_signal.loc[symbol_signal['timestamp']<temp_events[clientOrderId]['inception_event']['timestamp'],'timestamp'].max()
+                order_timestamp = symbol_signal.loc[symbol_signal['timestamp']<=temp_events[clientOrderId]['inception_event']['timestamp'],'timestamp'].max()
                 temp_events[clientOrderId]['order_ref'] = symbol_signal.loc[symbol_signal['timestamp']==order_timestamp,'benchmark'].unique()[0]
                 temp_events[clientOrderId]['ack_event'] = clientOrderId_data[clientOrderId_data['state'].isin(['acknowledged', 'partially_filled', 'filled'])].iloc[0]
                 temp_events[clientOrderId]['last_fill_event'] = clientOrderId_data[clientOrderId_data['filled'] > 0].iloc[-1]
@@ -155,11 +155,10 @@ class ExecutionLogger:
                      1 if clientOrderId_data['last_fill_event']['side'] == 'buy' else -1),
                  'price': clientOrderId_data['last_fill_event']['price'],
                  # TODO: what happens when there are only partial fills ?
-                 'fee': sum(x['cost'] * (1 if x['currency'] == 'USD' else
-                                         (x['currency'] == clientOrderId_data['last_fill_event']['price'] if
-                                          clientOrderId_data['inception_event']['symbol'][:3] else
-                                          np.NAN))
-                            for x in clientOrderId_data['last_fill_event']['fees']),
+                 'fee': clientOrderId_data['last_fill_event']['fee']['cost'] * (1 if clientOrderId_data['last_fill_event']['fee']['currency'] in ['USDT','BUSD'] else
+                                         (clientOrderId_data['last_fill_event']['price']
+                                          if clientOrderId_data['last_fill_event']['fee']['currency'] == clientOrderId_data['inception_event']['symbol'][:3] else
+                                          np.NAN)),
                  'last_fill_local': clientOrderId_data['last_fill_event']['timestamp']}
             for clientOrderId, clientOrderId_data in temp_events.items()}).T.reset_index()
 
