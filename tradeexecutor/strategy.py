@@ -459,28 +459,19 @@ class TakerHedgeStrategy(Strategy):
                 self.data[symbol][key] = value
 
         nowtime = myUtcNow()
+        coros = []
         for symbol, data in self.data.items():
+            mid = self.venue_api.mid(symbol)
             data['timestamp'] = nowtime
-            data['update_time_delta'] = data['target'] - self.position_manager.adjusted_delta(symbol) / self.venue_api.mid(symbol)
+            data['update_time_delta'] = data['target'] - self.position_manager.adjusted_delta(symbol) / mid
 
-    async def process_order_book_update(self, symbol, orderbook):
-        '''
-            leverages orderbook and risk to issue an order
-            Critical loop, needs to go quick
-            self.lock[f'{symbol}']: careful not to act if another orderbook update triggers again during execution
-        '''
-        await super().process_order_book_update(symbol,orderbook)
-        data = self.data[symbol]
-        mid = 0.5*(orderbook['bids'][0][0]+orderbook['asks'][0][0])
-
-        if self.lock[f'{symbol}'].locked() or self.lock[f'reconciling'].locked():
-            return
-
-        with self.lock[f'{symbol}']:
-            # size to do:
             original_size = data['target'] - self.position_manager.adjusted_delta(symbol) / mid
-            if abs(original_size) < self.parents['GLP'].parameters['delta_buffer'] * self.parents['GLP'].position_manager.pv / mid \
+            if abs(original_size) < self.parents['GLP'].parameters['delta_buffer'] * self.parents[
+                'GLP'].position_manager.pv / mid \
                     or abs(original_size) < self.venue_api.static[symbol]['sizeIncrement']:
-                return
+                pass
+            else:
+                coros.append(self.venue_api.create_taker_hedge(symbol, original_size))
 
-            await self.venue_api.create_taker_hedge(symbol, original_size)
+        # now execute all orders
+        await safe_gather(coros,semaphore=self.rest_semaphore)
