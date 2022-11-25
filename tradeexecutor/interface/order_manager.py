@@ -45,7 +45,8 @@ class OrderManager(StrategyEnabler):
         all layers events must carry id if known !! '''
         if 'c' in fill['info']:
             found = fill['info']['c']
-            assert (found in self.data),f'{found} unknown'
+            if found not in self.data:
+                self.strategy.logger.warning('order {} (id={})was unknown'.format(found, fill['order']))
         else:
             try:
                 found = next(clientID for clientID, events in self.data.items() if
@@ -59,12 +60,12 @@ class OrderManager(StrategyEnabler):
                                      #and x['type'] == fill['type'] # sometimes None in fill
                                      and event['side'] == fill['side'] for event in events))
                 except StopIteration as e:
-                    raise Exception("fill {} not found".format(fill))
+                    found = 'unknown_{}'.format(fill['order'])
+                    self.strategy.logger.warning('order {} (id={})was unknown'.format(found, fill['order']))
         return found
 
     '''state transitions'''
 
-    # pour creer un ordre
     def pending_new(self, order_event):
         '''self = {clientId:[{key:data}]}
         order_event:trigger,symbol'''
@@ -94,10 +95,10 @@ class OrderManager(StrategyEnabler):
         current |= {'risk_timestamp': risk_data.data[symbol]['delta_timestamp'],
                     'delta': risk_data.data[symbol]['delta'],
                     'netDelta': risk_data.coin_delta(symbol),
-                    'pv(wrong timestamp)': risk_data.pv}
-            # ,
-            #         'margin_headroom':risk_data.margin.actual_IM,
-            #         'IM_discrepancy': risk_data.margin.estimate('IM') - risk_data.margin.actual_IM}
+                    'pv(wrong timestamp)': risk_data.pv,
+                    'margin_headroom':risk_data.margin.actual_IM}
+            #,
+            #        'IM_discrepancy': risk_data.margin.estimate('IM') - risk_data.margin.actual_IM}
 
         ## mkt details
         if symbol in self.strategy.venue_api.tickers:
@@ -129,9 +130,9 @@ class OrderManager(StrategyEnabler):
         # 3) new block
         nowtime = myUtcNow()
         eventID = clientOrderId + '_' + str(int(nowtime))
-        current = order_event | {'eventID':eventID,
-                                 'state':'sent',
-                                 'remote_timestamp':order_event['timestamp']}
+        current = order_event | {'eventID': eventID,
+                                 'state': 'sent',
+                                 'remote_timestamp': float(order_event['info']['updateTime'])}
         current['timestamp'] = nowtime
 
         self.data[clientOrderId] += [current]
@@ -233,7 +234,7 @@ class OrderManager(StrategyEnabler):
         else:
             current['state'] = 'acknowledged'
             self.data[clientOrderId] = (self.data[clientOrderId] if clientOrderId in self.data else []) + [current]
-            #self.strategy.position_manager.margin.add_open_order(order_event)
+            self.strategy.position_manager.margin.add_open_order(order_event)
 
     def process_fill(self, fill):
         if self.find_clientID_from_fill(fill) in self.data:
@@ -309,7 +310,7 @@ class OrderManager(StrategyEnabler):
 
     async def reconcile_fills(self):
         '''fetch fills, to recover missed messages'''
-        sincetime = self.latest_fill_reconcile_timestamp if self.latest_fill_reconcile_timestamp else myUtcNow() - 1000
+        sincetime = self.latest_fill_reconcile_timestamp if self.latest_fill_reconcile_timestamp else myUtcNow() - 100
         fetched_fills = sum(await safe_gather([self.strategy.venue_api.fetch_my_trades(since=sincetime,symbol=symbol) for symbol in self.parameters['symbols']], semaphore=self.strategy.rest_semaphore), [])
         for fill in fetched_fills:
             fill['comment'] = 'reconciled'
