@@ -95,7 +95,7 @@ class BinancePositionManager(PositionManager):
         self.margin.add_instrument(symbol, fill_size)
 
         if 'verbose' in self.strategy.parameters['options'] and symbol in self.strategy.data:
-            current = self.data[symbol]['delta']
+            current = self.adjusted_delta(symbol)
             target = self.strategy.data[symbol]['target'] * px if 'target' in self.strategy.data[symbol] else None
             self.strategy.logger.warning('{} risk at {} ms: [current {}, target {}]'.format(
                 symbol,
