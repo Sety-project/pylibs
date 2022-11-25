@@ -105,9 +105,9 @@ class OrderManager(StrategyEnabler):
             mkt_data = self.strategy.venue_api.tickers[symbol]
             timestamp = mkt_data['timestamp']
         else:
-            raise Exception(f'{symbol} not in tickers. not initialized?')
-            mkt_data = self.strategy.venue_api.markets[symbol]['info']|{'bidVolume':0,'askVolume':0}#TODO: should have all risk group
-            timestamp = self.strategy.parameters['timestamp']
+            mid = self.strategy.venue_api.state.markets[symbol]
+            mkt_data = {'bid':mid, 'bidVolume':0, 'ask':mid, 'askVolume':0}
+            timestamp = self.strategy.timestamp
         current |= {'mkt_timestamp': timestamp} \
                    | {key: mkt_data[key] for key in ['bid', 'bidVolume', 'ask', 'askVolume']}
 

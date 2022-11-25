@@ -127,7 +127,7 @@ class ExecutionLogger:
         # pick biggest 'filled' for each clientOrderId
         temp_events = dict()
         for clientOrderId, clientOrderId_data in order_manager.groupby(by='clientOrderId'):
-            if clientOrderId_data['filled'].max() > 0:
+            if any(clientOrderId_data['state'].isin(['acknowledged', 'partially_filled', 'filled'])):
                 temp_events[clientOrderId] = dict()
                 symbol_signal = signal_engine[signal_engine['symbol']==clientOrderId_data['symbol'].unique()[0]]
                 temp_events[clientOrderId]['inception_event'] = clientOrderId_data[clientOrderId_data['state'] == 'pending_new'].iloc[0]
