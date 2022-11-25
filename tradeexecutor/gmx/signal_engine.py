@@ -1,4 +1,7 @@
 import collections
+import copy
+import datetime
+
 from tradeexecutor.gmx.api import GmxAPI
 from tradeexecutor.external_signal_engine import ExternalSignal
 
@@ -9,6 +12,7 @@ class GLPSignal(ExternalSignal):
         super().__init__(parameters)
 
         self.pnlexplain = collections.deque(maxlen=ExternalSignal.cache_size)
+        self.history = collections.deque(maxlen=ExternalSignal.cache_size)
         for data in GmxAPI.static.values():
             if data['volatile']:
                 self.data[data['normalized_symbol']] = None
@@ -17,6 +21,9 @@ class GLPSignal(ExternalSignal):
         '''needs venue to be reconciled'''
         lp_strategy = self.strategy.parents['GLP'] if self.strategy is not None else self.parameters['parents']['GLP']  # for the first time..
         gmx_state = lp_strategy.venue_api.state
+
+        # TODO: test only !
+        lp_strategy.hedge_ratio *= -1
 
         glp_position = lp_strategy.position_manager.data['GLP']['delta']/gmx_state.valuation()
         weights = {'ETH/USDT': {'target': - (lp_strategy.hedge_ratio-1) * glp_position * gmx_state.partial_delta('WETH'),
@@ -29,10 +36,14 @@ class GLPSignal(ExternalSignal):
         if self.data != weights:
             # pls note also updates timestamp when benchmark changes :(
             self.data = weights
-            self.timestamp = lp_strategy.venue_api.timestamp
+            self.timestamp = copy.deepcopy(lp_strategy.venue_api.timestamp)
+
+            self.history += [{'symbol': symbol,'timestamp':self.timestamp} | data
+                for symbol,data in self.data.items()]
+            print({key:value['target'] for key,value in weights.items()})
 
     def serialize(self) -> list[dict]:
-        return list(self.pnlexplain)
+        return list(self.history)
 
     def compile_pnlexplain(self, do_calcs=True):
         # venue_api already reconciled by reconcile()
