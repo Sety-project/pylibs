@@ -26,26 +26,17 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
         _cache = dict()  # {function_name: result}
 
         @staticmethod
-        async def build(self, symbols):
+        async def build(exchange, symbols):
             result = BinanceAPI.Static()
-            trading_fees = await self.fetch_trading_fees()
-            for symbol in symbols:
-                market = self.market(symbol)
-                result[symbol] = \
-                    {
-                        'priceIncrement': float(next(_filter for _filter in market['info']['filters']
-                                           if _filter['filterType'] == 'PRICE_FILTER')['tickSize']),
-                        'sizeIncrement': float(next(_filter for _filter in market['info']['filters']
-                                          if _filter['filterType'] == 'LOT_SIZE')['stepSize']),
-                        'taker_fee': trading_fees[symbol]['taker'],
-                        'maker_fee': trading_fees[symbol]['maker'],
-                        'takerVsMakerFee': trading_fees[symbol]['taker'] - trading_fees[symbol]['maker']
-                    }
+            futures = await BinanceAPI.Static.fetch_futures(exchange)
+            for future in futures:
+                if future['symbol'] in symbols:
+                    result[future['symbol']] = future
             return result
 
        ### get all static fields TODO: only works for perps
         @staticmethod
-        async def fetch_futures(self):
+        async def fetch_futures(exchange):
             if 'fetch_futures' in BinanceAPI.Static._cache:
                 return BinanceAPI.Static._cache['fetch_futures']
 
@@ -53,9 +44,9 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
             includeIndex = False
             includeInverse = False
 
-            perp_markets = await self.fetch_markets({'type': 'future'})
-            #future_markets = await self.fetch_markets({'type': 'delivery'})
-            margin_markets = await self.fetch_markets({'type': 'margin'})
+            perp_markets = await exchange.fetch_markets({'type': 'future'})
+            #future_markets = await exchange.fetch_markets({'type': 'delivery'})
+            margin_markets = await exchange.fetch_markets({'type': 'margin'})
 
             future_list = [f for f in perp_markets
                            if (('status' in f['info'] and f['info']['status'] == 'TRADING')) # only for linear perps it seems
@@ -64,10 +55,10 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
             otc_file = configLoader.get_static_params_used()
 
             perp_list = [f['id'] for f in future_list if f['expiry'] == None]
-            funding_rates = await safe_gather([self.fetch_funding_rate(symbol=f) for f in perp_list])
-            # perp_tickers = await self.fetch_tickers(symbols=[f['id'] for f in future_list], params={'type':'future'})
-            # delivery_tickers = await self.fetch_tickers(symbols=[f['id'] for f in future_list], params={'type': 'delivery'})
-            open_interests = await safe_gather([self.fapiPublicGetOpenInterest({'symbol':f}) for f in perp_list])
+            funding_rates = await safe_gather([exchange.fetch_funding_rate(symbol=f) for f in perp_list])
+            # perp_tickers = await exchange.fetch_tickers(symbols=[f['id'] for f in future_list], params={'type':'future'})
+            # delivery_tickers = await exchange.fetch_tickers(symbols=[f['id'] for f in future_list], params={'type': 'delivery'})
+            open_interests = await safe_gather([exchange.fapiPublicGetOpenInterest({'symbol':f}) for f in perp_list])
 
             result = []
             for i in range(0, len(funding_rates)):
@@ -89,27 +80,25 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
                     future_carry = 0
 
                 result.append({
-                    'symbol': self.safe_string(market, 'symbol'),
+                    'symbol': exchange.safe_string(market, 'symbol'),
                     'index': index,
                     'mark': mark,
-                    'name': self.safe_string(market, 'id'),
-                    'perpetual': bool(self.safe_value(market, 'swap')),
+                    'name': exchange.safe_string(market, 'id'),
+                    'perpetual': bool(exchange.safe_value(market, 'swap')),
                     'priceIncrement': float(next(_filter for _filter in market['info']['filters']
                                                  if _filter['filterType'] == 'PRICE_FILTER')['tickSize']),
-                    'sizeIncrement': max(float(next(_filter for _filter in market['info']['filters']
+                    'sizeIncrement': float(next(_filter for _filter in market['info']['filters']
                                                     if _filter['filterType'] == 'LOT_SIZE')['minQty']),
-                                         float(next(_filter for _filter in market['info']['filters']
-                                                    if _filter['filterType'] == 'MIN_NOTIONAL')['notional'])/mark),
                     'mktSizeIncrement':
-                        max(float(next(_filter for _filter in market['info']['filters']
+                        float(next(_filter for _filter in market['info']['filters']
                                        if _filter['filterType'] == 'MARKET_LOT_SIZE')['minQty']),
-                            float(next(_filter for _filter in market['info']['filters']
-                                       if _filter['filterType'] == 'MIN_NOTIONAL')['notional']) / mark),
+                    'minimum_notional': float(next(_filter for _filter in market['info']['filters']
+                                       if _filter['filterType'] == 'MIN_NOTIONAL')['notional']),
                     'underlying': market['base'],
                     'quote': market['quote'],
                     'type': 'perpetual' if market['swap'] else None,
-                    'underlyingType': self.safe_number(market, 'underlyingType'),
-                    'underlyingSubType': self.safe_number(market, 'underlyingSubType'),
+                    'underlyingType': exchange.safe_number(market, 'underlyingType'),
+                    'underlyingSubType': exchange.safe_number(market, 'underlyingSubType'),
                     'spot_ticker': '{}/{}'.format(market['base'], market['quote']),
                     'spotMargin': margin_market['info']['isMarginTradingAllowed'] if margin_market else False,
                     'cash_borrow': None,
@@ -182,7 +171,7 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
         while self.message_missed:
             data = self.message_missed.popleft()
             channel = data['x']
-            self.logger.warning(f'replaying {channel} after recon')
+            self.strategy.logger.warning(f'replaying {channel} after recon')
             if channel == 'TRADE':
                 fill = self.parse_trade(data)
                 self.strategy.position_manager.process_fill(fill | {'orderTrigger': 'replayed'})
@@ -321,6 +310,14 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
         if symbol == 'USDT/USDT': return 1.0
         data = self.tickers[symbol]['mid'] if symbol in self.tickers else self.state.markets[symbol]
         return data
+
+    def round_to_increment(self, symbol, amount):
+        sizeIncrement = self.static[symbol]['sizeIncrement']
+        minimum_notional = self.static[symbol]['minimum_notional'] / self.mid(symbol)
+        if amount >= 0:
+            return np.floor(min(abs(amount),minimum_notional)/sizeIncrement) * sizeIncrement
+        else:
+            return -np.floor(min(abs(amount),minimum_notional)/sizeIncrement) * sizeIncrement
 
     ### only perps, only borrow and funding, only hourly, time is fixing / payment time.
     @ignore_error
@@ -585,7 +582,7 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
     # --------------------------------------------------------------------------------------------
 
     async def peg_or_stopout(self, symbol, size, edit_trigger_depth=None, edit_price_depth=None, stop_depth=None):
-        size = self.round_to_increment(self.static[symbol]['sizeIncrement'], size)
+        size = self.round_to_increment(symbol, size)
         if abs(size) == 0:
             return
 
@@ -594,7 +591,7 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
         mid = self.tickers[symbol]['mid']
 
         priceIncrement = self.static[symbol]['priceIncrement']
-        sizeIncrement = self.static[symbol]['sizeIncrement']
+        minimum_notional = self.static[symbol]['minimum_notional'] / mid
 
         if stop_depth is not None:
             stop_trigger = float(self.price_to_precision(symbol,stop_depth))
@@ -640,7 +637,7 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
                                                   params={'comment':edit_price_depth if isTaker else 'new'})
         # if only one and it's editable, stopout or peg or wait
         elif len(event_histories)==1 \
-                and (self.strategy.order_manager.latest_value(event_histories[0][-1]['clientOrderId'], 'remaining') >= sizeIncrement) \
+                and (self.strategy.order_manager.latest_value(event_histories[0][-1]['clientOrderId'], 'remaining') >= minimum_notional) \
                 and event_histories[0][-1]['state'] in self.strategy.order_manager.acknowledgedStates:
             order = event_histories[0][-1]
             order_distance = (1 if order['side'] == 'buy' else -1) * (opposite_side - order['price'])
@@ -661,25 +658,32 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
                                                 params={'comment':'chase'},
                                                 previous_clientOrderId=order['clientOrderId'])
 
-    async def create_taker_hedge(self,symbol, size, comment='takerhedge'):
-        '''cancel and trade.
+    async def create_taker_hedge(self,symbol, size, comment='takerhedge', rest_check=True):
+        '''cancel and trade. this is slow as it relies on 2 rest requests to cancel
         risk: trade may be partial and cancel may have failed !!'''
-        # remove open order dupes is any (shouldn't happen)
-        pending_new_histories = self.strategy.order_manager.filter_order_histories([symbol],
-                                                                                   self.strategy.order_manager.openStates)
-        if len(pending_new_histories)>0:
-            self.strategy.logger.info('orders {} should not be open'.format(
-                [order[-1]['clientOrderId'] for order in pending_new_histories]))
-            return
 
-        # sweep_price = self.sweep_price_atomic(symbol, size * self.mid(symbol))
-        coro = [self.create_order(symbol, 'market', ('buy' if size > 0 else 'sell'), abs(size), price=None,
-                                  params={'comment': comment})]
-        cancelable_orders = await self.fetch_open_orders(symbol)
-        coro += [self.cancel_order(order['clientOrderId'], 'cancel_symbol')
-                 for order in cancelable_orders]
-        if len(cancelable_orders)>0: print(f'cancelable_orders {cancelable_orders}')
-        await safe_gather(coro, semaphore=self.strategy.rest_semaphore)
+        # cancel orders if any
+        if rest_check:
+            cancelable_orders = [order['clientOrderId'] for order in await self.fetch_open_orders(symbol)]
+        else:
+            pending_new_histories = self.strategy.order_manager.filter_order_histories([symbol],
+                                                                                       self.strategy.order_manager.openStates)
+            cancelable_orders = [order[-1]['clientOrderId'] for order in pending_new_histories]
+
+        if len(cancelable_orders)>0:
+            self.strategy.logger.warning(f'cancelable_orders {cancelable_orders}')
+            success = await safe_gather([self.cancel_order(clientOrderId, 'cancel_symbol')
+                               for clientOrderId in cancelable_orders],
+                              semaphore=self.strategy.rest_semaphore)
+        else:
+            success = [True]
+
+        # place order
+        if all(success):
+            await self.create_order(symbol, 'market', ('buy' if size > 0 else 'sell'), abs(size), price=None,
+                                  params={'comment': comment})
+        else:
+            self.strategy.logger.warning(f'cancelable_orders {cancelable_orders}')
 
     async def create_order(self, symbol, type, side, amount, price=None, params=dict(),previous_clientOrderId=None,peg_rule: PegRule=None):
         '''if not new, cancel previous first
@@ -688,8 +692,8 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
             await self.cancel_order(previous_clientOrderId, 'edit')
 
         trimmed_size = self.strategy.position_manager.trim_to_margin({symbol:amount * (1 if side == 'buy' else -1)})[symbol]
-        rounded_amount = self.round_to_increment(self.static[symbol]['sizeIncrement'], abs(trimmed_size))
-        if rounded_amount < self.static[symbol]['sizeIncrement']:
+        rounded_amount = self.round_to_increment(symbol, abs(trimmed_size))
+        if rounded_amount < self.static[symbol]['minimum_notional'] / self.mid(symbol):
             return
         # set pending_new -> send rest -> if success, leave pending_new and give id. Pls note it may have been caught by handle_order by then.
         clientOrderId = self.strategy.order_manager.pending_new({'symbol': symbol,
@@ -740,7 +744,8 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
                                         'status': str(e),
                                         'comment': trigger})
             return True
-        except ccxtpro.InvalidOrder as e: # could be in flight, or unknown
+        except ccxtpro.InvalidOrder as e:
+            self.strategy.logger.info(f'{clientOrderId} failed to cancel: {str(e)}')
             self.strategy.order_manager.cancel_or_reject({'clientOrderId':clientOrderId,
                                              'status':str(e),
                                              'state':'canceled',

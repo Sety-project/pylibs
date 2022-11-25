@@ -263,7 +263,7 @@ class ExecutionStrategy(Strategy):
             # size to do:
             original_size = data['target'] - self.position_manager.adjusted_delta(symbol) / mid
             if abs(original_size) < self.parameters['significance_threshold'] * self.position_manager.pv / mid \
-                    or abs(original_size) < self.venue_api.static[symbol]['sizeIncrement']:
+                    or abs(original_size) < self.venue_api.static[symbol]['minimum_notional'] / mid:
                 return
 
             # risk
@@ -468,7 +468,7 @@ class TakerHedgeStrategy(Strategy):
             original_size = data['target'] - self.position_manager.adjusted_delta(symbol) / mid
             if abs(original_size) < self.parents['GLP'].parameters['delta_buffer'] * self.parents[
                 'GLP'].position_manager.pv / mid \
-                    or abs(original_size) < self.venue_api.static[symbol]['sizeIncrement']:
+                    or abs(original_size) < self.venue_api.static[symbol]['minimum_notional'] / mid:
                 pass
             else:
                 coros.append(self.venue_api.create_taker_hedge(symbol, original_size))

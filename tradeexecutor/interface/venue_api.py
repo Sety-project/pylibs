@@ -194,9 +194,3 @@ class CeFiAPI(VenueAPI):
     def handle_order(self, client, message):
         '''just implemented so we hold messages while reconciling'''
         super().handle_order(client, message)
-
-    def round_to_increment(self, sizeIncrement, amount):
-        if amount >= 0:
-            return np.floor(amount/sizeIncrement) * sizeIncrement
-        else:
-            return -np.floor(-amount / sizeIncrement) * sizeIncrement
