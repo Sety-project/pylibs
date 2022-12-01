@@ -217,6 +217,24 @@ class GmxAPI(VenueAPI):
                               'reservedAmounts', 'globalShortSizes', 'globalShortAveragePrices', 'feeReserves',
                               'actualAum', 'totalSupply','rewards']}
         return result
+
+    async def monitor_trades(self):
+        '''maintains risk_state, event_records, logger.info
+            #     await self.reconcile_state() is safer but slower. we have monitor_risk to reconcile'''
+        try:
+            async for msg in self.parameters['kafka_consumer']:
+                if hasattr(self.strategy, 'process_trade'):
+                    print("consumed: ", msg.topic, msg.partition, msg.offset,
+                    msg.key, msg.value, msg.timestamp)
+
+                    trade = json.loads(msg.value)
+                    print(trade)
+                    await getattr(self.strategy, 'process_trade')(trade)
+        except Exception as e:
+            self.logger.info(str(e))
+            self.logger.info('reconciling after monitor_trades dropped off')
+            await self.reconcile()
+
 '''
 the below is only for documentation
 '''

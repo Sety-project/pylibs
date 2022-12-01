@@ -436,7 +436,7 @@ class HedgedLPStrategy(ExecutionStrategy):
         self.children['hedge_strategy'] = None
 
     async def run(self):
-        await safe_gather([self.periodic_reconcile(), self.children['hedge_strategy'].run()], semaphore=self.rest_semaphore)
+        await safe_gather([self.periodic_reconcile(), self.venue_api.monitor_trades(), self.children['hedge_strategy'].run()], semaphore=self.rest_semaphore)
 
     async def update_quoter_parameters(self):
         '''updates key/values from signal'''

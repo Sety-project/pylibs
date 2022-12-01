@@ -1,5 +1,6 @@
 import collections
 from utils.io_utils import myUtcNow
+from aiokafka import AIOKafkaProducer, AIOKafkaConsumer
 
 from tradeexecutor.binance.api import BinanceAPI
 from tradeexecutor.gmx.api import GmxAPI
@@ -42,7 +43,14 @@ async def build_VenueAPI(parameters):
             symbols = future_symbols + spot_symbols
         exchange.static = await BinanceAPI.Static.build(exchange, symbols)
     elif parameters['exchange'] == 'gmx':
-        exchange = GmxAPI(parameters)
+        consumer = AIOKafkaConsumer(
+            'gmx-indexer-logs',
+            bootstrap_servers='kafka:9092',
+            group_id="sety")
+        # Get cluster layout and join group `my-group`
+        await consumer.start()
+        exchange = GmxAPI(parameters | {'kafka_consumer': consumer})
+
     else:
         raise ValueError
 
