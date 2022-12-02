@@ -2,15 +2,12 @@
 import copy
 import itertools
 from datetime import *
-from typing import NewType, Any
+from typing import NewType
 import numpy as np
 import pandas as pd
-import os, sys
+import os
 import plotly.express as px
 import sklearn.base
-from scipy.interpolate import CubicSpline
-from scipy.fft import fft, fftfreq
-from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LinearRegression, LassoLarsIC, RidgeCV, ElasticNetCV, LassoCV, LassoLarsCV, \
     LogisticRegressionCV
@@ -21,21 +18,12 @@ from sklearn.model_selection import TimeSeriesSplit, cross_val_score, cross_val_
 
 Instrument = NewType("Instrument", str)  # eg 'ETHUSDT'
 RawFeature = NewType("RawFeature", str)  # eg 'volume'
-FeatureExpansion = NewType("FeatureExpansion", str)  # eg 'ewma1'
+FeatureExpansion = NewType("FeatureExpansion", int)  # frequency in min
 Feature = NewType("Feature", tuple[Instrument, RawFeature, FeatureExpansion])
 Data = NewType("Data", dict[Feature, pd.Series])
 
-
-def standard_scaler(df: pd.Series) -> pd.Series:
-    res = StandardScaler().fit_transform(pd.DataFrame(df).values)
-    return pd.Series(index=df.index,
-                     name=df.name,
-                     data=res[:, 0])
-
-
 def remove_duplicate_rows(df):
     return df[~df.index.duplicated()]
-
 
 def winning_trade(df: pd.Series,
                   lvl_scaling_window=72 * 60,
@@ -66,11 +54,11 @@ def winning_trade(df: pd.Series,
         if hitting_times['short_takeprofit'] < hitting_times['short_stopped']: result[i] = -1
 
     # test
-    if verbose:
-        daterange = pd.date_range('start_date', periods=5000, freq="1min")
-        trajectory = pd.DataFrame(index=daterange, data=np.random.randn(len(daterange)))
-        winning_trades = winning_trade(trajectory)
-        px.line(pd.concat([winning_trades, trajectory.cumsum()], axis=1))
+    # if verbose:
+    #     daterange = pd.date_range('start_date', periods=5000, freq="1min")
+    #     trajectory = pd.DataFrame(index=daterange, data=np.random.randn(len(daterange)))
+    #     winning_trades = winning_trade(trajectory)
+    #     px.line(pd.concat([winning_trades, trajectory.cumsum()], axis=1))
 
     return result
 
@@ -80,21 +68,22 @@ class ResearchEngine:
         self.feature_map = feature_map
         self.label_map = label_map
         self.run_parameters = run_parameters
-        self.data: Data = dict()
+        self.data: Data = Data(dict())
         self.X_Y: np.ndarray = np.ndarray(2)
         self.X: np.ndarray = np.ndarray(2)
         self.Y: np.ndarray = np.ndarray(2)
         self.models: list[sklearn.base.BaseEstimator]
+        self.cached_scaler: dict[(Instrument, str, int), StandardScaler] = dict()
 
     @staticmethod
     def read_history(dirname,
                      start_date,
                      selected_instruments: set[Instrument]) -> dict[tuple[Instrument, RawFeature], pd.Series]:
-        raw_data: dict[tuple[Instrument, RawFeature], pd.Series] = dict()
+        raw_data: dict[Instrument, pd.DataFrame] = dict()
         for filename in os.listdir(dirname):
             filesplit = filename.split('-')
-            instrument: Instrument = filesplit[0]
-            data_type: RawFeature = filesplit[-1].replace('.csv', '')
+            instrument: Instrument = Instrument(filesplit[0])
+            data_type: RawFeature = RawFeature(filesplit[-1].replace('.csv', ''))
             if instrument in selected_instruments:
                 new_df = pd.read_csv(os.path.join(os.sep, dirname, filename))
                 new_df['open_time'] = new_df['open_time'].apply(lambda t: datetime.fromtimestamp(t / 1000))
@@ -107,9 +96,27 @@ class ResearchEngine:
                     else:
                         raw_data[instrument] = {data_type: new_df}
         for instrument, data in raw_data.items():
-            raw_data[instrument] = data['klines'].join(data['premium'], rsuffix='_premium')
+            #
+            raw_data[instrument] = data['klines'].join(data['premium'], rsuffix='_premium', how='outer').ffill()
 
         return raw_data
+
+    def standard_scaler(self, df: pd.Series, column: tuple[Instrument, Feature, FeatureExpansion] = None) -> pd.Series:
+        '''store the scaler for later (only for labels)'''
+        scaler = StandardScaler().fit(pd.DataFrame(df).values)
+        res = scaler.transform(pd.DataFrame(df).values)
+        if column is not None:
+            self.cached_scaler[column] = scaler
+        return pd.Series(index=df.index,
+                         name=df.name,
+                         data=res[:, 0])
+
+    def inverse_scaler(self, df: pd.Series, column: tuple[Instrument, Feature, FeatureExpansion]) -> pd.Series:
+        scaler = self.cached_scaler[column]
+        res = scaler.inverse_transform(pd.DataFrame(df).values)
+        return pd.Series(index=df.index,
+                         name=df.name,
+                         data=res[:, 0])
 
     def compute_features(self,
                          raw_data: dict[tuple[Instrument, RawFeature], pd.Series],
@@ -160,8 +167,9 @@ class ResearchEngine:
         for instrument, label in itertools.product(raw_data.keys(), label_map.keys()):
             for horizon in label_map[label]['horizons']:
                 if label == 'performance':
-                    temp = standard_scaler(
-                        -raw_data[instrument]['close'].diff(-horizon) / raw_data[instrument]['close'])
+                    temp = np.log(1-raw_data[instrument]['close'].diff(-horizon) / raw_data[instrument]['close'])
+                    if self.run_parameters['normalize']:
+                        temp = self.standard_scaler(temp, (instrument, label, horizon))
                 elif label == 'sign':
                     temp = (-raw_data[instrument]['close'].diff(-horizon)).apply(lambda x: 1 if x >= 0 else -1)
                 elif label == 'big':
@@ -169,8 +177,8 @@ class ResearchEngine:
                         'close'].diff(-horizon).expanding(horizon + 1).std()
                 elif label == 'stop_limit':
                     temp = winning_trade(raw_data[instrument]['close'])
-                result[(instrument, label, f'horizon_{horizon}')] = remove_duplicate_rows(temp).rename(
-                    (instrument, label, f'horizon_{horizon}'))
+                result[(instrument, label, horizon)] = remove_duplicate_rows(temp).rename(
+                    (instrument, label, horizon))
         return result
 
     def build_X_Y(self, raw_data, feature_map, label_map):
@@ -178,7 +186,7 @@ class ResearchEngine:
         self.laplace_expand()
         feature_dict = self.data
         if self.run_parameters['normalize']:
-            feature_dict = {feature: standard_scaler(data) for feature, data in self.data.items()}
+            feature_dict = {feature: self.standard_scaler(data) for feature, data in self.data.items()}
 
         label_dict = self.compute_labels(raw_data, label_map)
         self.data |= label_dict
@@ -189,18 +197,17 @@ class ResearchEngine:
 
         self.fitted_model: dict[tuple(Feature, FeatureExpansion), list[sklearn.base.BaseEstimator]] = dict()
 
-    def run(self):
+    def run(self) -> pd.DataFrame():
         holding_windows = [window for windows in self.label_map.values() for window in windows['horizons']]
-        tscv = TimeSeriesSplit(n_splits=self.run_parameters['n_split'], gap=max(holding_windows))
         result = pd.DataFrame()
 
         # for each (all instruments, 1 feature, 1 horizon)
-        for label_tuple, label_df in self.Y.groupby(level=[1, 2], axis=1):
-            self.fitted_model[label_tuple] = list()
+        for (feature, frequency), label_df in self.Y.groupby(level=[1, 2], axis=1):
+            self.fitted_model[(feature, frequency)] = list()
             # for each model for that feature
-            for model in self.run_parameters['models'][label_tuple[0]]:
-                for split_index, (train_index, test_index) in enumerate(tscv.split(self.X_Y)):
-
+            for model in self.run_parameters['models'][feature]:
+                tscv = TimeSeriesSplit(n_splits=int(np.log2(len(self.X_Y.index)/frequency/5)), gap=max(holding_windows)).split(self.X_Y)
+                for split_index, (train_index, test_index) in enumerate(tscv):
                     # fit model on all instruments
                     X_allinstruments = self.X.iloc[train_index].stack(level=0)
                     Y_allinstruments = label_df.iloc[train_index].stack(level=0)
@@ -209,35 +216,61 @@ class ResearchEngine:
                         delta_strategy = getattr(fitted_model, 'predict_proba')
                     else:
                         delta_strategy = getattr(fitted_model, 'predict')
-                    self.fitted_model[label_tuple].append(fitted_model)
+                    self.fitted_model[(feature, frequency)].append(fitted_model)
 
                     # backtest each instrument
                     for instrument in Y_allinstruments.index.levels[1]:
-                        frequency = int(label_tuple[1].split('_')[1])
-                        performance = self.Y[(instrument, 'performance', label_tuple[1])].iloc[test_index[::frequency]]
-                        features = self.X.xs(instrument, level=0, axis=1).iloc[test_index[::frequency]]
+                        column = (instrument, 'performance', frequency)
+                        # denormalize log increments, read in test set, resample to frequency
+                        performance = self.inverse_scaler(self.Y[column], column).iloc[test_index].resample(f'{frequency}min').sum()
+                        # set delta from prediction
+                        features = self.X.xs(instrument, level=0, axis=1).loc[performance.index]
                         delta = pd.DataFrame(index=performance.index,
-                                             columns=self.Y[(instrument, label_tuple[0], label_tuple[1])].unique(),
+                                             columns=self.Y[(instrument, feature, frequency)].unique(),
                                              data=delta_strategy(features))[1]
-                        pnl = delta * performance
+                        # apply log increment
+                        cumulative_pnl = (delta * (np.exp(performance)-1)).cumsum()
 
-                        result[(type(model), split_index, instrument, *label_tuple, 'performance')] = performance
-                        result[(type(model), split_index, instrument, *label_tuple, 'delta')] = delta
-                        result[(type(model), split_index, instrument, *label_tuple, 'pnl')] = pnl
+                        cumulative_performance = performance.cumsum()
+                        result = pd.concat([result,
+                                            pd.DataFrame(index=range(len(delta.index)),
+                                                         columns=[(type(model), split_index, instrument, feature, frequency, datatype)
+                                                                  for datatype in ['cumulative_performance', 'delta', 'cumulative_pnl']],
+                                                         data=np.array([np.array(cumulative_performance),
+                                                                        np.array(delta.values),
+                                                                        np.array(cumulative_pnl.values)]).transpose())],
+                                           axis=1, join='outer')
+
+        result.columns = pd.MultiIndex.from_tuples(result.columns, names=['model', 'split_index', 'instrument', 'label', 'frequency', 'datatype'])
 
         return result
 
+def perf_analysis(df: pd.DataFrame()) -> pd.DataFrame():
+    result = pd.DataFrame()
+    for frequency in next(list(level) for level in df.columns.levels if level.name == 'frequency') :
+        cum_norm_pnl = df.xs((frequency, 'cumulative_pnl'), level=['frequency', 'datatype'], axis=1).dropna()
+        total_perf = cum_norm_pnl.iloc[-1]/len(cum_norm_pnl.index)
+        vol = cum_norm_pnl.std()
+        sharpe = pd.concat({'sharpe': total_perf / vol}, names=['datatype'])
+        drawdown = pd.concat({'drawdown': (cum_norm_pnl-cum_norm_pnl.cummax()).cummin().iloc[-1]}, names=['datatype'])
+
+        result = pd.concat([result, sharpe, drawdown], axis=1)
+
+    return result
 
 def cta_main(parameters):
     engine = ResearchEngine(**parameters)
     raw_data = ResearchEngine.read_history(**parameters['data'])
     engine.build_X_Y(raw_data, parameters['feature_map'], parameters['label_map'])
-    engine.run().to_csv('res.csv')
+    result = engine.run()
+    result.to_csv('data.csv')
+    analysis = perf_analysis(result).to_csv('analysis.csv')
 
+    return result, analysis
 
 if __name__ == "__main__":
     parameters = {'data': {'dirname': '/home/david/mktdata/binance/downloads',
-                           'start_date': datetime(2022, 8, 29),
+                           'start_date': datetime(2022, 8, 15),
                            'selected_instruments': {'AVAXUSDT'}
                            },
                   'run_parameters': {'verbose': False,
@@ -246,8 +279,8 @@ if __name__ == "__main__":
                                      'models': {'performance': [],  # LinearRegression(),
                                                 # MLPRegressor(hidden_layer_sizes=(10,)),
                                                 # LassoLarsCV(cv=TimeSeriesSplit(9), normalize=True)],
-                                                'sign': [LogisticRegressionCV(cv=TimeSeriesSplit(9), max_iter=1000)],
-                                                # RandomForestClassifier(min_samples_split=10, n_jobs=-1, warm_start=True),
+                                                'sign': [#LogisticRegressionCV(cv=TimeSeriesSplit(9), max_iter=1000)],
+                                                RandomForestClassifier(min_samples_split=10, n_jobs=-1, warm_start=False)],#,
                                                 # SVC(kernel='sigmoid', probability=True),
                                                 # AdaBoostClassifier()],
                                                 'big': [],
