@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-import copy
-import itertools
-from datetime import *
+from datetime import datetime, timedelta
 from typing import NewType, Union, Iterator
+
+import dateutil.parser
 import numpy as np
 import pandas as pd
-import os
+import os, copy, itertools, sklearn, json
 import plotly.express as px
-import sklearn.base
 from sklearn.preprocessing import StandardScaler
-from sklearn.linear_model import LinearRegression, LassoLarsIC, RidgeCV, ElasticNetCV, LassoCV, LassoLarsCV, \
-    LogisticRegressionCV
+from sklearn.linear_model import LinearRegression, LassoLarsIC, RidgeCV, ElasticNetCV, LassoCV, LassoLars, \
+    LogisticRegression
 from sklearn.svm import SVR, SVC
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier, AdaBoostClassifier
 from sklearn.neural_network import MLPRegressor
 from sklearn.model_selection import TimeSeriesSplit, cross_val_score, cross_val_predict, train_test_split
+import utils.io_utils
 
 Instrument = NewType("Instrument", str)  # eg 'ETHUSDT'
 FileData = NewType("Data", dict[Instrument, pd.DataFrame])
@@ -68,7 +68,7 @@ def winning_trade(df: pd.Series,
 
 
 class ResearchEngine:
-    data_interval = 'min'
+    data_interval = timedelta(seconds=60)
     stdev_big = 1.3
 
     def __init__(self, feature_map, label_map, run_parameters, **kwargs):
@@ -84,13 +84,15 @@ class ResearchEngine:
         self.X: pd.DataFrame = pd.DataFrame()
         self.Y: pd.DataFrame = pd.DataFrame()
 
-        self.models: list[sklearn.base.BaseEstimator]
+        self.models: list[sklearn.base.BaseEstimator] = []
+        self.fitted_model: dict[tuple[RawFeature, FeatureExpansion], list[sklearn.base.BaseEstimator]] = dict()
 
     @staticmethod
     def read_history(dirname,
                      start_date,
                      selected_instruments: set[Instrument]) -> FileData:
         file_data: FileData = FileData(dict())
+        start_date = dateutil.parser.isoparse(start_date)
         for filename in os.listdir(dirname):
             filesplit = filename.split('-')
             instrument: Instrument = Instrument(filesplit[0])
@@ -112,34 +114,34 @@ class ResearchEngine:
 
         return file_data
 
-    def logistic_unit_test(self, feature_data: pd.DataFrame) -> Iterator[pd.DataFrame]:
+    def linear_unit_test(self, feature_data: pd.DataFrame, target_vol=1.0) -> Iterator[pd.DataFrame]:
         '''
         generate performance as a weighted mean of feature/windows (like LinearRegression)
         generate sign as an indicator over a weighted mean of feature/windows (like LogisticRegressionCV)
         '''
-        n = len(feature_data.columns)
-        weights = pd.Series(index=feature_data.columns,
-                            data=np.random.normal(loc=0,
-                                                  scale=1,
-                                                  size=n))
-        result = pd.DataFrame()
-        performance = (feature_data * weights.T).sum(axis=1, level=['instrument'])
-        for label, label_data in self.label_map.items():
-            for horizon in label_data['horizons']:
-                temp = performance.rolling(horizon).sum()
-                std_dev = performance.rolling(horizon).sum().expanding(horizon + 1).std()
-                for instrument in feature_data.columns.get_level_values('instrument'):
-                    if label == 'performance':
-                        feature = (instrument, 'performance', horizon)
-                        result[feature] = temp[instrument]
-                    elif label == 'sign':
-                        result[(instrument, 'sign', horizon)] = temp[instrument].apply(np.sign)
-                    elif label == 'big':
-                        result[(instrument, 'big', horizon)] = temp[instrument] > ResearchEngine.stdev_big * std_dev[instrument]
+        nb_feature_per_instrument = int(feature_data.shape[1] / feature_data.columns.levshape[0])
+        weights = np.random.normal(loc=0,
+                                   scale=1,
+                                   size=nb_feature_per_instrument)
 
-        result.columns = pd.MultiIndex.from_tuples(result.columns,
-                                                   names=['instrument', 'feature', 'horizons'])
-        self.temp_label_data = result
+        result = pd.DataFrame(columns=pd.MultiIndex.from_tuples([], names=['instrument', 'feature', 'window']))
+        for instrument, instrument_df in feature_data.groupby(level='instrument', axis=1):
+            performance = pd.Series(index=instrument_df.index,
+                                    data=StandardScaler().fit_transform(pd.DataFrame((instrument_df * weights).sum(axis=1)))[:, 0])
+            performance *= target_vol * np.sqrt(ResearchEngine.data_interval.total_seconds() / timedelta(days=365.25).total_seconds())
+
+            for label, label_data in self.label_map.items():
+                for horizon in label_data['horizons']:
+                    temp = performance.rolling(horizon).sum()
+                    if label == 'performance':
+                        result[(instrument, 'performance', horizon)] = temp
+                    elif label == 'sign':
+                        result[(instrument, 'sign', horizon)] = temp.apply(np.sign)
+                    elif label == 'big':
+                        std_dev = performance.rolling(horizon).sum().expanding(horizon + 1).std()
+                        result[(instrument, 'big', horizon)] = temp > ResearchEngine.stdev_big * std_dev
+
+        self.temp_label_data = copy.deepcopy(result)
 
         yield result
 
@@ -150,7 +152,7 @@ class ResearchEngine:
         result: pd.DataFrame = input
 
         for feature, data in input.items():
-            if (feature[1] in self.feature_map) or self.label_map[feature[1]]['normalize']:
+            if not (feature[1] in self.run_parameters['no_normalize']):
                 scaler: StandardScaler = StandardScaler()
                 scaler.fit(pd.DataFrame(data))
                 self.cached_scaler[feature] = scaler
@@ -166,7 +168,7 @@ class ResearchEngine:
         '''
         result: pd.DataFrame = input
         for feature, data in input.items():
-            if (feature[1] in self.feature_map) or self.label_map[feature[1]]['normalize']:
+            if not (feature[1] in self.run_parameters['no_normalize']):
                 scaler = self.cached_scaler[feature]
                 result[feature] = pd.Series(index=data.index,
                                             name=data.name,
@@ -193,12 +195,6 @@ class ResearchEngine:
                 elif raw_feature == 'premium':
                     # as is
                     result[(instrument, raw_feature)] = file_data[instrument]['close_premium']
-                elif raw_feature == 'vw_premium':
-                    # volume weighted premium
-                    result[(instrument, raw_feature)] = file_data[instrument]['close_premium'] * file_data[instrument]['volume']
-                elif raw_feature == 'vw_close':
-                    # volume weighted increments
-                    result[(instrument, raw_feature)] = file_data[instrument]['close'] * file_data[instrument]['volume']
                 else:
                     raise NotImplementedError
 
@@ -208,27 +204,42 @@ class ResearchEngine:
         return result
 
     def laplace_expand(self, data_dict: RawData) -> Data:
+        '''
+        expands features into several ewma
+        + volume_weighted features
+        '''
         result: Data = Data(dict())
         for (instrument, raw_feature), data in data_dict.items():
             result[(instrument, raw_feature, 'live')] = data_dict[(instrument, raw_feature)]
             for window in self.feature_map[raw_feature]['ewma_windows']:
+                temp_data = data_dict[(instrument, raw_feature)]
                 result[(instrument, raw_feature, window)] = \
-                    data_dict[(instrument, raw_feature)].transform(
-                        lambda x: x.ewm(times=x.index, halflife=timedelta(hours=window + 1)).mean()).dropna().rename(
-                        (instrument, raw_feature, window))  # x.shift(periods=i))#
+                    temp_data.ewm(times=temp_data.index, halflife=window*ResearchEngine.data_interval).mean() \
+                        .dropna().rename((instrument, raw_feature, window)) # x.shift(periods=i))#
+                if 'add_weight_by' in self.feature_map[raw_feature]:
+                    temp_data = data_dict[(instrument, raw_feature)]
+                    # exp because self.feature_map[volume] = log
+                    weights = np.exp(data_dict[(instrument, self.feature_map[raw_feature]['add_weight_by'])])
+                    result[(instrument, f'vw_{raw_feature}', window)] = \
+                        ((temp_data * weights) \
+                            .ewm(times=temp_data.index, halflife=window*ResearchEngine.data_interval).mean() / \
+                        weights \
+                            .ewm(times=temp_data.index, halflife=window*ResearchEngine.data_interval).mean() \
+                         ).dropna().rename((instrument, raw_feature, window))
         return result
 
     def compute_labels(self, file_data: FileData, label_map: dict[RawFeature, dict]) -> Data:
         result: Data = Data(dict())
         for instrument, raw_feature in itertools.product(file_data.keys(), label_map.keys()):
             for horizon in label_map[raw_feature]['horizons']:
+                future_perf = - file_data[instrument]['close'].diff(-horizon)
                 if raw_feature == 'performance':
-                    temp = np.log(1 - file_data[instrument]['close'].diff(-horizon) / file_data[instrument]['close'])
+                    temp = np.log(1 + future_perf / file_data[instrument]['close'])
                 elif raw_feature == 'sign':
-                    temp = (-file_data[instrument]['close'].diff(-horizon)).apply(lambda x: 1 if x >= 0 else -1)
+                    temp = future_perf.apply(lambda x: 1 if x >= 0 else -1)
                 elif raw_feature == 'big':
-                    temp = -file_data[instrument]['close'].diff(-horizon) > ResearchEngine.stdev_big * file_data[instrument][
-                        'close'].diff(-horizon).expanding(horizon + 1).std()
+                    stdev = future_perf.expanding(horizon + 1).std()
+                    temp = (future_perf - ResearchEngine.stdev_big * stdev).apply(lambda x: 1 if x >= 0 else 0)
                 elif raw_feature == 'stop_limit':
                     temp = winning_trade(file_data[instrument]['close'])
                 else:
@@ -239,14 +250,14 @@ class ResearchEngine:
 
         return result
 
-    def build_X_Y(self, file_data: FileData, feature_map: dict[RawFeature, dict], label_map: dict[RawFeature, dict], build_test=False) -> None:
+    def build_X_Y(self, file_data: FileData, feature_map: dict[RawFeature, dict], label_map: dict[RawFeature, dict], unit_test=False) -> None:
         raw_data = self.compute_features(file_data, feature_map)
         self.temp_feature_data = self.laplace_expand(raw_data)
 
-        if build_test:
+        if unit_test:
             self.X = self.normalize(pd.concat(self.temp_feature_data, axis=1).dropna())
             self.X.columns.rename(['instrument', 'feature', 'window'], inplace=True)
-            self.Y = self.normalize(next(self.logistic_unit_test(self.X)))
+            self.Y = self.normalize(next(self.linear_unit_test(self.X)))
             self.X_Y = pd.concat([self.X, self.Y], axis=1).dropna()
             # concat / dropna to have same index
             self.X = self.X_Y[self.X.columns]
@@ -259,26 +270,28 @@ class ResearchEngine:
             self.X = self.X_Y[self.temp_feature_data.keys()]
             self.Y = self.X_Y[self.temp_label_data.keys()]
 
-        self.fitted_model: dict[tuple[RawFeature, FeatureExpansion], list[sklearn.base.BaseEstimator]] = dict()
+
 
     def run(self) -> pd.DataFrame():
         holding_windows = [window for windows in self.label_map.values() for window in windows['horizons']]
         result = pd.DataFrame()
-        denormalized_labels = self.inverse_normalize(self.Y)
 
         # for each (all instruments, 1 feature, 1 horizon)
-        for (raw_feature, frequency), label_df in self.Y.groupby(level=[1, 2], axis=1):
-            self.fitted_model[(raw_feature, frequency)] = list()
+        for (raw_feature, frequency), label_df in self.Y.groupby(level=['feature', 'window'], axis=1):
             # for each model for that feature
-            for model in self.run_parameters['models'][raw_feature]:
-                tscv = TimeSeriesSplit(n_splits=int(np.log2(len(self.X_Y.index)/frequency/5)), gap=max(holding_windows)).split(self.X_Y)
+            self.fitted_model[(raw_feature, frequency)] = list()
+            for name, params in self.run_parameters['models'][raw_feature].items():
+                model = globals()[name](**params)
+                n_splits = self.run_parameters['splits_for_1000'] * np.log2(len(self.X_Y.index) / frequency) / 10
+                tscv = TimeSeriesSplit(n_splits=max(2, int(n_splits)), gap=max(holding_windows)).split(self.X_Y)
+                # cross validation
                 for split_index, (train_index, test_index) in enumerate(tscv):
-                    # fit model on all instruments
-                    X_allinstruments = self.X.iloc[train_index].stack(level=0)
-                    Y_allinstruments = label_df.iloc[train_index].stack(level=0)
+                    # fit 1 model on all instruments
+                    X_allinstruments = self.X.iloc[train_index].stack(level='instrument')
+                    Y_allinstruments = label_df.iloc[train_index].stack(level='instrument')
                     fitted_model = model.fit(X_allinstruments, Y_allinstruments.squeeze())
-                    if callable(getattr(fitted_model, 'predict_proba')):
-                        delta_strategy = lambda x: 2*getattr(fitted_model, 'predict_proba')(x) - 1
+                    if hasattr(fitted_model, 'predict_proba'):
+                        delta_strategy = lambda x: 2*getattr(fitted_model, 'predict_proba')(features).transpose()[1]-1
                     else:
                         delta_strategy = getattr(fitted_model, 'predict')
                     self.fitted_model[(raw_feature, frequency)].append(fitted_model)
@@ -286,77 +299,94 @@ class ResearchEngine:
                     # backtest each instrument
                     times = self.X.iloc[test_index].index[::frequency]
                     for instrument in Y_allinstruments.index.levels[1]:
-                        # denormalize close, read on test set, resample to frequency
+                        # read on test set, resample to frequency
                         log_increment = self.temp_label_data[(instrument, 'performance', frequency)][times]
                         # set delta from prediction
-                        features = self.X.xs(instrument, level=0, axis=1).loc[times]
-                        delta = pd.DataFrame(index=times,
-                                             columns=self.Y[(instrument, raw_feature, frequency)].unique(),
-                                             data=delta_strategy(features))[1]
+                        features = self.X.xs(instrument, level='instrument', axis=1).loc[times]
+                        delta = pd.Series(index=times,
+                                          data=delta_strategy(features))
                         # apply log increment
                         cumulative_pnl = (delta * (log_increment.apply(np.exp) - 1)).cumsum().shift(1)
 
                         cumulative_performance = log_increment.cumsum().apply(np.exp)-1
                         result = pd.concat([result,
                                             pd.DataFrame(index=range(len(delta.index)),
-                                                         columns=[(type(model), split_index, instrument, raw_feature, frequency, datatype)
+                                                         columns=[(model, split_index, instrument, raw_feature, frequency, datatype)
                                                                   for datatype in ['cumulative_performance', 'delta', 'cumulative_pnl']],
                                                          data=np.array([np.array(cumulative_performance),
                                                                         np.array(delta.values),
                                                                         np.array(cumulative_pnl.values)]).transpose())],
                                            axis=1, join='outer')
+                    print(f'ran split {split_index} for {model} for {(raw_feature, frequency)}')
+                print(f'ran {model} for {(raw_feature, frequency)}')
+            print(f'ran {(raw_feature, frequency)}')
 
-        result.columns = pd.MultiIndex.from_tuples(result.columns, names=['model', 'split_index', 'instrument', 'label', 'frequency', 'datatype'])
+        result.columns = pd.MultiIndex.from_tuples(result.columns, names=['model', 'split_index', 'instrument', 'feature', 'frequency', 'datatype'])
 
         return result
 
-def perf_analysis(df: pd.DataFrame()) -> pd.DataFrame():
+def perf_analysis(df: pd.DataFrame()=None, filename=None) -> pd.DataFrame():
     result = pd.DataFrame()
-    for frequency in df.get_level_values('frequency') :
-        cum_norm_pnl = df.xs((frequency, 'cumulative_pnl'), level=['frequency', 'datatype'], axis=1).dropna()
-        total_perf = cum_norm_pnl.iloc[-1]/len(cum_norm_pnl.index)
-        vol = cum_norm_pnl.std()
-        sharpe = pd.concat({'sharpe': total_perf / vol}, names=['datatype'])
-        drawdown = pd.concat({'drawdown': (cum_norm_pnl-cum_norm_pnl.cummax()).cummin().iloc[-1]}, names=['datatype'])
+    if filename is not None:
+        df = pd.read_csv(filename, header=list(range(6)), index_col=0, dtype=float)
+    for model, label, frequency in set(zip(*[df.columns.get_level_values(level) for level in ['model', 'feature', 'frequency']])):
+        pnl = df.xs((model, label, frequency, 'cumulative_pnl'), level=['model', 'feature', 'frequency', 'datatype'], axis=1).dropna()
 
-        result = pd.concat([result, sharpe, drawdown], axis=1)
+        annual_perf = pd.Series(pnl.iloc[-1]/len(pnl.index)/float(frequency) * timedelta(days=365.25).total_seconds() / ResearchEngine.data_interval.total_seconds(),
+                                name=(model, label, frequency, 'annual_perf'))
+        sharpe = pd.Series(pnl.mean() / pnl.std(), name=(model, label, frequency, 'sharpe'))
+        drawdown = pd.Series((pnl-pnl.cummax()).cummin().iloc[-1], name=(model, label, frequency, 'drawdown'))
+
+        result = pd.concat([result, annual_perf, sharpe, drawdown], axis=1)
+        result.columns = pd.MultiIndex.from_tuples(result.columns,
+                                                   names=['model', 'feature', 'frequency',
+                                                          'datatype'])
 
     return result
 
 def cta_main(parameters):
     engine = ResearchEngine(**parameters)
     file_data = ResearchEngine.read_history(**parameters['data'])
-    engine.build_X_Y(file_data, parameters['feature_map'], parameters['label_map'], build_test=False)
+    engine.build_X_Y(file_data, parameters['feature_map'], parameters['label_map'], unit_test=parameters['run_parameters']['unit_test'])
     result = engine.run()
-    result.to_csv('data.csv')
-    analysis = perf_analysis(result).to_csv('analysis.csv')
 
-    return result, analysis
+    return result
 
 if __name__ == "__main__":
-    parameters = {'data': {'dirname': '/home/david/mktdata/binance/downloads',
-                           'start_date': datetime(2022, 8, 15),
-                           'selected_instruments': {'AVAXUSDT','ETHUSDT'}
+    with open('/home/david/config/pfoptimizer/cta_test_params.json','r') as fp: # log_incr = 0.1 * (live - ewma2)
+        parameters = json.load(fp)
+    result = cta_main(parameters)
+    result.to_csv('/home/david/Sety-project/pylibs/ux/result.csv')
+    analysis = perf_analysis(df=None, filename='/home/david/Sety-project/pylibs/ux/result.csv')
+    analysis.quantile(q=[.25, .5, .75]).xs('annual_perf', level='datatype', axis=1)
+
+if False:
+    coin_list = {"BTCUSDT", "ETHUSDT", "BNBUSDT", "AAVEUSDT", "XRPUSDT", "DOGEUSDT", "MATICUSDT", "DOTUSDT", "ADAUSDT",
+                 "CRVUSDT", "AVAXUSDT"}
+    horizons = [5, 60, 24*60]
+    windows = [5, 15, 60, 4 * 60, 8 * 60, 24 * 60, 72 * 60]
+    parameters = {'data': {'dirname': '/home/david/mktdata/binance/download',
+                           'start_date': '2022-08-15T00:00:00',
+                           'selected_instruments': coin_list
                            },
-                  'run_parameters': {'verbose': False,
-                                     'n_split': 9,
-                                     'models': {'performance': [],  # LinearRegression(),
-                                                # MLPRegressor(hidden_layer_sizes=(10,)),
-                                                # LassoLarsCV(cv=TimeSeriesSplit(9), normalize=True)],
-                                                'sign': [#LogisticRegressionCV(cv=TimeSeriesSplit(9), max_iter=1000)],
-                                                RandomForestClassifier(min_samples_split=10, n_jobs=-1, warm_start=False)],#,
-                                                # SVC(kernel='sigmoid', probability=True),
-                                                # AdaBoostClassifier()],
-                                                'big': [],
-                                                # LogisticRegressionCV(cv=TimeSeriesSplit(9), max_iter=1000),
-                                                # SVC(kernel='sigmoid'),  # works ?
-                                                # RandomForestClassifier(min_samples_split=10, n_jobs=-1,
-                                                #                       warm_start=True),
-                                                # AdaBoostClassifier()]
+                  'run_parameters': {'unit_test': False,
+                                     'no_normalize': ['sign', 'big'],
+                                     'verbose': False,
+                                     'splits_for_1000': 2,
+                                     'models': {'performance': {'MLPRegressor': {'hidden_layer_sizes':(10,)},
+                                                                'LassoLarsCV': {'normalize':'True'}
+                                                                },
+                                                'sign': {'LogisticRegression': {'max_iter':1000},
+                                                         'RandomForestClassifier': {'min_samples_split':10, 'n_jobs':-1, 'warm_start':False},
+                                                         'SVC': {'kernel':'sigmoid', 'probability':True}},
+                                                'big': {'LogisticRegression': {'max_iter':1000},
+                                                         'RandomForestClassifier': {'min_samples_split':10, 'n_jobs':-1, 'warm_start':False},
+                                                         'SVC': {'kernel':'sigmoid', 'probability':True}}
                                                 }
                                      },
                   'feature_map': {'close': {'transform': 'increment',
-                                            'ewma_windows': [2, 5, 15, 60, 4 * 60, 8 * 60, 24 * 60, 72 * 60]},
+                                            'add_weight_by': 'volume',
+                                            'ewma_windows': windows},
                                   'volume': {'transform': 'log',
                                              'ewma_windows': [72 * 60]},
                                   'taker_imbalance': {'transform': 'arctanh',
@@ -364,14 +394,11 @@ if __name__ == "__main__":
                                   # 'open_interest': {'transform': 'arctanh',
                                   #                   'ewma_windows': [2, 5, 72 * 60]},
                                   'premium': {'transform': 'passthrough',
-                                              'ewma_windows': [5, 60, 72 * 60]},
-                                  'vw_close': {'transform': 'passthrough',
-                                                   'ewma_windows': [2, 5, 15, 60, 4 * 60, 8 * 60, 24 * 60, 72 * 60]},
-                                  'vw_premium': {'transform': 'passthrough',
-                                                 'ewma_windows': [5, 60, 72 * 60]}
+                                              'add_weight_by': 'volume',
+                                              'ewma_windows': horizons}
                                   },
-                  'label_map': {'performance': {'horizons': [5, 60, 24 * 60], 'normalize': True},
-                                'sign': {'horizons': [5, 60, 24 * 60], 'normalize': False},
-                                'big': {'horizons': [5, 60, 24 * 60], 'normalize': False}
-                                }}
-    cta_main(parameters)
+                  'label_map': {'performance': {'horizons': horizons},
+                                'sign': {'horizons': horizons},
+                                'big': {'horizons': horizons}
+                                }
+                  }
