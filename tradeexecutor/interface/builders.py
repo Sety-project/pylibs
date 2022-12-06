@@ -4,7 +4,7 @@ from utils.io_utils import myUtcNow
 from tradeexecutor.binance.api import BinanceAPI
 from tradeexecutor.gmx.api import GmxAPI
 from tradeexecutor.external_signal_engine import ExternalSignal
-from tradeexecutor.spreaddistribution_signal_engine import SpreadTradeSignal
+from tradeexecutor.ftx.spreaddistribution_signal_engine import SpreadTradeSignal
 from tradeexecutor.gmx.signal_engine import GLPSignal
 from tradeexecutor.ftx.position_manager import FtxPositionManager
 from tradeexecutor.binance.position_manager import BinancePositionManager
