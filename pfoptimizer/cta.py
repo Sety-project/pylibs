@@ -66,15 +66,15 @@ def winning_trade(df: pd.Series,
 
     return result
 
-
 class ResearchEngine:
     data_interval = timedelta(seconds=60)
     stdev_big = 1.3
 
-    def __init__(self, feature_map, label_map, run_parameters, **kwargs):
+    def __init__(self, feature_map, label_map, run_parameters, input_data):
         self.feature_map = feature_map
         self.label_map = label_map
         self.run_parameters = run_parameters
+        self.input_data = input_data
 
         self.temp_feature_data: Data = Data(dict()) # temporary, until we have a DataFrame
         self.temp_label_data: Data = Data(dict())  # temporary, until we have a DataFrame
@@ -85,7 +85,7 @@ class ResearchEngine:
         self.Y: pd.DataFrame = pd.DataFrame()
 
         self.models: list[sklearn.base.BaseEstimator] = []
-        self.fitted_model: dict[tuple[RawFeature, FeatureExpansion], list[sklearn.base.BaseEstimator]] = dict()
+        self.fitted_model: dict[tuple[RawFeature, FeatureExpansion, int], sklearn.base.BaseEstimator] = dict()
 
     @staticmethod
     def read_history(dirname,
@@ -270,31 +270,28 @@ class ResearchEngine:
             self.X = self.X_Y[self.temp_feature_data.keys()]
             self.Y = self.X_Y[self.temp_label_data.keys()]
 
-
-
     def run(self) -> pd.DataFrame():
         holding_windows = [window for windows in self.label_map.values() for window in windows['horizons']]
-        result = pd.DataFrame()
+        backtest = pd.DataFrame()
 
         # for each (all instruments, 1 feature, 1 horizon)
         for (raw_feature, frequency), label_df in self.Y.groupby(level=['feature', 'window'], axis=1):
             # for each model for that feature
-            self.fitted_model[(raw_feature, frequency)] = list()
-            for name, params in self.run_parameters['models'][raw_feature].items():
-                model = globals()[name](**params)
+            for model_name, model_params in self.run_parameters['models'][raw_feature].items():
                 n_splits = self.run_parameters['splits_for_1000'] * np.log2(len(self.X_Y.index) / frequency) / 10
                 tscv = TimeSeriesSplit(n_splits=max(2, int(n_splits)), gap=max(holding_windows)).split(self.X_Y)
                 # cross validation
                 for split_index, (train_index, test_index) in enumerate(tscv):
                     # fit 1 model on all instruments
+                    model_obj = globals()[model_name](**model_params)
                     X_allinstruments = self.X.iloc[train_index].stack(level='instrument')
                     Y_allinstruments = label_df.iloc[train_index].stack(level='instrument')
-                    fitted_model = model.fit(X_allinstruments, Y_allinstruments.squeeze())
+                    fitted_model = model_obj.fit(X_allinstruments, Y_allinstruments.squeeze())
                     if hasattr(fitted_model, 'predict_proba'):
                         delta_strategy = lambda x: 2*getattr(fitted_model, 'predict_proba')(features).transpose()[1]-1
                     else:
                         delta_strategy = getattr(fitted_model, 'predict')
-                    self.fitted_model[(raw_feature, frequency)].append(fitted_model)
+                    self.fitted_model[(raw_feature, frequency, split_index)] = fitted_model
 
                     # backtest each instrument
                     times = self.X.iloc[test_index].index[::frequency]
@@ -309,96 +306,58 @@ class ResearchEngine:
                         cumulative_pnl = (delta * (log_increment.apply(np.exp) - 1)).cumsum().shift(1)
 
                         cumulative_performance = log_increment.cumsum().apply(np.exp)-1
-                        result = pd.concat([result,
+                        backtest = pd.concat([backtest,
                                             pd.DataFrame(index=range(len(delta.index)),
-                                                         columns=[(model, split_index, instrument, raw_feature, frequency, datatype)
+                                                         columns=[(model_name, split_index, instrument, raw_feature, frequency, datatype)
                                                                   for datatype in ['cumulative_performance', 'delta', 'cumulative_pnl']],
                                                          data=np.array([np.array(cumulative_performance),
                                                                         np.array(delta.values),
                                                                         np.array(cumulative_pnl.values)]).transpose())],
                                            axis=1, join='outer')
-                    print(f'ran split {split_index} for {model} for {(raw_feature, frequency)}')
-                print(f'ran {model} for {(raw_feature, frequency)}')
+                    print(f'ran split {split_index} for {model_name} for {(raw_feature, frequency)}')
+                print(f'ran {model_name} for {(raw_feature, frequency)}')
             print(f'ran {(raw_feature, frequency)}')
 
-        result.columns = pd.MultiIndex.from_tuples(result.columns, names=['model', 'split_index', 'instrument', 'feature', 'frequency', 'datatype'])
+        backtest.columns = pd.MultiIndex.from_tuples(backtest.columns, names=['model', 'split_index', 'instrument', 'feature', 'frequency', 'datatype'])
+        coefs = pd.DataFrame(index=self.fitted_model.keys(),
+                             columns=[('intercept',None)]+list(self.X.xs(self.input_data['selected_instruments'][0], level='instrument', axis=1).columns),
+                             data=[np.append(data.intercept_, data.coef_) for data in self.fitted_model.values()])
 
-        return result
+        return backtest, coefs
 
 def perf_analysis(df: pd.DataFrame()=None, filename=None) -> pd.DataFrame():
-    result = pd.DataFrame()
+    new_values = []
     if filename is not None:
         df = pd.read_csv(filename, header=list(range(6)), index_col=0, dtype=float)
     for model, label, frequency in set(zip(*[df.columns.get_level_values(level) for level in ['model', 'feature', 'frequency']])):
         pnl = df.xs((model, label, frequency, 'cumulative_pnl'), level=['model', 'feature', 'frequency', 'datatype'], axis=1).dropna()
 
         annual_perf = pd.Series(pnl.iloc[-1]/len(pnl.index)/float(frequency) * timedelta(days=365.25).total_seconds() / ResearchEngine.data_interval.total_seconds(),
-                                name=(model, label, frequency, 'annual_perf'))
-        sharpe = pd.Series(pnl.mean() / pnl.std(), name=(model, label, frequency, 'sharpe'))
-        drawdown = pd.Series((pnl-pnl.cummax()).cummin().iloc[-1], name=(model, label, frequency, 'drawdown'))
+                                name=(model, label, frequency, 'annual_perf')).T
+        sharpe = pd.Series(pnl.mean() / pnl.std(), name=(model, label, frequency, 'sharpe')).T
+        drawdown = pd.Series((pnl-pnl.cummax()).cummin().iloc[-1], name=(model, label, frequency, 'drawdown')).T
 
-        result = pd.concat([result, annual_perf, sharpe, drawdown], axis=1)
-        result.columns = pd.MultiIndex.from_tuples(result.columns,
-                                                   names=['model', 'feature', 'frequency',
-                                                          'datatype'])
+        new_values.append(pd.concat([annual_perf, sharpe, drawdown], axis=1))
 
-    return result
+    result = pd.concat(new_values, axis=1)
+    result.columns = pd.MultiIndex.from_tuples(result.columns,
+                                               names=['model', 'feature', 'frequency',
+                                                      'datatype'])
+    return result.quantile(q=[.25, .5, .75])
 
 def cta_main(parameters):
     engine = ResearchEngine(**parameters)
-    file_data = ResearchEngine.read_history(**parameters['data'])
+    file_data = ResearchEngine.read_history(**parameters['input_data'])
     engine.build_X_Y(file_data, parameters['feature_map'], parameters['label_map'], unit_test=parameters['run_parameters']['unit_test'])
     result = engine.run()
 
     return result
 
 if __name__ == "__main__":
-    with open('/home/david/config/pfoptimizer/cta_test_params.json','r') as fp: # log_incr = 0.1 * (live - ewma2)
+    with open('/home/david/config/pfoptimizer/cta_short_params.json', 'r') as fp: # log_incr = 0.1 * (live - ewma2)
         parameters = json.load(fp)
     result = cta_main(parameters)
     result.to_csv('/home/david/Sety-project/pylibs/ux/result.csv')
     analysis = perf_analysis(df=None, filename='/home/david/Sety-project/pylibs/ux/result.csv')
-    analysis.quantile(q=[.25, .5, .75]).xs('annual_perf', level='datatype', axis=1)
-
-if False:
-    coin_list = {"BTCUSDT", "ETHUSDT", "BNBUSDT", "AAVEUSDT", "XRPUSDT", "DOGEUSDT", "MATICUSDT", "DOTUSDT", "ADAUSDT",
-                 "CRVUSDT", "AVAXUSDT"}
-    horizons = [5, 60, 24*60]
-    windows = [5, 15, 60, 4 * 60, 8 * 60, 24 * 60, 72 * 60]
-    parameters = {'data': {'dirname': '/home/david/mktdata/binance/download',
-                           'start_date': '2022-08-15T00:00:00',
-                           'selected_instruments': coin_list
-                           },
-                  'run_parameters': {'unit_test': False,
-                                     'no_normalize': ['sign', 'big'],
-                                     'verbose': False,
-                                     'splits_for_1000': 2,
-                                     'models': {'performance': {'MLPRegressor': {'hidden_layer_sizes':(10,)},
-                                                                'LassoLarsCV': {'normalize':'True'}
-                                                                },
-                                                'sign': {'LogisticRegression': {'max_iter':1000},
-                                                         'RandomForestClassifier': {'min_samples_split':10, 'n_jobs':-1, 'warm_start':False},
-                                                         'SVC': {'kernel':'sigmoid', 'probability':True}},
-                                                'big': {'LogisticRegression': {'max_iter':1000},
-                                                         'RandomForestClassifier': {'min_samples_split':10, 'n_jobs':-1, 'warm_start':False},
-                                                         'SVC': {'kernel':'sigmoid', 'probability':True}}
-                                                }
-                                     },
-                  'feature_map': {'close': {'transform': 'increment',
-                                            'add_weight_by': 'volume',
-                                            'ewma_windows': windows},
-                                  'volume': {'transform': 'log',
-                                             'ewma_windows': [72 * 60]},
-                                  'taker_imbalance': {'transform': 'arctanh',
-                                                      'ewma_windows': []},
-                                  # 'open_interest': {'transform': 'arctanh',
-                                  #                   'ewma_windows': [2, 5, 72 * 60]},
-                                  'premium': {'transform': 'passthrough',
-                                              'add_weight_by': 'volume',
-                                              'ewma_windows': horizons}
-                                  },
-                  'label_map': {'performance': {'horizons': horizons},
-                                'sign': {'horizons': horizons},
-                                'big': {'horizons': horizons}
-                                }
-                  }
+    analysis.to_csv('/home/david/Sety-project/pylibs/ux/analysis.csv')
+    analysis.xs('annual_perf', level='datatype', axis=1).to_csv('/home/david/Sety-project/pylibs/ux/quantile.csv')
