@@ -6,8 +6,8 @@ from datetime import timedelta
 import numpy as np
 import pandas as pd
 
-from utils.async_utils import safe_gather
-from utils.io_utils import myUtcNow
+from tradeexecutor.utils.async_utils import safe_gather
+from tradeexecutor.utils.io_utils import myUtcNow
 from tradeexecutor.interface.signal_engine import SignalEngine
 
 class SpreadTradeSignal(SignalEngine):
@@ -49,6 +49,7 @@ class SpreadTradeSignal(SignalEngine):
         self.timestamp = myUtcNow()
 
     def serialize(self) -> list[dict]:
+        raise NotImplementedError('returns list of deque...')
         res = [res for data in self.spread_distribution.values() for res in data.values()]
         return res
 

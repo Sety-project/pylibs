@@ -48,7 +48,7 @@ WORKDIR $TRADEEXECUTOR_PATH
 
 # Copy pip requirements before copying full project
 USER $USER
-COPY --chown=$USER:$USER /utils/requirements.txt $UTILS_PATH
+COPY --chown=$USER:$USER /tradeexecutor/utils/requirements.txt $UTILS_PATH
 COPY --chown=$USER:$USER /histfeed/requirements.txt $HISTFEED_PATH
 COPY --chown=$USER:$USER /riskpnl/requirements.txt $RISKPNL_PATH
 COPY --chown=$USER:$USER /tradeexecutor/requirements.txt $TRADEEXECUTOR_PATH
@@ -60,13 +60,13 @@ RUN pip3 install -Ur $RISKPNL_PATH/requirements.txt
 RUN pip3 install -Ur $TRADEEXECUTOR_PATH/requirements.txt
 
 # Now copy full project
-COPY --chown=$USER:$USER /utils $UTILS_PATH
+COPY --chown=$USER:$USER /tradeexecutor/utils $UTILS_PATH
 COPY --chown=$USER:$USER /histfeed $HISTFEED_PATH
 COPY --chown=$USER:$USER /riskpnl $RISKPNL_PATH
 COPY --chown=$USER:$USER /tradeexecutor $TRADEEXECUTOR_PATH
 
 # Add ccxtpro for execution
-COPY --chown=$USER:$USER /ccxtpro $CCXTPRO_PATH
+COPY --chown=$USER:$USER /tradeexecutor/utils/ccxtpro $CCXTPRO_PATH
 
 RUN chmod +x $TRADEEXECUTOR_PATH/run.sh
 

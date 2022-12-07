@@ -4,7 +4,7 @@ __pycache__/
 setup.py
 dist/
 *$py.class
-utils/api_encrypt/
+tradeexecutor/utils/api_encrypt/
 .idea/
 .venv*/
 .run/

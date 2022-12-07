@@ -1,10 +1,10 @@
 import os.path
 
 from tradeexecutor.strategy import Strategy
-from utils.config_loader import *
-from utils.ccxt_utilities import *
-from utils.api_utils import api
-from utils.async_utils import *
+from tradeexecutor.utils.config_loader import *
+from tradeexecutor.utils.api_utilities import *
+from tradeexecutor.utils.api_utils import api
+from tradeexecutor.utils.async_utils import *
 
 
 # parameters guide

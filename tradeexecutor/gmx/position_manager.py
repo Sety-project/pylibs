@@ -1,4 +1,4 @@
-from utils.io_utils import myUtcNow
+from tradeexecutor.utils.io_utils import myUtcNow
 from tradeexecutor.interface.position_manager import PositionManager
 
 class GMXPositionManager(PositionManager):

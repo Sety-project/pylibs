@@ -1,6 +1,5 @@
 from tradeexecutor.binance.api import BinanceAPI
-from utils.ftx_utils import *
-from utils.config_loader import *
+from tradeexecutor.utils.config_loader import *
 
 class MarginCalculator:
     '''low level class to compute margins
@@ -107,13 +106,16 @@ class MarginCalculator:
     # --------------- calculators -------------
 
     def swap_IM(self ,symbol ,size ,mark):
+        raise NotImplementedError
         amount = np.abs(size)
         return - mark * amount * max(1.0 / self._account_leverage,
                               self._imfFactor[symbol] * np.sqrt(amount / mark))
     def swap_MM(self ,symbol ,size ,mark):
+        raise NotImplementedError
         amount = np.abs(size)
         return min(- 0.03 * amount * mark, 0.6 * self.future_IM(symbol ,size ,mark))
     def spot_IM(self ,symbol ,size ,mark):
+        raise NotImplementedError
         # https://help.ftx.com/hc/en-us/articles/360031149632
         if size < 0:
             collateral = size
@@ -125,11 +127,12 @@ class MarginCalculator:
             im_short = 0
         return mark * (collateral + im_short)
     def spot_MM(self, symbol, size, mark):
-        raise Exception('fix formula (split collateral out')
+        raise NotImplementedError
         # https://help.ftx.com/hc/en-us/articles/360053007671-Spot-Margin-Trading-Explainer
         return min(- 0.03 * np.abs(size) * mark, 0.6 * self.future_IM(symbol, size, mark))
 
     def estimate(self, IM_or_MM, return_details = False):
+        raise NotImplementedError
         '''returns {symbol:margin}'''
 
         # first, compute margin for existing positions

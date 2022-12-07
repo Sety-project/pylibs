@@ -1,6 +1,0 @@
-python-telegram-bot
-matplotlib
-cufflinks # For Jupyter only
-docker
-prettytable
-pandas

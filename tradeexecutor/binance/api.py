@@ -2,19 +2,19 @@ from datetime import timezone, datetime, timedelta
 
 import ccxt.base.errors
 
-from utils.io_utils import ignore_error, async_to_csv, myUtcNow
+from tradeexecutor.utils.io_utils import ignore_error, async_to_csv, myUtcNow
 import dateutil, os, asyncio
 
 import numpy as np
 import pandas as pd
 
-import ccxtpro
+from tradeexecutor.utils import ccxtpro
 from tradeexecutor.interface.venue_api import CeFiAPI, PegRule, VenueAPI
-from utils.async_utils import safe_gather
-from utils.ccxt_utilities import api_params, calc_basis
-from utils.config_loader import configLoader
+from tradeexecutor.utils.async_utils import safe_gather
+from tradeexecutor.utils.api_utilities import api_params, calc_basis
+from tradeexecutor.utils.config_loader import configLoader
 
-class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
+class BinanceAPI(CeFiAPI, ccxtpro.binanceusdm):
     '''VenueAPI implements rest calls and websocket loops to observe raw market data / order events and place orders
     send events for Strategy to action
     send events to SignalEngine for further processing'''
@@ -129,7 +129,7 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
             config |= {'apiKey': 'V2KfGbMd9Zd9fATONTESrbtUtkEHFcVDr6xAI4KyGBjKs7z08pQspTaPhqITwh1M',
             'secret': api_params['binance']['key']}
         super().__init__(parameters)
-        super(ccxtpro.binance,self).__init__(config=config)
+        super(ccxtpro.binance, self).__init__(config=config)
         self.state = CeFiAPI.State()
 
         self.options['tradesLimit'] = VenueAPI.cache_size # TODO: shoud be in signalengine with a different name. inherited from ccxt....
@@ -196,7 +196,7 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
     # ---------------------------------- various helpers -----------------------------------------
     # --------------------------------------------------------------------------------------------
 
-    async def fetch_account_positions(self, symbols=None, params={'all':False}):
+    async def fetch_account_positions(self, symbols=None, params={'all': False}):
         """
         override of ccxt to yield balance and positions
         fetch account positions
@@ -257,7 +257,7 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
             endTime = self.sum(since, limit * 86400000) - 1  # required when startTime is further than 93 days in the past
             now = self.milliseconds()
             request['endTime'] = min(endTime, now)  # cannot have an endTime later than current time
-        response = await self.sapiGetMarginInterestRateHistory(self.extend(request, params))
+        response = await self.sapiPublicGetMarginInterestRateHistory(self.extend(request, params))
         #
         #     [
         #         {
@@ -708,9 +708,9 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
                      'state':'rejected',
                      'comment':'create/'+str(e)}
             self.strategy.order_manager.cancel_or_reject(order)
-            if isinstance(e,ccxtpro.InsufficientFunds):
+            if isinstance(e, ccxtpro.InsufficientFunds):
                 self.strategy.logger.info(f'{clientOrderId} too big: {rounded_amount*self.mid(symbol)}')
-            elif isinstance(e,ccxtpro.RateLimitExceeded):
+            elif isinstance(e, ccxtpro.RateLimitExceeded):
                 throttle = 200.0
                 self.strategy.logger.info(f'{str(e)}: waiting {throttle} ms)')
                 await asyncio.sleep(throttle / 1000)

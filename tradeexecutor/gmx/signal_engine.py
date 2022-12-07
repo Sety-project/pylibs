@@ -1,6 +1,5 @@
 import collections
 import copy
-import datetime
 
 from tradeexecutor.gmx.api import GmxAPI
 from tradeexecutor.external_signal_engine import ExternalSignal

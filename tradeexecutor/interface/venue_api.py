@@ -2,7 +2,7 @@ import collections, functools
 from abc import abstractmethod
 import numpy as np
 
-import ccxtpro
+from tradeexecutor.utils import ccxtpro
 from tradeexecutor.interface.StrategyEnabler import StrategyEnabler
 
 def loop(func):
@@ -171,7 +171,7 @@ class CeFiAPI(VenueAPI):
 
     # ---------------------------------- misc
 
-    async def watch_ticker(self, symbol, params=dict()):
+    async def watch_ticker(self, symbol, params=None):
         '''watch_order_book is faster than watch_tickers so we DON'T LISTEN TO TICKERS. Dirty...'''
         raise Exception("watch_order_book is faster than watch_tickers so we DON'T LISTEN TO TICKERS. Dirty...")
 

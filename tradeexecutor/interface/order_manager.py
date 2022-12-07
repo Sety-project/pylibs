@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
-from utils.async_utils import safe_gather
-from utils.io_utils import myUtcNow
+from tradeexecutor.utils.async_utils import safe_gather
+from tradeexecutor.utils.io_utils import myUtcNow
 from tradeexecutor.interface.StrategyEnabler import StrategyEnabler
 from tradeexecutor.interface.venue_api import CeFiAPI
 
@@ -27,12 +27,12 @@ class OrderManager(StrategyEnabler):
 
     '''various helpers'''
 
-    def filter_order_histories(self,symbols=list(),state_set=list()):
+    def filter_order_histories(self, symbols=None, state_set=None):
         '''returns all blockchains for symbol (all symbols if None), in a set of current states'''
         return [data
             for data in self.data.values()
-            if ((data[0]['symbol'] in symbols) or (symbols == []))
-            and ((data[-1]['state'] in state_set) or (state_set == []))]
+            if ((data[0]['symbol'] in symbols) or (symbols is None))
+            and ((data[-1]['state'] in state_set) or (state_set is None))]
 
     def latest_value(self,clientOrderId,key):
         for previous_state in reversed(self.data[clientOrderId]):

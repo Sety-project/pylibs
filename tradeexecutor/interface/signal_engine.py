@@ -1,7 +1,7 @@
 import aiofiles, collections, os, json
 from abc import abstractmethod
-from utils.config_loader import configLoader
-from utils.io_utils import NpEncoder
+from tradeexecutor.utils.config_loader import configLoader
+from tradeexecutor.utils.io_utils import NpEncoder
 from tradeexecutor.interface.StrategyEnabler import StrategyEnabler
 
 class SignalEngine(StrategyEnabler):

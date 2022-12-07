@@ -1,6 +1,6 @@
 #!/bin/python3
 import sys
-from utils.api_utils import extract_args_kwargs
+from tradeexecutor.utils.api_utils import extract_args_kwargs
 
 from tradeexecutor.execute import main
 

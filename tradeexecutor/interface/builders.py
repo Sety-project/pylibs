@@ -1,5 +1,5 @@
 import collections
-from utils.io_utils import myUtcNow
+from tradeexecutor.utils.io_utils import myUtcNow
 
 from tradeexecutor.binance.api import BinanceAPI
 from tradeexecutor.gmx.api import GmxAPI

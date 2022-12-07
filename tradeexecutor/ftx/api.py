@@ -1,21 +1,21 @@
 from datetime import timezone, datetime
-import dateutil
+import dateutil, asyncio
 
 import numpy as np
 import pandas as pd
 
-import ccxtpro
-from utils.async_utils import safe_gather, safe_gather_limit
-from utils.ccxt_utilities import api_params, calc_basis
-from utils.config_loader import configLoader
-from utils.ftx_utils import getUnderlyingType
-from utils.io_utils import myUtcNow
-from tradeexecutor.interface.venue_api import CeFiAPI, PegRule, VenueAPI, loop, intercept_message_during_reconciliation
+from tradeexecutor.utils import ccxtpro
+from tradeexecutor.utils.async_utils import safe_gather, safe_gather_limit
+from tradeexecutor.utils.api_utilities import api_params, calc_basis
+from tradeexecutor.utils.config_loader import configLoader
+from tradeexecutor.utils.io_utils import myUtcNow
+from tradeexecutor.interface.venue_api import CeFiAPI, PegRule, Chase, VenueAPI, loop, intercept_message_during_reconciliation
 
 class FtxAPI(CeFiAPI, ccxtpro.Exchange):
     '''VenueAPI implements rest calls and websocket loops to observe raw market data / order events and place orders
     send events for Strategy to action
     send events to SignalEngine for further processing'''
+    delay = 0.1
 
     def get_id(self):
         return "ftx"
@@ -43,6 +43,17 @@ class FtxAPI(CeFiAPI, ccxtpro.Exchange):
         async def fetch_futures(exchange):
             if 'fetch_futures' in FtxAPI.Static._cache:
                 return FtxAPI.Static._cache['fetch_futures']
+
+            def getUnderlyingType(coin_detail_item):
+                if coin_detail_item['usdFungible'] == True:
+                    return 'usdFungible'
+                if ('tokenizedEquity' in coin_detail_item.keys()):
+                    if (coin_detail_item['tokenizedEquity'] == True):
+                        return 'tokenizedEquity'
+                if coin_detail_item['fiat'] == True:
+                    return 'fiat'
+
+                return 'crypto'
 
             includeExpired = True
             includeIndex = False
@@ -192,7 +203,7 @@ class FtxAPI(CeFiAPI, ccxtpro.Exchange):
             config |= {'apiKey': 'ZUWyqADqpXYFBjzzCQeUTSsxBZaMHeufPFgWYgQU',
             'secret': api_params['ftx']['key']}
         super().__init__(parameters)
-        super(ccxtpro.ftx,self).__init__(config=config)
+        super(ccxtpro.ftx, self).__init__(config=config)
         self.state = FtxAPI.State()
 
         self.options['tradesLimit'] = VenueAPI.cache_size # TODO: shoud be in signalengine with a different name. inherited from ccxt....
@@ -330,7 +341,7 @@ class FtxAPI(CeFiAPI, ccxtpro.Exchange):
 
     # ---------------------------------- misc
 
-    async def watch_ticker(self, symbol, params=dict()):
+    async def watch_ticker(self, symbol, params=None):
         '''watch_order_book is faster than watch_tickers so we DON'T LISTEN TO TICKERS. Dirty...'''
         raise Exception("watch_order_book is faster than watch_tickers so we DON'T LISTEN TO TICKERS. Dirty...")
 
@@ -508,7 +519,7 @@ class FtxAPI(CeFiAPI, ccxtpro.Exchange):
                                for order in cancelable_orders]
         await safe_gather(coro, semaphore=self.strategy.rest_semaphore)
 
-    async def create_order(self, symbol, type, side, amount, price=None, params=dict(),previous_clientOrderId=None,peg_rule: PegRule=None):
+    async def create_order(self, symbol, type, side, amount, price=None, params=None,previous_clientOrderId=None,peg_rule: PegRule=None):
         '''if not new, cancel previous first
         if acknowledged, place order. otherwise just reconcile
         orders_pending_new is blocking'''
@@ -536,9 +547,9 @@ class FtxAPI(CeFiAPI, ccxtpro.Exchange):
                      'state':'rejected',
                      'comment':'create/'+str(e)}
             self.strategy.order_manager.cancel_or_reject(order)
-            if isinstance(e,ccxtpro.InsufficientFunds):
+            if isinstance(e, ccxtpro.InsufficientFunds):
                 self.strategy.logger.info(f'{clientOrderId} too big: {rounded_amount*self.mid(symbol)}')
-            elif isinstance(e,ccxtpro.RateLimitExceeded):
+            elif isinstance(e, ccxtpro.RateLimitExceeded):
                 throttle = 200.0
                 self.strategy.logger.info(f'{str(e)}: waiting {throttle} ms)')
                 await asyncio.sleep(throttle / 1000)
@@ -576,7 +587,7 @@ class FtxAPI(CeFiAPI, ccxtpro.Exchange):
             return False
         except Exception as e:
             self.strategy.logger.info(f'{clientOrderId} failed to cancel: {str(e)} --> retrying')
-            await asyncio.sleep(FtxAPI.delay())
+            await asyncio.sleep(FtxAPI.delay)
             return await self.cancel_order(clientOrderId, trigger+'+')
         else:
             return True

@@ -1,6 +1,6 @@
-from tradeexecutor.interface.venue_api import FtxAPI
-from utils.ftx_utils import *
-from utils.config_loader import *
+from tradeexecutor.ftx.api import FtxAPI
+from tradeexecutor.utils.ftx_utils import *
+from tradeexecutor.utils.config_loader import *
 
 class MarginCalculator:
     '''low level class to compute margins
@@ -13,7 +13,7 @@ class MarginCalculator:
         self._collateralWeight = {f'{coin}/USD': collateralWeight[coin]
                                   for coin, data in collateralWeight.items() } |{'USD/USD' :1.0}
         self._imfFactor = imfFactor | {'USD/USD:USD':0.0}
-        self._collateralWeightInitial = {f'{coin}/USD': collateralWeightInitial
+        self._collateralWeightInitial = {f'{coin}/USD': ftx_collateralWeightInitial
             ({'underlying': coin, 'collateralWeight': data})
                                          for coin, data in collateralWeight.items() } |{'USD/USD' :1.0}
 

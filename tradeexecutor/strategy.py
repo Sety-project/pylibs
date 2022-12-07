@@ -3,17 +3,17 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 import pandas as pd
-import ccxtpro
+from tradeexecutor.utils import ccxtpro
 
 from tradeexecutor.interface.order_manager import OrderManager
 from tradeexecutor.interface.position_manager import PositionManager
 from tradeexecutor.interface.signal_engine import SignalEngine
 from tradeexecutor.interface.venue_api import VenueAPI
 from tradeexecutor.interface.builders import build_SignalEngine, build_VenueAPI, build_OrderManager, build_PositionManager
-from utils.MyLogger import ExecutionLogger
-from utils.async_utils import safe_gather_limit, safe_gather
-from utils.io_utils import myUtcNow
-from utils.api_utils import rename_logfile
+from tradeexecutor.utils.MyLogger import ExecutionLogger
+from tradeexecutor.utils.async_utils import safe_gather_limit, safe_gather
+from tradeexecutor.utils.io_utils import myUtcNow
+from tradeexecutor.utils.api_utils import rename_logfile
 
 class Strategy(ABC):
     '''abstract class Strategy leverages StrategyEnabler to implement quoter (ie generate orders from mkt change or order feed, risk, external request..)
@@ -28,7 +28,7 @@ class Strategy(ABC):
         '''Strategy contructor also opens channels btw objects (a simple member data for now)'''
         self.data: dict = dict({key: dict() for key in parameters['symbols']})
         self.parameters: dict = parameters
-        self.timestamp: float = None
+        self.timestamp: float = 0
         self.parents: dict[str, Strategy] = parameters.pop('parents') if 'parents' in parameters else dict()
         self.children: dict[str, Strategy] = parameters.pop('children') if 'children' in parameters else dict()
 
