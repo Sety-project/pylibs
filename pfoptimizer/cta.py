@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 from datetime import datetime, timedelta
 from typing import NewType, Union, Iterator, Callable
+from utils.api_utils import extract_args_kwargs, api
 
 import dateutil.parser
 import numpy as np
 import pandas as pd
-import os, copy, itertools, sklearn, json
+import os, sys, copy, itertools, sklearn, json
 import plotly.express as px
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LinearRegression, LassoLarsIC, RidgeCV, ElasticNetCV, LassoCV, LassoLars, \
@@ -114,36 +115,36 @@ class ResearchEngine:
 
         return file_data
 
-    # def linear_unit_test(self, feature_data: pd.DataFrame, target_vol=1.0) -> Iterator[pd.DataFrame]:
-    #     '''
-    #     generate performance as a weighted mean of feature/windows (like LinearRegression)
-    #     generate sign as an indicator over a weighted mean of feature/windows (like LogisticRegressionCV)
-    #     '''
-    #     nb_feature_per_instrument = int(feature_data.shape[1] / feature_data.columns.levshape[0])
-    #     weights = np.random.normal(loc=0,
-    #                                scale=1,
-    #                                size=nb_feature_per_instrument)
-    #
-    #     result = pd.DataFrame(columns=pd.MultiIndex.from_tuples([], names=['instrument', 'feature', 'window']))
-    #     for instrument, instrument_df in feature_data.groupby(level='instrument', axis=1):
-    #         performance = pd.Series(index=instrument_df.index,
-    #                                 data=StandardScaler().fit_transform(pd.DataFrame((instrument_df * weights).sum(axis=1)))[:, 0])
-    #         performance *= target_vol * np.sqrt(ResearchEngine.data_interval.total_seconds() / timedelta(days=365.25).total_seconds())
-    #
-    #         for label, label_data in self.label_map.items():
-    #             for horizon in label_data['horizons']:
-    #                 temp = performance.rolling(horizon).sum()
-    #                 if label == 'performance':
-    #                     result[(instrument, 'performance', horizon)] = temp
-    #                 elif label == 'sign':
-    #                     result[(instrument, 'sign', horizon)] = temp.apply(np.sign)
-    #                 elif label == 'big':
-    #                     std_dev = performance.rolling(horizon).sum().expanding(horizon + 1).std()
-    #                     result[(instrument, 'big', horizon)] = temp > ResearchEngine.stdev_big * std_dev
-    #
-    #     self.temp_label_data = copy.deepcopy(result)
-    #
-    #     yield result
+    def linear_unit_test(self, feature_data: pd.DataFrame, target_vol=1.0) -> Iterator[pd.DataFrame]:
+        '''
+        generate performance as a weighted mean of feature/windows (like LinearRegression)
+        generate sign as an indicator over a weighted mean of feature/windows (like LogisticRegressionCV)
+        '''
+        nb_feature_per_instrument = int(feature_data.shape[1] / feature_data.columns.levshape[0])
+        weights = np.random.normal(loc=0,
+                                   scale=1,
+                                   size=nb_feature_per_instrument)
+
+        result = pd.DataFrame(columns=pd.MultiIndex.from_tuples([], names=['instrument', 'feature', 'window']))
+        for instrument, instrument_df in feature_data.groupby(level='instrument', axis=1):
+            performance = pd.Series(index=instrument_df.index,
+                                    data=StandardScaler().fit_transform(pd.DataFrame((instrument_df * weights).sum(axis=1)))[:, 0])
+            performance *= target_vol * np.sqrt(ResearchEngine.data_interval.total_seconds() / timedelta(days=365.25).total_seconds())
+
+            for label, label_data in self.label_map.items():
+                for horizon in label_data['horizons']:
+                    temp = performance.rolling(horizon).sum()
+                    if label == 'performance':
+                        result[(instrument, 'performance', horizon)] = temp
+                    elif label == 'sign':
+                        result[(instrument, 'sign', horizon)] = temp.apply(np.sign)
+                    elif label == 'big':
+                        std_dev = performance.rolling(horizon).sum().expanding(horizon + 1).std()
+                        result[(instrument, 'big', horizon)] = temp > ResearchEngine.stdev_big * std_dev
+
+        self.temp_label_data = copy.deepcopy(result)
+
+        yield result
 
     def normalize(self, input: pd.DataFrame) -> pd.DataFrame:
         '''
@@ -221,10 +222,10 @@ class ResearchEngine:
                     # exp because self.feature_map[volume] = log
                     weights = np.exp(data_dict[(instrument, self.feature_map[raw_feature]['add_weight_by'])])
                     result[(instrument, f'vw_{raw_feature}', window)] = \
-                        ((temp_data * weights) \
-                            .ewm(times=temp_data.index, halflife=window*ResearchEngine.data_interval).mean() / \
-                        weights \
-                            .ewm(times=temp_data.index, halflife=window*ResearchEngine.data_interval).mean() \
+                        ((temp_data * weights)
+                            .ewm(times=temp_data.index, halflife=window*ResearchEngine.data_interval).mean() /
+                        weights
+                            .ewm(times=temp_data.index, halflife=window*ResearchEngine.data_interval).mean()
                          ).dropna().rename((instrument, raw_feature, window))
         return result
 
@@ -315,7 +316,7 @@ class ResearchEngine:
 
                         # features -> prediction -> delta
                         features = self.X.xs(instrument, level='instrument', axis=1).loc[times]
-                        delta = self.delta_strategy(features, fitted_model, (instrument, raw_feature, frequency))
+                        delta = self.delta_strategy(features, fitted_model, Feature((instrument, raw_feature, frequency)))
                         # apply log increment to delta
                         cumulative_pnl = (delta * (log_increment.apply(np.exp) - 1)).cumsum().shift(1)
 
@@ -331,18 +332,21 @@ class ResearchEngine:
             print(f'ran {(raw_feature, frequency)}')
 
         backtest.columns = pd.MultiIndex.from_tuples(backtest.columns, names=['model', 'split_index', 'instrument', 'feature', 'frequency', 'datatype'])
-        coefs = pd.DataFrame(index=self.fitted_model.keys(),
-                             columns=[('intercept', None)]+list(X_allinstruments.columns),
-                             data=[np.append(data.intercept_, data.coef_) for data in self.fitted_model.values()])
+        coefs = pd.DataFrame(index=list(self.fitted_model.keys()),
+                             columns=[('intercept', None)]+list(self.X.xs(self.input_data['selected_instruments'][0], level='instrument', axis=1).columns),
+                             data=[np.append(data.intercept_, data.coef_) for data in self.fitted_model.values()
+                                   if hasattr(data, 'intercept_') and hasattr(data, 'coef_')])
 
         return backtest, coefs
 
-def perf_analysis(df: pd.DataFrame()=None, filename=None) -> pd.DataFrame():
+def perf_analysis(df_or_path: Union[pd.DataFrame(),str]) -> pd.DataFrame():
     new_values = []
-    if filename is not None:
-        df = pd.read_csv(filename, header=list(range(6)), index_col=0)
+    if os.path.isfile(df_or_path):
+        df = pd.read_csv(df_or_path, header=list(range(6)), index_col=0)
+    else:
+        df = df_or_path.dropna()
+
     for model, label, frequency in set(zip(*[df.columns.get_level_values(level) for level in ['model', 'feature', 'frequency']])):
-        df = df.dropna()
         cumulative_pnl = df.xs((model, label, frequency, 'cumulative_pnl'), level=['model', 'feature', 'frequency', 'datatype'], axis=1)
 
         # annual_perf
@@ -365,7 +369,7 @@ def perf_analysis(df: pd.DataFrame()=None, filename=None) -> pd.DataFrame():
                                                       'datatype'])
     return result.quantile(q=[.25, .5, .75])
 
-def cta_main(parameters):
+def main(parameters):
     engine = ResearchEngine(**parameters)
     file_data = ResearchEngine.read_history(**parameters['input_data'])
     engine.build_X_Y(file_data, parameters['feature_map'], parameters['label_map'], unit_test=parameters['run_parameters']['unit_test'])
@@ -374,11 +378,13 @@ def cta_main(parameters):
     return result
 
 if __name__ == "__main__":
-    with open('/home/david/config/pfoptimizer/cta_test_params.json', 'r') as fp: # log_incr = 0.1 * (live - ewma2)
+    args, kwargs = extract_args_kwargs(sys.argv)
+
+    with open(args[0], 'r') as fp:
         parameters = json.load(fp)
-    result = cta_main(parameters)
+    result = main(parameters)
     result[0].to_csv('/home/david/Sety-project/pylibs/ux/result.csv')
     result[1].to_csv('/home/david/Sety-project/pylibs/ux/coefs.csv')
-    analysis = perf_analysis(df=None, filename='/home/david/Sety-project/pylibs/ux/result.csv')
+    analysis = perf_analysis('/home/david/Sety-project/pylibs/ux/result.csv')
     analysis.to_csv('/home/david/Sety-project/pylibs/ux/analysis.csv')
     analysis.xs('annual_perf', level='datatype', axis=1).to_csv('/home/david/Sety-project/pylibs/ux/quantile.csv')
