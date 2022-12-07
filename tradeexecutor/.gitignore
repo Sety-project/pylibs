@@ -1,9 +1,0 @@
-__pycache__/
-.pyc
-.pypirc
-setup.py
-*egg*
-dist/
-.py[cod]
-*$py.class
-logs/

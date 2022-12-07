@@ -3,17 +3,17 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 import pandas as pd
-from tradeexecutor.utils import ccxtpro
+from utils import ccxtpro
 
-from tradeexecutor.interface.order_manager import OrderManager
-from tradeexecutor.interface.position_manager import PositionManager
-from tradeexecutor.interface.signal_engine import SignalEngine
-from tradeexecutor.interface.venue_api import VenueAPI
-from tradeexecutor.interface.builders import build_SignalEngine, build_VenueAPI, build_OrderManager, build_PositionManager
-from tradeexecutor.utils.MyLogger import ExecutionLogger
-from tradeexecutor.utils.async_utils import safe_gather_limit, safe_gather
-from tradeexecutor.utils.io_utils import myUtcNow
-from tradeexecutor.utils.api_utils import rename_logfile
+from interface.order_manager import OrderManager
+from interface.position_manager import PositionManager
+from interface.signal_engine import SignalEngine
+from interface.venue_api import VenueAPI
+from interface.builders import build_SignalEngine, build_VenueAPI, build_OrderManager, build_PositionManager
+from utils.MyLogger import ExecutionLogger
+from utils.async_utils import safe_gather_limit, safe_gather
+from utils.io_utils import myUtcNow
+from utils.api_utils import rename_logfile
 
 class Strategy(ABC):
     '''abstract class Strategy leverages StrategyEnabler to implement quoter (ie generate orders from mkt change or order feed, risk, external request..)

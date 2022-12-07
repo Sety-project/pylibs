@@ -4,8 +4,8 @@ from web3 import Web3
 from eth_typing import Address
 from tradeexecutor.utils.async_utils import safe_gather, async_wrap
 from tradeexecutor.utils.io_utils import myUtcNow
-import tradeexecutor.utils.vault
 from tradeexecutor.interface.venue_api import VenueAPI
+from tradeexecutor.utils.venue_api_utilities import VaultEthereumWallet
 
 class GmxAPI(VenueAPI):
     GLPAdd = Address('0x01234181085565ed162a948b6a5e88758CD7c7b8')
@@ -215,7 +215,7 @@ class GmxAPI(VenueAPI):
         self.timestamp = None
         self.state = GmxAPI.State(parameters)
         try:
-            self.stake_vault = tradeexecutor.utils.vault.VaultEthereumWallet(wallet_id='gmx_hedged')
+            self.stake_vault = VaultEthereumWallet(wallet_id='gmx_hedged')
         except Exception as e:
             self.stake_vault = None
 

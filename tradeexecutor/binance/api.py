@@ -11,7 +11,7 @@ import pandas as pd
 from tradeexecutor.utils import ccxtpro
 from tradeexecutor.interface.venue_api import CeFiAPI, PegRule, VenueAPI
 from tradeexecutor.utils.async_utils import safe_gather
-from tradeexecutor.utils.api_utilities import api_params, calc_basis
+from tradeexecutor.utils.venue_api_utilities import api_params, calc_basis
 from tradeexecutor.utils.config_loader import configLoader
 
 class BinanceAPI(CeFiAPI, ccxtpro.binanceusdm):
@@ -701,7 +701,7 @@ class BinanceAPI(CeFiAPI, ccxtpro.binanceusdm):
                                                     'comment': params['comment']})
         try:
             # REST request
-            order = await super().create_order(symbol, type, side, rounded_amount, price, {'clientOrderId':clientOrderId} | params)
+            order = await super().create_order(symbol, type, side, rounded_amount, price, {'clientOrderId': clientOrderId} | params)
         except Exception as e:
             order = {'clientOrderId':clientOrderId,
                      'timestamp':myUtcNow(),

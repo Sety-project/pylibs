@@ -1,6 +1,7 @@
 from tradeexecutor.ftx.api import FtxAPI
-from tradeexecutor.utils.ftx_utils import *
 from tradeexecutor.utils.config_loader import *
+from tradeexecutor.utils.ftx_utils import ftx_collateralWeightInitial
+import numpy as np
 
 class MarginCalculator:
     '''low level class to compute margins

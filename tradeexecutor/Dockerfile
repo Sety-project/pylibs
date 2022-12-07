@@ -14,9 +14,7 @@ ENV HOME=/home/$USER
 ENV PATH=$PATH:$HOME/.local/bin
 
 ENV PYLIBS_PATH=$HOME/pylibs
-# APPS PATHS
-ENV TRADEEXECUTOR_PATH=$PYLIBS_PATH/tradeexecutor
-ENV CCXTPRO_PATH=$TRADEEXECUTOR_PATH/utils/ccxtpro
+ENV CCXTPRO_PATH=$PYLIBS_PATH/utils/ccxtpro
 
 # LOG PATHS
 ENV LOGS_PATH=/tmp/tradeexecutor
@@ -24,29 +22,27 @@ ENV LOGS_PATH=/tmp/tradeexecutor
 ENV PYTHONPATH=$PYLIBS_PATH:$HOME
 
 RUN mkdir -p $PYLIBS_PATH
-RUN mkdir -p $TRADEEXECUTOR_PATH
 RUN mkdir -p $LOGS_PATH
 
 RUN chown -R $USER $PYLIBS_PATH
-RUN chown -R $USER $TRADEEXECUTOR_PATH
 RUN chown -R $USER $LOGS_PATH
 
-WORKDIR $TRADEEXECUTOR_PATH
+WORKDIR $PYLIBS_PATH
 
 # Copy pip requirements before copying full project
 USER $USER
-COPY --chown=$USER:$USER /tradeexecutor/requirements.txt $TRADEEXECUTOR_PATH
+COPY --chown=$USER:$USER /requirements.txt $PYLIBS_PATH
 
 # Install Pip dependencies --> Need to install as root
-RUN pip3 install -Ur $TRADEEXECUTOR_PATH/requirements.txt
+RUN pip3 install -Ur $PYLIBS_PATH/requirements.txt
 
 # Now copy full project
-COPY --chown=$USER:$USER /tradeexecutor $TRADEEXECUTOR_PATH
+COPY --chown=$USER:$USER / $PYLIBS_PATH
 
 # Add ccxtpro for execution
 COPY --chown=$USER:$USER /tradeexecutor/utils/ccxtpro $CCXTPRO_PATH
 
-RUN chmod +x $TRADEEXECUTOR_PATH/run.sh
+RUN chmod +x $PYLIBS_PATH/run.sh
 
 # Run container as root to be able to create and write in folders
 USER root

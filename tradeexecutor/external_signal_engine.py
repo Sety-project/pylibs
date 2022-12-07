@@ -2,9 +2,9 @@ import aiofiles, json
 from datetime import timedelta
 import pandas as pd
 
-from tradeexecutor.utils.async_utils import safe_gather
-from tradeexecutor.utils.io_utils import myUtcNow
-from tradeexecutor.interface.signal_engine import SignalEngine
+from utils.async_utils import safe_gather
+from utils.io_utils import myUtcNow
+from interface.signal_engine import SignalEngine
 
 class ExternalSignal(SignalEngine):
     def __init__(self, parameters):

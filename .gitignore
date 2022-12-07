@@ -1,11 +1,9 @@
 __pycache__/
-*.pyc
-*.pypirc
+.pyc
+.pypirc
 setup.py
+*egg*
 dist/
+.py[cod]
 *$py.class
-tradeexecutor/utils/api_encrypt/
-.idea/
-.venv*/
-.run/
-*.ipynb
+logs/

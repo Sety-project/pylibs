@@ -78,7 +78,7 @@ def api(func):
     def wrapper_api(*args, **kwargs):
 
         # build logger for current module
-        module = MyModules.current_module_list[func.__module__.split('.')[0]]
+        module = MyModules.current_module_list[func.__code__.co_filename.split(os.sep)[-2]]
         module_name = module.get_short_name()
         logger = build_logging(module_name, log_mapping={logging.INFO: 'info.log'})
 
@@ -160,45 +160,6 @@ class MyModules:
                    for test in self.testbed}
         return results
 
-MyModules.register(name='histfeed',
-                   testbed=["build binance wide 1"],
-                   args_validation=[['run_type',lambda x: x in ["build", "correct", "get"],'not in {}'.format(["build", "correct", "get"])],
-                                    ['exchange',lambda x: x in ['ftx', 'binanceusdm'],'not in {}'.format(["ftx, binance"])],
-                                    ['universe',lambda x: x in configLoader.get_universe_pool(),'not in {}'.format(configLoader.get_universe_pool())]],
-                   kwargs_validation={'nb_days': [lambda x: isinstance(int(x), int), 'not an int'],
-                                      'frequency': [lambda x: True, '']})
-MyModules.register(name='pfoptimizer',
-                   testbed=["sysperp ftx subaccount=debug",
-                            "basis ftx instrument_type=perpetual depth=100000",
-                            "unwind ftx subaccount=debug",
-                            "flatten ftx subaccount=debug",
-                            "spread ftx subaccount=debug coin=ETH cash_size=10"],
-                   args_validation=[
-                       ['run_type', lambda x: x in ["sysperp", "backtest", "depth", "basis", "unwind","flatten","spread"],'not in {}'.format(["sysperp", "backtest", "depth", "basis", "unwind","flatten","spread"])],
-                       ['exchange',lambda x: x in ['ftx', 'binanceusdm'],'not in {}'.format(["ftx, binance"])]],
-                   kwargs_validation={'instrument_type':[lambda x: ["perpetual", "future", "all"],'not in {}'.format(["perpetual", "future", "all"])],
-                                      'subaccount':[lambda x: True,'not found'],
-                                      'depth':[lambda x: isinstance(float(x),float),'need a float'],
-                                      'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(config_name=x))),'not found'],
-                                      'coin':[lambda x: isinstance(str(x),str),'need a str'],
-                                      'cash_size':[lambda x: isinstance(float(x),float),'need a float']})
-MyModules.register(name='riskpnl',
-                   testbed=["risk ftx debug nb_runs=1",
-                             "plex ftx debug period=2d"],
-                   args_validation=[
-                       ['run_type', lambda x: x in ["risk", "plex", "batch_summarize_exec_logs", "fromoptimal"],'not in {}'.format(["risk", "plex", "batch_summarize_exec_logs", "fromoptimal"])],
-                       ['exchange',lambda x: x in ['ftx', 'binanceusdm'],'not in {}'.format(["ftx, binance"])],
-                       ['subaccount', lambda x: True, 'not in {}'.format([""])]],
-                   kwargs_validation={'nb_runs':[lambda x: isinstance(int(x),int),'integer needed'],
-                                      'period':[lambda x: isinstance(parse_time_param(x),datetime.timedelta),'time period needed'],
-                                      'dirname':[lambda x: os.path.isdir(x),'not found'],
-                                      'filename':[lambda x: True,'not found'],# skew it....
-                                      'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(config_name=x))),'not found']})
-MyModules.register(name='ux',
-                   testbed=[""],
-                   args_validation=[],
-                   kwargs_validation={})
-
 MyModules.register(name='tradeexecutor',
                    testbed=["weights_ftx_debug_ETH.json","glp.json exchange=ftx subaccount=glp config=prod"], # ,"unwind exchange=ftx subaccount=debug config=prod"
                    args_validation=[
@@ -206,11 +167,3 @@ MyModules.register(name='tradeexecutor',
                    kwargs_validation={'exchange':[lambda x: x in ['ftx', 'binanceusdm'],'not in {}'.format(["ftx, binanceusdm"])],
                                       'subaccount':[lambda x: True,'not found'],
                                       'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(config_name=x))),'not found']})
-
-# MyModules.register(name='glp',
-#                    testbed=["glp.json exchange=ftx subaccount=glp config=prod"],
-#                    args_validation=[['order', lambda x: isinstance(x,str),'not a str']],
-#                    kwargs_validation={'exchange': [lambda x: x in ['ftx'], 'not in {}'.format(['ftx'])],
-#                                       'subaccount': [lambda x: True, 'not found'],
-#                                       'config': [lambda x: os.path.isdir(os.path.join(os.sep, configLoader.get_config_folder_path(config_name=x))),'not found'],
-#                                       'frequency': [lambda x: isinstance(x,int), 'not a int']})

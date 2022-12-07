@@ -6,7 +6,7 @@ import pandas as pd
 
 from tradeexecutor.utils import ccxtpro
 from tradeexecutor.utils.async_utils import safe_gather, safe_gather_limit
-from tradeexecutor.utils.api_utilities import api_params, calc_basis
+from tradeexecutor.utils.venue_api_utilities import api_params, calc_basis
 from tradeexecutor.utils.config_loader import configLoader
 from tradeexecutor.utils.io_utils import myUtcNow
 from tradeexecutor.interface.venue_api import CeFiAPI, PegRule, Chase, VenueAPI, loop, intercept_message_during_reconciliation

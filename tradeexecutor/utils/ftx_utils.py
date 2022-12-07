@@ -1,7 +1,7 @@
-from tradeexecutor.utils.api_utilities import *
+from tradeexecutor.utils.venue_api_utilities import *
 import pandas as pd
 from datetime import datetime, timezone, timedelta
-
+import dateutil
 
 def find_spot_ticker(markets,future,query):
     try:

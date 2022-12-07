@@ -57,7 +57,7 @@ class configLoader():
             configLoader._static_params_used = pd.read_excel(os.path.join(configLoader._config_folder_path, configLoader._static_params_filename), sheet_name='used').set_index('coin')
             configLoader._static_params_saved = pd.read_excel(os.path.join(configLoader._config_folder_path, configLoader._static_params_filename), sheet_name='saved').set_index('coin')
         except FileNotFoundError:
-            raise FileNotFoundError(f"File {os.path.join(os.sep, configLoader._config_folder_path, configLoader._static_params_filename)} not found")
+            pass # FileNotFoundError(f"File {os.path.join(os.sep, configLoader._config_folder_path, configLoader._static_params_filename)} not found")
 
     @staticmethod
     def set_universe_params():
