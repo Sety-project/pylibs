@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from datetime import datetime, timedelta
-from typing import NewType, Union, Iterator
+from typing import NewType, Union, Iterator, Callable
 
 import dateutil.parser
 import numpy as np
@@ -114,36 +114,36 @@ class ResearchEngine:
 
         return file_data
 
-    def linear_unit_test(self, feature_data: pd.DataFrame, target_vol=1.0) -> Iterator[pd.DataFrame]:
-        '''
-        generate performance as a weighted mean of feature/windows (like LinearRegression)
-        generate sign as an indicator over a weighted mean of feature/windows (like LogisticRegressionCV)
-        '''
-        nb_feature_per_instrument = int(feature_data.shape[1] / feature_data.columns.levshape[0])
-        weights = np.random.normal(loc=0,
-                                   scale=1,
-                                   size=nb_feature_per_instrument)
-
-        result = pd.DataFrame(columns=pd.MultiIndex.from_tuples([], names=['instrument', 'feature', 'window']))
-        for instrument, instrument_df in feature_data.groupby(level='instrument', axis=1):
-            performance = pd.Series(index=instrument_df.index,
-                                    data=StandardScaler().fit_transform(pd.DataFrame((instrument_df * weights).sum(axis=1)))[:, 0])
-            performance *= target_vol * np.sqrt(ResearchEngine.data_interval.total_seconds() / timedelta(days=365.25).total_seconds())
-
-            for label, label_data in self.label_map.items():
-                for horizon in label_data['horizons']:
-                    temp = performance.rolling(horizon).sum()
-                    if label == 'performance':
-                        result[(instrument, 'performance', horizon)] = temp
-                    elif label == 'sign':
-                        result[(instrument, 'sign', horizon)] = temp.apply(np.sign)
-                    elif label == 'big':
-                        std_dev = performance.rolling(horizon).sum().expanding(horizon + 1).std()
-                        result[(instrument, 'big', horizon)] = temp > ResearchEngine.stdev_big * std_dev
-
-        self.temp_label_data = copy.deepcopy(result)
-
-        yield result
+    # def linear_unit_test(self, feature_data: pd.DataFrame, target_vol=1.0) -> Iterator[pd.DataFrame]:
+    #     '''
+    #     generate performance as a weighted mean of feature/windows (like LinearRegression)
+    #     generate sign as an indicator over a weighted mean of feature/windows (like LogisticRegressionCV)
+    #     '''
+    #     nb_feature_per_instrument = int(feature_data.shape[1] / feature_data.columns.levshape[0])
+    #     weights = np.random.normal(loc=0,
+    #                                scale=1,
+    #                                size=nb_feature_per_instrument)
+    #
+    #     result = pd.DataFrame(columns=pd.MultiIndex.from_tuples([], names=['instrument', 'feature', 'window']))
+    #     for instrument, instrument_df in feature_data.groupby(level='instrument', axis=1):
+    #         performance = pd.Series(index=instrument_df.index,
+    #                                 data=StandardScaler().fit_transform(pd.DataFrame((instrument_df * weights).sum(axis=1)))[:, 0])
+    #         performance *= target_vol * np.sqrt(ResearchEngine.data_interval.total_seconds() / timedelta(days=365.25).total_seconds())
+    #
+    #         for label, label_data in self.label_map.items():
+    #             for horizon in label_data['horizons']:
+    #                 temp = performance.rolling(horizon).sum()
+    #                 if label == 'performance':
+    #                     result[(instrument, 'performance', horizon)] = temp
+    #                 elif label == 'sign':
+    #                     result[(instrument, 'sign', horizon)] = temp.apply(np.sign)
+    #                 elif label == 'big':
+    #                     std_dev = performance.rolling(horizon).sum().expanding(horizon + 1).std()
+    #                     result[(instrument, 'big', horizon)] = temp > ResearchEngine.stdev_big * std_dev
+    #
+    #     self.temp_label_data = copy.deepcopy(result)
+    #
+    #     yield result
 
     def normalize(self, input: pd.DataFrame) -> pd.DataFrame:
         '''
@@ -232,14 +232,14 @@ class ResearchEngine:
         result: Data = Data(dict())
         for instrument, raw_feature in itertools.product(file_data.keys(), label_map.keys()):
             for horizon in label_map[raw_feature]['horizons']:
-                future_perf = - file_data[instrument]['close'].diff(-horizon)
+                future_perf = (file_data[instrument]['close'].shift(-horizon)/file_data[instrument]['close']).apply(np.log)
                 if raw_feature == 'performance':
-                    temp = np.log(1 + future_perf / file_data[instrument]['close'])
+                    temp = future_perf
                 elif raw_feature == 'sign':
                     temp = future_perf.apply(lambda x: 1 if x >= 0 else -1)
                 elif raw_feature == 'big':
                     stdev = future_perf.expanding(horizon + 1).std()
-                    temp = (future_perf - ResearchEngine.stdev_big * stdev).apply(lambda x: 1 if x >= 0 else 0)
+                    temp = 0.5*(1+(future_perf - ResearchEngine.stdev_big *stdev).apply(np.sign))
                 elif raw_feature == 'stop_limit':
                     temp = winning_trade(file_data[instrument]['close'])
                 else:
@@ -270,6 +270,16 @@ class ResearchEngine:
             self.X = self.X_Y[self.temp_feature_data.keys()]
             self.Y = self.X_Y[self.temp_label_data.keys()]
 
+    def delta_strategy(self, features: pd.DataFrame, fitted_model: sklearn.base.BaseEstimator, feature: Feature) -> pd.Series:
+        if hasattr(fitted_model, 'predict_proba'):
+            probas = getattr(fitted_model, 'predict_proba')(features)
+            predicted = 2 * probas.transpose()[1] - 1
+        else:
+            predicted = getattr(fitted_model, 'predict')(features)
+
+        result = pd.DataFrame(index=features.index, columns=[feature], data=predicted)
+        return self.inverse_normalize(result)[feature]
+
     def run(self) -> pd.DataFrame():
         holding_windows = [window for windows in self.label_map.values() for window in windows['horizons']]
         backtest = pd.DataFrame()
@@ -282,45 +292,47 @@ class ResearchEngine:
                 tscv = TimeSeriesSplit(n_splits=max(2, int(n_splits)), gap=max(holding_windows)).split(self.X_Y)
                 # cross validation
                 for split_index, (train_index, test_index) in enumerate(tscv):
-                    # fit 1 model on all instruments
+                    # fit 1 model on all instruments,on train_set index.
+                    # cannot use stack as it reshuffles columns !!
                     model_obj = globals()[model_name](**model_params)
-                    X_allinstruments = self.X.iloc[train_index].stack(level='instrument')
-                    Y_allinstruments = label_df.iloc[train_index].stack(level='instrument')
+                    X_allinstruments = pd.concat([self.X.xs(instrument, level='instrument', axis=1).iloc[train_index]
+                                                  for instrument in self.input_data['selected_instruments']],
+                                                 axis=0)
+                    Y_allinstruments = pd.concat([label_df.xs(instrument, level='instrument', axis=1).iloc[train_index]
+                                                  for instrument in self.input_data['selected_instruments']],
+                                                 axis=0)
                     fitted_model = model_obj.fit(X_allinstruments, Y_allinstruments.squeeze())
-                    if hasattr(fitted_model, 'predict_proba'):
-                        delta_strategy = lambda x: 2*getattr(fitted_model, 'predict_proba')(features).transpose()[1]-1
-                    else:
-                        delta_strategy = getattr(fitted_model, 'predict')
                     self.fitted_model[(raw_feature, frequency, split_index)] = fitted_model
+                    if raw_feature == 'performance':
+                        print(f'      r2 = {fitted_model.score(X_allinstruments, Y_allinstruments)} for split {split_index} / model {model_name} / label {(raw_feature, frequency)}')
 
-                    # backtest each instrument
+                    # backtest each instrument, on test_set
                     times = self.X.iloc[test_index].index[::frequency]
-                    for instrument in Y_allinstruments.index.levels[1]:
-                        # read on test set, resample to frequency
+                    for instrument in self.input_data['selected_instruments']:
+                        # read log_increment at horizon = frequency, on test set. cumulative_perf is for display.
                         log_increment = self.temp_label_data[(instrument, 'performance', frequency)][times]
-                        # set delta from prediction
+                        cumulative_performance = log_increment.cumsum().apply(np.exp)-1
+
+                        # features -> prediction -> delta
                         features = self.X.xs(instrument, level='instrument', axis=1).loc[times]
-                        delta = pd.Series(index=times,
-                                          data=delta_strategy(features))
-                        # apply log increment
+                        delta = self.delta_strategy(features, fitted_model, (instrument, raw_feature, frequency))
+                        # apply log increment to delta
                         cumulative_pnl = (delta * (log_increment.apply(np.exp) - 1)).cumsum().shift(1)
 
-                        cumulative_performance = log_increment.cumsum().apply(np.exp)-1
-                        backtest = pd.concat([backtest,
-                                            pd.DataFrame(index=range(len(delta.index)),
-                                                         columns=[(model_name, split_index, instrument, raw_feature, frequency, datatype)
-                                                                  for datatype in ['cumulative_performance', 'delta', 'cumulative_pnl']],
-                                                         data=np.array([np.array(cumulative_performance),
-                                                                        np.array(delta.values),
-                                                                        np.array(cumulative_pnl.values)]).transpose())],
-                                           axis=1, join='outer')
-                    print(f'ran split {split_index} for {model_name} for {(raw_feature, frequency)}')
-                print(f'ran {model_name} for {(raw_feature, frequency)}')
+                        # add to backtest, putting all folds on a relative time axis
+                        new_backtest = pd.DataFrame(dict(zip([(model_name, split_index, instrument, raw_feature, frequency, datatype)
+                                                                     for datatype in ['cumulative_performance', 'delta', 'cumulative_pnl']],
+                                                                    [cumulative_performance, delta, cumulative_pnl])))
+
+                        new_backtest.index = new_backtest.index - new_backtest.index[0]
+                        backtest = pd.concat([backtest, new_backtest], axis=1, join='outer')
+                    print(f'    ran split {split_index} for {model_name} for {(raw_feature, frequency)}')
+                print(f'  ran {model_name} for {(raw_feature, frequency)}')
             print(f'ran {(raw_feature, frequency)}')
 
         backtest.columns = pd.MultiIndex.from_tuples(backtest.columns, names=['model', 'split_index', 'instrument', 'feature', 'frequency', 'datatype'])
         coefs = pd.DataFrame(index=self.fitted_model.keys(),
-                             columns=[('intercept',None)]+list(self.X.xs(self.input_data['selected_instruments'][0], level='instrument', axis=1).columns),
+                             columns=[('intercept', None)]+list(X_allinstruments.columns),
                              data=[np.append(data.intercept_, data.coef_) for data in self.fitted_model.values()])
 
         return backtest, coefs
@@ -328,16 +340,24 @@ class ResearchEngine:
 def perf_analysis(df: pd.DataFrame()=None, filename=None) -> pd.DataFrame():
     new_values = []
     if filename is not None:
-        df = pd.read_csv(filename, header=list(range(6)), index_col=0, dtype=float)
+        df = pd.read_csv(filename, header=list(range(6)), index_col=0)
     for model, label, frequency in set(zip(*[df.columns.get_level_values(level) for level in ['model', 'feature', 'frequency']])):
-        pnl = df.xs((model, label, frequency, 'cumulative_pnl'), level=['model', 'feature', 'frequency', 'datatype'], axis=1).dropna()
+        df = df.dropna()
+        cumulative_pnl = df.xs((model, label, frequency, 'cumulative_pnl'), level=['model', 'feature', 'frequency', 'datatype'], axis=1)
 
-        annual_perf = pd.Series(pnl.iloc[-1]/len(pnl.index)/float(frequency) * timedelta(days=365.25).total_seconds() / ResearchEngine.data_interval.total_seconds(),
+        # annual_perf
+        annual_perf = pd.Series(cumulative_pnl.iloc[-1]/len(cumulative_pnl.index)/float(frequency) * timedelta(days=365.25).total_seconds() / ResearchEngine.data_interval.total_seconds(),
                                 name=(model, label, frequency, 'annual_perf')).T
-        sharpe = pd.Series(pnl.mean() / pnl.std(), name=(model, label, frequency, 'sharpe')).T
-        drawdown = pd.Series((pnl-pnl.cummax()).cummin().iloc[-1], name=(model, label, frequency, 'drawdown')).T
 
-        new_values.append(pd.concat([annual_perf, sharpe, drawdown], axis=1))
+        # sortino
+        pnl = cumulative_pnl.diff() / cumulative_pnl
+        downside_dev = pnl.applymap(lambda x: min(0, x)**2).mean().apply(np.sqrt)
+        sortino = pd.Series(pnl.mean() / downside_dev, name=(model, label, frequency, 'sortino')).T
+
+        # drawdown
+        drawdown = pd.Series((1 - cumulative_pnl/cumulative_pnl.cummax()).cummin().iloc[-1], name=(model, label, frequency, 'drawdown')).T
+
+        new_values.append(pd.concat([annual_perf, sortino, drawdown], axis=1))
 
     result = pd.concat(new_values, axis=1)
     result.columns = pd.MultiIndex.from_tuples(result.columns,
@@ -354,10 +374,11 @@ def cta_main(parameters):
     return result
 
 if __name__ == "__main__":
-    with open('/home/david/config/pfoptimizer/cta_short_params.json', 'r') as fp: # log_incr = 0.1 * (live - ewma2)
+    with open('/home/david/config/pfoptimizer/cta_test_params.json', 'r') as fp: # log_incr = 0.1 * (live - ewma2)
         parameters = json.load(fp)
     result = cta_main(parameters)
-    result.to_csv('/home/david/Sety-project/pylibs/ux/result.csv')
+    result[0].to_csv('/home/david/Sety-project/pylibs/ux/result.csv')
+    result[1].to_csv('/home/david/Sety-project/pylibs/ux/coefs.csv')
     analysis = perf_analysis(df=None, filename='/home/david/Sety-project/pylibs/ux/result.csv')
     analysis.to_csv('/home/david/Sety-project/pylibs/ux/analysis.csv')
     analysis.xs('annual_perf', level='datatype', axis=1).to_csv('/home/david/Sety-project/pylibs/ux/quantile.csv')
