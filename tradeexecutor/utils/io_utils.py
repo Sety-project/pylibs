@@ -184,7 +184,3 @@ def nested_dict_to_tuple(nested: dict) -> dict[tuple,Any]:
         else:
             result |= {(key,): data}
     return result
-#
-# d={'a':0,'b': {'c':5,'d':4}}
-# res = nested_dict_to_dataframe(d)
-# print(res)

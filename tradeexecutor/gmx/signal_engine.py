@@ -37,9 +37,9 @@ class GLPSignal(ExternalSignal):
             self.data = weights
             self.timestamp = copy.deepcopy(lp_strategy.venue_api.timestamp)
 
-            self.history += [{'symbol': symbol,'timestamp':self.timestamp} | data
-                for symbol,data in self.data.items()]
-            print({key:value['target'] for key,value in weights.items()})
+            self.history += [{'symbol': symbol, 'timestamp': self.timestamp} | data
+                             for symbol, data in self.data.items()]
+            print({key: value['target'] for key, value in weights.items()})
 
     def serialize(self) -> list[dict]:
         return list(self.history)
