@@ -3,11 +3,8 @@ name: Deploy tradeexecutor to ECR
 on:
 
   push:
-    branches: [ master ]
+    branches: [ stake ]
     paths:
-      - 'utils/**'
-      - 'histfeed/**'
-      - 'riskpnl/**'
       - 'tradeexecutor/**'
 
 jobs:
