@@ -61,7 +61,7 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
                            if (('status' in f['info'] and f['info']['status'] == 'TRADING')) # only for linear perps it seems
                            and (f['info']['underlyingType'] == 'COIN' or includeIndex)]
 
-            otc_file = configLoader.get_static_params_used()
+            # otc_file = configLoader.get_static_params_used()
 
             perp_list = [f['id'] for f in future_list if f['expiry'] == None]
             funding_rates = await safe_gather([self.fetch_funding_rate(symbol=f) for f in perp_list])
