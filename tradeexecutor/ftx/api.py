@@ -4,7 +4,7 @@ import dateutil
 import numpy as np
 import pandas as pd
 
-import ccxtpro
+import ccxt.pro
 from utils.async_utils import safe_gather, safe_gather_limit
 from utils.ccxt_utilities import api_params, calc_basis
 from utils.config_loader import configLoader
@@ -12,7 +12,7 @@ from utils.ftx_utils import getUnderlyingType
 from utils.io_utils import myUtcNow
 from tradeexecutor.interface.venue_api import CeFiAPI, PegRule, VenueAPI, loop, intercept_message_during_reconciliation
 
-class FtxAPI(CeFiAPI, ccxtpro.Exchange):
+class FtxAPI(CeFiAPI, ccxt.pro.Exchange):
     '''VenueAPI implements rest calls and websocket loops to observe raw market data / order events and place orders
     send events for Strategy to action
     send events to SignalEngine for further processing'''
@@ -36,116 +36,6 @@ class FtxAPI(CeFiAPI, ccxtpro.Exchange):
                         'maker_fee': trading_fees[symbol]['maker'],
                         'takerVsMakerFee': trading_fees[symbol]['taker'] - trading_fees[symbol]['maker']
                     }
-            return result
-
-       ### get all static fields TODO: could just append coindetails if it wasn't for index,imf factor,positionLimitWeight
-        @staticmethod
-        async def fetch_futures(exchange):
-            if 'fetch_futures' in FtxAPI.Static._cache:
-                return FtxAPI.Static._cache['fetch_futures']
-
-            includeExpired = True
-            includeIndex = False
-
-            response = await exchange.publicGetFutures()
-            expired = await exchange.publicGetExpiredFutures() if includeExpired == True else []
-            coin_details = await FtxAPI.Static.fetch_coin_details(exchange)
-
-            otc_file = configLoader.get_static_params_used()
-
-            #### for IM calc
-            account_leverage = (await exchange.privateGetAccount())['result']
-            if float(account_leverage['leverage']) >= 50: print("margin rules not implemented for leverage >=50")
-
-            markets = exchange.safe_value(response, 'result', []) + exchange.safe_value(expired, 'result', [])
-
-            perp_list = [f['name'] for f in markets if f['type'] == 'perpetual' and f['enabled']]
-            funding_rates = await safe_gather([exchange.publicGetFuturesFutureNameStats({'future_name': f})
-                                               for f in perp_list])
-            funding_rates = {name: float(rate['result']['nextFundingRate']) * 24 * 365.325 for name, rate in
-                             zip(perp_list, funding_rates)}
-
-            result = []
-            for i in range(0, len(markets)):
-                market = markets[i]
-                underlying = exchange.safe_string(market, 'underlying')
-                ## eg ADA has no coin details
-                if (underlying in ['ROSE', 'SCRT', 'AMC']) \
-                        or (exchange.safe_string(market, 'tokenizedEquity') == True) \
-                        or (exchange.safe_string(market, 'type') in ['move', 'prediction']) \
-                        or (exchange.safe_string(market, 'enabled') == False):
-                    continue
-                if not underlying in coin_details.index:
-                    if not includeIndex: continue
-                try:  ## eg DMG-PERP doesn't exist (IncludeIndex = True)
-                    symbol = exchange.market(exchange.safe_string(market, 'name'))['symbol']
-                except Exception as e:
-                    continue
-
-                mark = exchange.safe_number(market, 'mark')
-                imfFactor = exchange.safe_number(market, 'imfFactor')
-                expiryTime = dateutil.parser.isoparse(exchange.safe_string(market, 'expiry')).replace(
-                    tzinfo=timezone.utc) if exchange.safe_string(market, 'type') == 'future' else np.NaN
-                if exchange.safe_string(market, 'type') == 'future':
-                    future_carry = calc_basis(mark, market['index'], expiryTime,
-                                              datetime.utcnow().replace(tzinfo=timezone.utc))
-                elif market['name'] in perp_list:
-                    future_carry = funding_rates[exchange.safe_string(market, 'name')]
-                else:
-                    future_carry = 0
-
-                result.append({
-                    'ask': exchange.safe_number(market, 'ask'),
-                    'bid': exchange.safe_number(market, 'bid'),
-                    'change1h': exchange.safe_number(market, 'change1h'),
-                    'change24h': exchange.safe_number(market, 'change24h'),
-                    'changeBod': exchange.safe_number(market, 'changeBod'),
-                    'volumeUsd24h': exchange.safe_number(market, 'volumeUsd24h'),
-                    'volume': exchange.safe_number(market, 'volume'),
-                    'symbol': exchange.safe_string(market, 'name'),
-                    "enabled": exchange.safe_value(market, 'enabled'),
-                    "expired": exchange.safe_value(market, 'expired'),
-                    "expiry": exchange.safe_string(market, 'expiry') if exchange.safe_string(market,
-                                                                                             'expiry') else 'None',
-                    'index': exchange.safe_number(market, 'index'),
-                    'imfFactor': exchange.safe_number(market, 'imfFactor'),
-                    'last': exchange.safe_number(market, 'last'),
-                    'lowerBound': exchange.safe_number(market, 'lowerBound'),
-                    'mark': exchange.safe_number(market, 'mark'),
-                    'name': exchange.safe_string(market, 'name'),
-                    "perpetual": exchange.safe_value(market, 'perpetual'),
-                    # 'positionLimitWeight': exchange.safe_value(market, 'positionLimitWeight'),
-                    # "postOnly": exchange.safe_value(market, 'postOnly'),
-                    'priceIncrement': exchange.safe_value(market, 'priceIncrement'),
-                    'sizeIncrement': exchange.safe_value(market, 'sizeIncrement'),
-                    'underlying': exchange.safe_string(market, 'underlying'),
-                    'upperBound': exchange.safe_value(market, 'upperBound'),
-                    'type': exchange.safe_string(market, 'type'),
-                    ### additionnals
-                    'new_symbol': exchange.market(exchange.safe_string(market, 'name'))['symbol'],
-                    'openInterestUsd': exchange.safe_number(market, 'openInterestUsd'),
-                    'account_leverage': float(account_leverage['leverage']),
-                    'collateralWeight': coin_details.loc[
-                        underlying, 'collateralWeight'] if underlying in coin_details.index else 'coin_details not found',
-                    'underlyingType': getUnderlyingType(
-                        coin_details.loc[underlying]) if underlying in coin_details.index else 'index',
-                    'spot_ticker': exchange.safe_string(market, 'underlying') + '/USD',
-                    'cash_borrow': coin_details.loc[underlying, 'borrow'] if underlying in coin_details.index and
-                                                                             coin_details.loc[
-                                                                                 underlying, 'spotMargin'] else None,
-                    'future_carry': future_carry,
-                    'spotMargin': 'OTC' if underlying in otc_file.index else (coin_details.loc[
-                                                                                  underlying, 'spotMargin'] if underlying in coin_details.index else 'coin_details not found'),
-                    'tokenizedEquity': coin_details.loc[
-                        underlying, 'tokenizedEquity'] if underlying in coin_details.index else 'coin_details not found',
-                    'usdFungible': coin_details.loc[
-                        underlying, 'usdFungible'] if underlying in coin_details.index else 'coin_details not found',
-                    'fiat': coin_details.loc[
-                        underlying, 'fiat'] if underlying in coin_details.index else 'coin_details not found',
-                    'expiryTime': expiryTime
-                })
-
-            FtxAPI.Static._cache['fetch_futures'] = result
             return result
 
         @staticmethod
@@ -184,6 +74,115 @@ class FtxAPI(CeFiAPI, ccxtpro.Exchange):
             self.balances: dict[str, float] = dict()
             self.positions: dict[str, float] = dict()
 
+   ### get all static fields TODO: could just append coindetails if it wasn't for index,imf factor,positionLimitWeight
+    async def fetch_futures(exchange):
+        if 'fetch_futures' in FtxAPI.Static._cache:
+            return FtxAPI.Static._cache['fetch_futures']
+
+        includeExpired = True
+        includeIndex = False
+
+        response = await exchange.publicGetFutures()
+        expired = await exchange.publicGetExpiredFutures() if includeExpired == True else []
+        coin_details = await FtxAPI.Static.fetch_coin_details(exchange)
+
+        otc_file = configLoader.get_static_params_used()
+
+        #### for IM calc
+        account_leverage = (await exchange.privateGetAccount())['result']
+        if float(account_leverage['leverage']) >= 50: print("margin rules not implemented for leverage >=50")
+
+        markets = exchange.safe_value(response, 'result', []) + exchange.safe_value(expired, 'result', [])
+
+        perp_list = [f['name'] for f in markets if f['type'] == 'perpetual' and f['enabled']]
+        funding_rates = await safe_gather([exchange.publicGetFuturesFutureNameStats({'future_name': f})
+                                           for f in perp_list])
+        funding_rates = {name: float(rate['result']['nextFundingRate']) * 24 * 365.325 for name, rate in
+                         zip(perp_list, funding_rates)}
+
+        result = []
+        for i in range(0, len(markets)):
+            market = markets[i]
+            underlying = exchange.safe_string(market, 'underlying')
+            ## eg ADA has no coin details
+            if (underlying in ['ROSE', 'SCRT', 'AMC']) \
+                    or (exchange.safe_string(market, 'tokenizedEquity') == True) \
+                    or (exchange.safe_string(market, 'type') in ['move', 'prediction']) \
+                    or (exchange.safe_string(market, 'enabled') == False):
+                continue
+            if not underlying in coin_details.index:
+                if not includeIndex: continue
+            try:  ## eg DMG-PERP doesn't exist (IncludeIndex = True)
+                symbol = exchange.market(exchange.safe_string(market, 'name'))['symbol']
+            except Exception as e:
+                continue
+
+            mark = exchange.safe_number(market, 'mark')
+            imfFactor = exchange.safe_number(market, 'imfFactor')
+            expiryTime = dateutil.parser.isoparse(exchange.safe_string(market, 'expiry')).replace(
+                tzinfo=timezone.utc) if exchange.safe_string(market, 'type') == 'future' else np.NaN
+            if exchange.safe_string(market, 'type') == 'future':
+                future_carry = calc_basis(mark, market['index'], expiryTime,
+                                          datetime.utcnow().replace(tzinfo=timezone.utc))
+            elif market['name'] in perp_list:
+                future_carry = funding_rates[exchange.safe_string(market, 'name')]
+            else:
+                future_carry = 0
+
+            result.append({
+                'ask': exchange.safe_number(market, 'ask'),
+                'bid': exchange.safe_number(market, 'bid'),
+                'change1h': exchange.safe_number(market, 'change1h'),
+                'change24h': exchange.safe_number(market, 'change24h'),
+                'changeBod': exchange.safe_number(market, 'changeBod'),
+                'volumeUsd24h': exchange.safe_number(market, 'volumeUsd24h'),
+                'volume': exchange.safe_number(market, 'volume'),
+                'symbol': exchange.safe_string(market, 'name'),
+                "enabled": exchange.safe_value(market, 'enabled'),
+                "expired": exchange.safe_value(market, 'expired'),
+                "expiry": exchange.safe_string(market, 'expiry') if exchange.safe_string(market,
+                                                                                         'expiry') else 'None',
+                'index': exchange.safe_number(market, 'index'),
+                'imfFactor': exchange.safe_number(market, 'imfFactor'),
+                'last': exchange.safe_number(market, 'last'),
+                'lowerBound': exchange.safe_number(market, 'lowerBound'),
+                'mark': exchange.safe_number(market, 'mark'),
+                'name': exchange.safe_string(market, 'name'),
+                "perpetual": exchange.safe_value(market, 'perpetual'),
+                # 'positionLimitWeight': exchange.safe_value(market, 'positionLimitWeight'),
+                # "postOnly": exchange.safe_value(market, 'postOnly'),
+                'priceIncrement': exchange.safe_value(market, 'priceIncrement'),
+                'sizeIncrement': exchange.safe_value(market, 'sizeIncrement'),
+                'underlying': exchange.safe_string(market, 'underlying'),
+                'upperBound': exchange.safe_value(market, 'upperBound'),
+                'type': exchange.safe_string(market, 'type'),
+                ### additionnals
+                'new_symbol': exchange.market(exchange.safe_string(market, 'name'))['symbol'],
+                'openInterestUsd': exchange.safe_number(market, 'openInterestUsd'),
+                'account_leverage': float(account_leverage['leverage']),
+                'collateralWeight': coin_details.loc[
+                    underlying, 'collateralWeight'] if underlying in coin_details.index else 'coin_details not found',
+                'underlyingType': getUnderlyingType(
+                    coin_details.loc[underlying]) if underlying in coin_details.index else 'index',
+                'spot_ticker': exchange.safe_string(market, 'underlying') + '/USD',
+                'cash_borrow': coin_details.loc[underlying, 'borrow'] if underlying in coin_details.index and
+                                                                         coin_details.loc[
+                                                                             underlying, 'spotMargin'] else None,
+                'future_carry': future_carry,
+                'spotMargin': 'OTC' if underlying in otc_file.index else (coin_details.loc[
+                                                                              underlying, 'spotMargin'] if underlying in coin_details.index else 'coin_details not found'),
+                'tokenizedEquity': coin_details.loc[
+                    underlying, 'tokenizedEquity'] if underlying in coin_details.index else 'coin_details not found',
+                'usdFungible': coin_details.loc[
+                    underlying, 'usdFungible'] if underlying in coin_details.index else 'coin_details not found',
+                'fiat': coin_details.loc[
+                    underlying, 'fiat'] if underlying in coin_details.index else 'coin_details not found',
+                'expiryTime': expiryTime
+            })
+
+        FtxAPI.Static._cache['fetch_futures'] = result
+        return result
+
     def __init__(self, parameters, private_endpoints=True):
         config = {
             'enableRateLimit': True,
@@ -192,7 +191,7 @@ class FtxAPI(CeFiAPI, ccxtpro.Exchange):
             config |= {'apiKey': 'ZUWyqADqpXYFBjzzCQeUTSsxBZaMHeufPFgWYgQU',
             'secret': api_params['ftx']['key']}
         super().__init__(parameters)
-        super(ccxtpro.ftx,self).__init__(config=config)
+        super(ccxt.pro.ftx,self).__init__(config=config)
         self.state = FtxAPI.State()
 
         self.options['tradesLimit'] = VenueAPI.cache_size # TODO: shoud be in signalengine with a different name. inherited from ccxt....
@@ -536,9 +535,9 @@ class FtxAPI(CeFiAPI, ccxtpro.Exchange):
                      'state':'rejected',
                      'comment':'create/'+str(e)}
             self.strategy.order_manager.cancel_or_reject(order)
-            if isinstance(e,ccxtpro.InsufficientFunds):
+            if isinstance(e,ccxt.pro.InsufficientFunds):
                 self.strategy.logger.info(f'{clientOrderId} too big: {rounded_amount*self.mid(symbol)}')
-            elif isinstance(e,ccxtpro.RateLimitExceeded):
+            elif isinstance(e,ccxt.pro.RateLimitExceeded):
                 throttle = 200.0
                 self.strategy.logger.info(f'{str(e)}: waiting {throttle} ms)')
                 await asyncio.sleep(throttle / 1000)
@@ -562,13 +561,13 @@ class FtxAPI(CeFiAPI, ccxtpro.Exchange):
                                         'symbol':symbol,
                                         'status':status,
                                         'comment':trigger})
-        except ccxtpro.CancelPending as e:
+        except ccxt.pro.CancelPending as e:
             self.strategy.order_manager.cancel_sent({'clientOrderId': clientOrderId,
                                         'symbol': symbol,
                                         'status': str(e),
                                         'comment': trigger})
             return True
-        except ccxtpro.InvalidOrder as e: # could be in flight, or unknown
+        except ccxt.pro.InvalidOrder as e: # could be in flight, or unknown
             self.strategy.order_manager.cancel_or_reject({'clientOrderId':clientOrderId,
                                              'status':str(e),
                                              'state':'canceled',

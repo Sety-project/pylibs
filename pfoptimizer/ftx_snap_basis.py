@@ -1,20 +1,22 @@
 import scipy.optimize as opt
-from tradeexecutor.ftx.margin import BasisMarginCalculator
-from histfeed.ftx_history import *
-from tradeexecutor.interface.venue_api import FtxAPI
+from histfeed.history import *
+from utils.ftx_utils import *
+from tradeexecutor.binance.margin import MarginCalculator
+from tradeexecutor.binance.api import BinanceAPI
+from tradeexecutor.okx.api import OkxAPI
 
 finite_diff_rel_step = 1e-4
 
 def market_capacity(futures, hy_history, universe_filter_window=[]):
     if len(universe_filter_window) == 0:
         universe_filter_window = hy_history.index
-    borrow_decile=0.5
-    futures['borrow_volume_decile'] =0
-    futures.loc[futures['spotMargin']!=False,'borrow_volume_decile'] = futures[futures['spotMargin']!=False].apply(lambda f:
-                                                                                                                   (hy_history.loc[universe_filter_window,f['underlying']+'_rate_size']).quantile(q=borrow_decile)
-                                                                                                                   ,axis=1)
+    # borrow_decile=0.5
+    # futures['borrow_volume_decile'] =0
+    # futures.loc[futures['spotMargin']!=False,'borrow_volume_decile'] = futures[futures['spotMargin']!=False].apply(lambda f:
+    #                                                                                                                (hy_history.loc[universe_filter_window,f['underlying']+'_rate_size']).quantile(q=borrow_decile)
+    #                                                                                                                ,axis=1)
     futures['spot_volume_avg'] = futures.apply(lambda f:
-                                               (hy_history.loc[universe_filter_window,f['underlying'] + '_price_volume'] ).mean()
+                                               (hy_history.loc[universe_filter_window,f.name + '_price_volume'] ).mean()
                                                ,axis=1)
     futures['future_volume_avg'] = futures.apply(lambda f:
                                                  (hy_history.loc[universe_filter_window,f.name + '_mark_volume']).mean()
@@ -23,16 +25,16 @@ def market_capacity(futures, hy_history, universe_filter_window=[]):
     futures['concentration_limit_long']=futures.apply(lambda f:
                                                       min([f['openInterestUsd'],f['spot_volume_avg']/24,f['future_volume_avg']/24])
                                                       ,axis=1)
-    futures['concentration_limit_short'] = futures.apply(lambda f:
-                                                         min([0 if f['spotMargin']==False else f['borrow_volume_decile'],
-                                                              f['openInterestUsd'],f['spot_volume_avg'] / 24, f['future_volume_avg'] / 24])
-                                                         , axis=1)
-    futures['carry_native_spot'] = futures['carry_mid']*futures.apply(
-                                                            lambda f: f['concentration_limit_long'],# if futures['direction']==1 else f['concentration_limit_short'],
-                                                            axis=1)
-    futures['carry_external_spot'] = futures['carry_mid'] * futures.apply(
-                                                            lambda f: min([f['openInterestUsd'],f['future_volume_avg']/24]),
-                                                            axis=1)
+    # futures['concentration_limit_short'] = futures.apply(lambda f:
+    #                                                      min([0 if f['spotMargin']==False else f['borrow_volume_decile'],
+    #                                                           f['openInterestUsd'],f['spot_volume_avg'] / 24, f['future_volume_avg'] / 24])
+    #                                                      , axis=1)
+    # futures['carry_native_spot'] = futures['carry_mid']*futures.apply(
+    #                                                         lambda f: f['concentration_limit_long'],# if futures['direction']==1 else f['concentration_limit_short'],
+    #                                                         axis=1)
+    # futures['carry_external_spot'] = futures['carry_mid'] * futures.apply(
+    #                                                         lambda f: min([f['openInterestUsd'],f['future_volume_avg']/24]),
+    #                                                         axis=1)
 
     return futures
 
@@ -45,16 +47,14 @@ async def enricher(exchange,
                    depth=0,
                    slippage_scaler=1.0,
                    params={'override_slippage': True, 'type_allowed': ['perpetual'], 'fee_mode': 'retail'}):
-
+    return futures
     markets = await exchange.fetch_markets()
-    otc_file = configLoader.get_static_params_used()
+    otc_file = None # configLoader.get_static_params_used()
     # pd.read_excel('Runtime/configs/static_params.xlsx',sheet_name='used').set_index('coin')
 
     # basic screening
     futures = futures[
-                    (futures['expired'] == False) & (futures['enabled'] == True) & (futures['type'] != "move")
-                    & (futures.apply(lambda f: float(find_spot_ticker(markets, f, 'ask')), axis=1) > 0.0)
-                    & (futures['tokenizedEquity'] != True)
+                     (futures['underlyingType'] == 'COIN')
                     & (futures['type'].isin(params['type_allowed'])==True)]
 
     ########### add borrows
@@ -63,7 +63,7 @@ async def enricher(exchange,
     for col in coin_details.columns:
         coin_details[col] = pd.to_numeric(coin_details[col], errors='ignore')
 
-    borrows = await FtxAPI.Static.fetch_coin_details(exchange)
+    borrows = await BinanceAPI.Static.fetch_coin_details(exchange)
     futures = pd.merge(futures, borrows[['borrow', 'lend', 'borrow_open_interest']], how='left', left_on='underlying',
                        right_index=True)
     futures['quote_borrow'] = float(borrows.loc['USD', 'borrow'])
@@ -120,11 +120,11 @@ def enricher_wrapper(exchange_name,instrument_type,depth) ->pd.DataFrame():
         exclusion_list = configLoader.get_pfoptimizer_params()['EXCLUSION_LIST']['value']
         holding_period = parse_time_param(configLoader.get_pfoptimizer_params()['HOLDING_PERIOD']['value'])
         signal_horizon = parse_time_param(configLoader.get_pfoptimizer_params()['SIGNAL_HORIZON']['value'])
-        dirname = configLoader.get_mktdata_folder_for_exchange('ftx')
+        dirname = configLoader.get_mktdata_folder_for_exchange('binance')
 
         exchange = await open_exchange(exchange_name,'')
         markets = await exchange.fetch_markets()
-        futures = pd.DataFrame(await FtxAPI.Static.fetch_futures(exchange)).set_index('name')
+        futures = pd.DataFrame(await exchange.fetch_futures()).set_index('name')
         futures = futures[
             (futures['expired'] == False) & (futures['enabled'] == True) & (futures['type'] != "move")
             & (futures.apply(lambda f: float(find_spot_ticker(markets, f, 'ask')), axis=1) > 0.0)
@@ -440,7 +440,7 @@ def cash_carry_optimizer(exchange, futures,
     #            'fun': lambda x: loss_tolerance - norm(loc=np.dot(x,E_int), scale=np.dot(x,np.dot(C_int,x))).cdf(0)}
     futures_dict = futures[['new_symbol', 'account_leverage','imfFactor','mark']].set_index('new_symbol').to_dict()
     spot_dict = futures[['underlying','collateralWeight','index']].set_index('underlying').to_dict()
-    excess_margin = BasisMarginCalculator(futures['account_leverage'].values[0],
+    excess_margin = MarginCalculator(futures['account_leverage'].values[0],
                                          spot_dict['collateralWeight'],
                                          futures_dict['imfFactor'],
                                          equity,

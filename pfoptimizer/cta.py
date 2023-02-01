@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 from datetime import datetime, timedelta
 from typing import NewType, Union, Iterator, Callable
-from utils.api_utils import extract_args_kwargs, api
+from utils.api_utils import extract_args_kwargs
+from pathlib import Path
 
 import dateutil.parser
 import numpy as np
 import pandas as pd
-import os, sys, copy, itertools, sklearn, json
-import plotly.express as px
+import os, sys, copy, itertools, sklearn, json, pickle
 from sklearn.preprocessing import StandardScaler
 from sklearn.linear_model import LinearRegression, LassoLarsIC, RidgeCV, ElasticNetCV, LassoCV, LassoLars, \
     LogisticRegression
@@ -15,7 +15,6 @@ from sklearn.svm import SVR, SVC
 from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier, AdaBoostClassifier
 from sklearn.neural_network import MLPRegressor
 from sklearn.model_selection import TimeSeriesSplit, cross_val_score, cross_val_predict, train_test_split
-import utils.io_utils
 
 Instrument = NewType("Instrument", str)  # eg 'ETHUSDT'
 FileData = NewType("Data", dict[Instrument, pd.DataFrame])
@@ -29,6 +28,39 @@ Data = NewType("Data", dict[Feature, pd.Series])
 
 def remove_duplicate_rows(df):
     return df[~df.index.duplicated()]
+
+def weighted_ew_mean(temp_data: pd.DataFrame,
+                     halflife: timedelta,
+                     weights: pd.Series=None) -> pd.DataFrame:
+    if weights is not None:
+        result = (temp_data * weights)\
+                     .ewm(times=temp_data.index, halflife=halflife).mean() \
+                 / weights \
+                     .ewm(times=temp_data.index, halflife=halflife).mean()
+    else:
+        result = temp_data \
+                .ewm(times=temp_data.index, halflife=halflife).mean()
+    return result
+
+def weighted_ew_vol(temp_data: pd.DataFrame,
+                    increment: int,
+                    halflife: timedelta,
+                    weights: pd.Series = None) -> pd.DataFrame:
+    increments = temp_data.apply(np.log).diff(increment)
+    if weights is not None:
+        incr_sq = (increments * increments * weights)\
+                     .ewm(times=temp_data.index, halflife=halflife).mean() \
+                 / weights \
+                     .ewm(times=temp_data.index, halflife=halflife).mean()
+        incr_mean = (increments * weights)\
+                     .ewm(times=temp_data.index, halflife=halflife).mean() \
+                 / weights \
+                     .ewm(times=temp_data.index, halflife=halflife).mean()
+        result = (incr_sq - incr_mean*incr_mean).apply(np.sqrt)
+    else:
+        result = increments \
+                .ewm(times=temp_data.index, halflife=halflife).std()
+    return result
 
 def winning_trade(df: pd.Series,
                   lvl_scaling_window=72 * 60,
@@ -86,14 +118,15 @@ class ResearchEngine:
         self.Y: pd.DataFrame = pd.DataFrame()
 
         self.models: list[sklearn.base.BaseEstimator] = []
-        self.fitted_model: dict[tuple[RawFeature, FeatureExpansion, int], sklearn.base.BaseEstimator] = dict()
+        self.fitted_model: dict[tuple[RawFeature, FeatureExpansion, str, int], sklearn.base.BaseEstimator] = dict()
 
     @staticmethod
-    def read_history(dirname,
+    def read_history(dirpath,
                      start_date,
                      selected_instruments: set[Instrument]) -> FileData:
         file_data: FileData = FileData(dict())
         start_date = dateutil.parser.isoparse(start_date)
+        dirname = os.path.join(os.sep, Path.home(), *dirpath)
         for filename in os.listdir(dirname):
             filesplit = filename.split('-')
             instrument: Instrument = Instrument(filesplit[0])
@@ -204,29 +237,42 @@ class ResearchEngine:
 
         return result
 
-    def laplace_expand(self, data_dict: RawData) -> Data:
+    def expand_features(self, data_dict: RawData) -> Data:
         '''
-        expands features into several ewma
-        + volume_weighted features
+        expands features into ewma, supports weighting, can add realized vols
         '''
         result: Data = Data(dict())
         for (instrument, raw_feature), data in data_dict.items():
-            result[(instrument, raw_feature, 'live')] = data_dict[(instrument, raw_feature)]
-            for window in self.feature_map[raw_feature]['ewma_windows']:
-                temp_data = data_dict[(instrument, raw_feature)]
-                result[(instrument, raw_feature, window)] = \
-                    temp_data.ewm(times=temp_data.index, halflife=window*ResearchEngine.data_interval).mean() \
-                        .dropna().rename((instrument, raw_feature, window)) # x.shift(periods=i))#
-                if 'add_weight_by' in self.feature_map[raw_feature]:
-                    temp_data = data_dict[(instrument, raw_feature)]
-                    # exp because self.feature_map[volume] = log
-                    weights = np.exp(data_dict[(instrument, self.feature_map[raw_feature]['add_weight_by'])])
-                    result[(instrument, f'vw_{raw_feature}', window)] = \
-                        ((temp_data * weights)
-                            .ewm(times=temp_data.index, halflife=window*ResearchEngine.data_interval).mean() /
-                        weights
-                            .ewm(times=temp_data.index, halflife=window*ResearchEngine.data_interval).mean()
-                         ).dropna().rename((instrument, raw_feature, window))
+            # add several ewma, volume_weighted if requested
+            if 'weight_by' in self.feature_map[raw_feature]:
+                # exp because self.feature_map[volume] = log
+                weights = np.exp(data_dict[(instrument, self.feature_map[raw_feature]['weight_by'])])
+            else:
+                weights = None
+
+            if 'ewma_windows' in self.feature_map[raw_feature]:
+                for window in self.feature_map[raw_feature]['ewma_windows']:
+                    if window == 'live':
+                        result[(instrument, raw_feature, 'live')] = data_dict[(instrument, raw_feature)]
+                    else:
+                        temp_data = data_dict[(instrument, raw_feature)]
+                        # weighted mean = mean of weight*temp / mean of weigths
+                        result[(instrument, f'{raw_feature}', window)] = \
+                            weighted_ew_mean(temp_data,
+                                             halflife=window*ResearchEngine.data_interval,
+                                             weights=weights)
+            else:
+                result[(instrument, raw_feature, 'live')] = data_dict[(instrument, raw_feature)]
+
+            if 'hvol_incr_window' in self.feature_map[raw_feature]:
+                for increment_window in self.feature_map[raw_feature]['hvol_incr_window']:
+                    # weigthed std  = weighted mean of squares - square of weighted mean
+                    result[(instrument, f'vol_{raw_feature}', window)] = \
+                        weighted_ew_vol(temp_data,
+                                        increment=increment_window[0],
+                                        halflife=increment_window[1] * ResearchEngine.data_interval,
+                                        weights=weights)
+
         return result
 
     def compute_labels(self, file_data: FileData, label_map: dict[RawFeature, dict]) -> Data:
@@ -253,7 +299,7 @@ class ResearchEngine:
 
     def build_X_Y(self, file_data: FileData, feature_map: dict[RawFeature, dict], label_map: dict[RawFeature, dict], unit_test=False) -> None:
         raw_data = self.compute_features(file_data, feature_map)
-        self.temp_feature_data = self.laplace_expand(raw_data)
+        self.temp_feature_data = self.expand_features(raw_data)
 
         if unit_test:
             self.X = self.normalize(pd.concat(self.temp_feature_data, axis=1).dropna())
@@ -289,13 +335,15 @@ class ResearchEngine:
         for (raw_feature, frequency), label_df in self.Y.groupby(level=['feature', 'window'], axis=1):
             # for each model for that feature
             for model_name, model_params in self.run_parameters['models'][raw_feature].items():
-                n_splits = self.run_parameters['splits_for_1000'] * np.log2(len(self.X_Y.index) / frequency) / 10
-                tscv = TimeSeriesSplit(n_splits=max(2, int(n_splits)), gap=max(holding_windows)).split(self.X_Y)
-                # cross validation
+                # cross validation. models with build in cv only do a train test where test =10% of the data
+                n_splits = model_params['splits_for_1000'] * np.log2(len(self.X_Y.index) / frequency) / 10
+                tscv = TimeSeriesSplit(n_splits=max(2, int(n_splits)),
+                                       gap=max(holding_windows),
+                                       test_size=int(len(self.X_Y)/10)).split(self.X_Y)
                 for split_index, (train_index, test_index) in enumerate(tscv):
                     # fit 1 model on all instruments,on train_set index.
                     # cannot use stack as it reshuffles columns !!
-                    model_obj = globals()[model_name](**model_params)
+                    model_obj = globals()[model_name](**model_params['params'])
                     X_allinstruments = pd.concat([self.X.xs(instrument, level='instrument', axis=1).iloc[train_index]
                                                   for instrument in self.input_data['selected_instruments']],
                                                  axis=0)
@@ -303,7 +351,7 @@ class ResearchEngine:
                                                   for instrument in self.input_data['selected_instruments']],
                                                  axis=0)
                     fitted_model = model_obj.fit(X_allinstruments, Y_allinstruments.squeeze())
-                    self.fitted_model[(raw_feature, frequency, split_index)] = fitted_model
+                    self.fitted_model[(raw_feature, frequency, model_name, split_index)] = fitted_model
                     if raw_feature == 'performance':
                         print(f'      r2 = {fitted_model.score(X_allinstruments, Y_allinstruments)} for split {split_index} / model {model_name} / label {(raw_feature, frequency)}')
 
@@ -318,37 +366,45 @@ class ResearchEngine:
                         features = self.X.xs(instrument, level='instrument', axis=1).loc[times]
                         delta = self.delta_strategy(features, fitted_model, Feature((instrument, raw_feature, frequency)))
                         # apply log increment to delta
-                        cumulative_pnl = (delta * (log_increment.apply(np.exp) - 1)).cumsum().shift(1)
+                        tx_cost = delta.diff().apply(lambda n: self.run_parameters['tx_cost']*abs(n))
+                        cumulative_pnl = (delta * (log_increment.apply(np.exp) - 1) - tx_cost).cumsum().shift(1)
 
                         # add to backtest, putting all folds on a relative time axis
                         new_backtest = pd.DataFrame(dict(zip([(model_name, split_index, instrument, raw_feature, frequency, datatype)
                                                                      for datatype in ['cumulative_performance', 'delta', 'cumulative_pnl']],
                                                                     [cumulative_performance, delta, cumulative_pnl])))
 
-                        new_backtest.index = new_backtest.index - new_backtest.index[0]
+                        new_backtest.index = new_backtest.index - times[0]
                         backtest = pd.concat([backtest, new_backtest], axis=1, join='outer')
+
+                        with open(os.path.join(os.sep, self.run_parameters['output_dir'], 'engine.pickle'), 'wb') as fp:
+                            pickle.dump(self, fp)
                     print(f'    ran split {split_index} for {model_name} for {(raw_feature, frequency)}')
                 print(f'  ran {model_name} for {(raw_feature, frequency)}')
             print(f'ran {(raw_feature, frequency)}')
 
         backtest.columns = pd.MultiIndex.from_tuples(backtest.columns, names=['model', 'split_index', 'instrument', 'feature', 'frequency', 'datatype'])
-        coefs = pd.DataFrame(index=list(self.fitted_model.keys()),
+        models_with_coef = {model_tuple: model for model_tuple, model in self.fitted_model.items() if hasattr(model, 'intercept_') and hasattr(model, 'coef_')}
+        coefs = pd.DataFrame(index=list(models_with_coef.keys()),
                              columns=[('intercept', None)]+list(self.X.xs(self.input_data['selected_instruments'][0], level='instrument', axis=1).columns),
-                             data=[np.append(data.intercept_, data.coef_) for data in self.fitted_model.values()
-                                   if hasattr(data, 'intercept_') and hasattr(data, 'coef_')])
+                             data=[np.append(model.intercept_, model.coef_) for model in models_with_coef.values()])
 
         return backtest, coefs
 
-def perf_analysis(df_or_path: Union[pd.DataFrame(),str]) -> pd.DataFrame():
+def perf_analysis(df_or_path: Union[pd.DataFrame,str]) -> pd.DataFrame:
     new_values = []
     if os.path.isfile(df_or_path):
         df = pd.read_csv(df_or_path, header=list(range(6)), index_col=0)
     else:
-        df = df_or_path.dropna()
+        df = df_or_path
 
     for model, label, frequency in set(zip(*[df.columns.get_level_values(level) for level in ['model', 'feature', 'frequency']])):
-        cumulative_pnl = df.xs((model, label, frequency, 'cumulative_pnl'), level=['model', 'feature', 'frequency', 'datatype'], axis=1)
-
+        cumulative_pnl = df.xs((model, label, frequency, 'cumulative_pnl'),
+                               level=['model', 'feature', 'frequency', 'datatype'],
+                               axis=1)
+        # remove index
+        cumulative_pnl = pd.DataFrame({col: data.dropna().values
+                                       for col, data in cumulative_pnl.items()})
         # annual_perf
         annual_perf = pd.Series(cumulative_pnl.iloc[-1]/len(cumulative_pnl.index)/float(frequency) * timedelta(days=365.25).total_seconds() / ResearchEngine.data_interval.total_seconds(),
                                 name=(model, label, frequency, 'annual_perf')).T
@@ -367,7 +423,7 @@ def perf_analysis(df_or_path: Union[pd.DataFrame(),str]) -> pd.DataFrame():
     result.columns = pd.MultiIndex.from_tuples(result.columns,
                                                names=['model', 'feature', 'frequency',
                                                       'datatype'])
-    return result.quantile(q=[.25, .5, .75])
+    return result.quantile(q=[.25, .5, .75]).T
 
 def main(parameters):
     engine = ResearchEngine(**parameters)
@@ -382,9 +438,11 @@ if __name__ == "__main__":
 
     with open(args[0], 'r') as fp:
         parameters = json.load(fp)
+    outputdir = os.path.join(os.sep, Path.home(), "mktdata", "binance", "results")
+    parameters['run_parameters']['output_dir'] = outputdir
     result = main(parameters)
-    result[0].to_csv('/home/david/Sety-project/pylibs/ux/result.csv')
-    result[1].to_csv('/home/david/Sety-project/pylibs/ux/coefs.csv')
-    analysis = perf_analysis('/home/david/Sety-project/pylibs/ux/result.csv')
-    analysis.to_csv('/home/david/Sety-project/pylibs/ux/analysis.csv')
-    analysis.xs('annual_perf', level='datatype', axis=1).to_csv('/home/david/Sety-project/pylibs/ux/quantile.csv')
+    result[0].to_csv(os.path.join(os.sep, outputdir, 'results.csv'))
+    result[1].to_csv(os.path.join(os.sep, outputdir, 'coefs.csv'))
+    analysis = perf_analysis(os.path.join(os.sep, outputdir, 'results.csv'))
+    analysis.to_csv(os.path.join(os.sep, outputdir, 'analysis.csv'))
+    analysis.xs('annual_perf', level='datatype', axis=0).to_csv(os.path.join(os.sep, outputdir, 'quantile.csv'))

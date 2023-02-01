@@ -23,7 +23,7 @@ class GLPSignal(ExternalSignal):
         gmx_state = lp_strategy.venue_api.state
 
         # TODO: test only !
-        lp_strategy.hedge_ratio *= -1
+        # lp_strategy.hedge_ratio *= -1
 
         glp_position = lp_strategy.position_manager.data['GLP']['delta']/gmx_state.valuation()
         weights = {'ETH/USDT': {'target': - (lp_strategy.hedge_ratio-1) * glp_position * gmx_state.partial_delta('WETH'),

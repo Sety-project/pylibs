@@ -1,4 +1,4 @@
-from tradeexecutor.binance.api import BinanceAPI
+from tradeexecutor.okx.api import OkxAPI
 from utils.ftx_utils import *
 from utils.config_loader import *
 
@@ -34,7 +34,7 @@ class MarginCalculator:
     async def margin_calculator_factory(exchange):
         '''factory from exchange'''
         # get static parameters
-        futures = pd.DataFrame(await exchange.fetch_futures())
+        futures = pd.DataFrame(await OkxAPI.Static.fetch_futures(exchange))
         account_leverage = 0#TODO:  float(futures.iloc[0]['account_leverage'])
         collateralWeight = 0# TODO: futures.set_index('underlying')['collateralWeight'].to_dict()
         imfFactor = 0# TODO: futures.set_index('new_symbol')['imfFactor'].to_dict()
@@ -79,7 +79,7 @@ class MarginCalculator:
         for order in external_orders:
             self.add_open_order(order)
 
-    async def update_actual(self, exchange: BinanceAPI):
+    async def update_actual(self, exchange: OkxAPI):
         account_information = await exchange.fetch_account_positions(params={'all':True})
 
         self.actual_futures_IM = {position['symbol']: position['initialMargin']

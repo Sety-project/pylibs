@@ -1,4 +1,3 @@
-from tradeexecutor.binance.api import BinanceAPI
 from tradeexecutor.interface.builders import build_VenueAPI
 from utils.io_utils import *
 from utils.api_utils import api
@@ -13,19 +12,21 @@ async def get_history(dirname,
                       end=datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0,second=0,microsecond=0)
                       ):
     data = pd.concat(await safe_gather((
-            [async_read_csv(dirname + os.sep + f + '_funding.csv',index_col=0,parse_dates=True)
+            [async_read_csv(os.path.join(os.sep, dirname, f +'_funding.csv'),index_col=0,parse_dates=True)
              for f in futures[futures['type'] == 'perpetual'].index] +
-            [async_read_csv(dirname + os.sep + f + '_futures.csv',index_col=0,parse_dates=True)
+            [async_read_csv(os.path.join(os.sep, dirname, f +'_futures.csv'),index_col=0,parse_dates=True)
              for f in futures.index] +
-            [async_read_csv(dirname + os.sep + f + '_price.csv',index_col=0,parse_dates=True)
-             for f in futures['underlying'].unique()] +
-            [async_read_csv(dirname + os.sep + f + '_borrow.csv',index_col=0,parse_dates=True)
-             for f in (list(futures['underlying'].unique()) + ['USD'])]
+            [async_read_csv(os.path.join(os.sep, dirname, f +'_price.csv'),index_col=0,parse_dates=True)
+             for f in futures.index] +
+            [async_read_csv(os.path.join(os.sep, dirname, f +'_borrow.csv'),index_col=0,parse_dates=True)
+             for f in set(list(futures['underlying']) + list(futures['quote']))
+             if os.path.isfile(os.path.join(os.sep, dirname, f + '_borrow.csv'))]
     )), join='outer', axis=1)
 
     # convert borrow size in usd
     for f in futures['underlying'].unique():
-        data[f + '_rate_size']*=data[f + '_price_o']
+        if f + '_rate_size' in data.columns:
+            data[f + '_rate_size']*=data[f + '_price_o']
 
     start = end - timedelta(hours=start_or_nb_hours) if isinstance(start_or_nb_hours, int) else start_or_nb_hours
     data.index = [t.replace(tzinfo=timezone.utc) for t in data.index]
@@ -130,13 +131,12 @@ async def correct_history(futures,exchange,hy_history,dirname=configLoader.get_m
     # run all coroutines
     await safe_gather(coroutines)
 
-async def history_main_wrapper(run_type, exchange_name, universe_name, nb_days=1, frequency='1h'):
-    parameters = configLoader.get_executor_params(order='listen_binance', dirname='prod')
-    exchange = await build_VenueAPI(parameters['venue_api'])
+async def history_main_wrapper(run_type, exchange_name, universe_name, nb_days=1, frequency=None):
+    exchange = await build_VenueAPI({'exchange': exchange_name})
+    if frequency is None: frequency = exchange.funding_frequency
 
-    universe = configLoader.get_bases(universe_name)
     nb_days = int(nb_days)
-    futures = pd.DataFrame(await BinanceAPI.Static.fetch_futures(exchange)).set_index('name')
+    futures = pd.DataFrame(await exchange.fetch_futures()).set_index('name')
     await exchange.load_markets()
 
     #universe should be either 'all', either a universe name, or a list of currencies
@@ -145,8 +145,11 @@ async def history_main_wrapper(run_type, exchange_name, universe_name, nb_days=1
     # In case universe was not max, is_wide, is_institutional
     # universe = [id for id, data in exchange.markets_by_id.items() if data['base'] in [x.upper() for x in [universe]] and data['contract']]
 
-    if universe != []:
+    try:
+        universe = configLoader.get_bases(universe_name)
         futures = futures[futures.index.isin(universe)]
+    except:
+        pass
 
     logger = logging.getLogger('histfeed')
 

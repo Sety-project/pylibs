@@ -36,11 +36,11 @@ async def build_VenueAPI(parameters):
         if 'symbol' in parameters:
             symbols = parameters['symbols']
         else:
-            futures = await BinanceAPI.Static.fetch_futures(exchange)
+            futures = await exchange.fetch_futures()
             future_symbols = [future['symbol'] for future in futures]
             spot_symbols = [] #[future['spot_ticker'] for future in futures if future['spot_ticker'] in exchange.markets]
             symbols = future_symbols + spot_symbols
-        exchange.static = await BinanceAPI.Static.build(exchange, symbols)
+        exchange.static = BinanceAPI.Static()
     elif parameters['exchange'] == 'gmx':
         consumer = AIOKafkaConsumer(
             'gmx-indexer-logs',
