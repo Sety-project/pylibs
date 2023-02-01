@@ -1,6 +1,8 @@
 import copy
 import datetime
 
+import pandas as pd
+
 from tradeexecutor.interface.builders import build_VenueAPI
 from pfoptimizer.ftx_snap_basis import *
 from riskpnl.ftx_risk_pnl import *
@@ -24,7 +26,7 @@ async def refresh_universe(exchange, universe_filter):
     except FileNotFoundError as e:
         futures = pd.DataFrame(await exchange.fetch_futures()).set_index('name')
 
-        universe_start = datetime(2021, 12, 1).replace(tzinfo=timezone.utc)
+        universe_start = datetime(2022, 9, 1).replace(tzinfo=timezone.utc)
         universe_end = datetime.utcnow().replace(tzinfo=timezone.utc) - timedelta(days=1)
         # borrow_decile = 0.5
 
@@ -107,7 +109,7 @@ async def get_exec_request(run_type, exchange, **kwargs):
 
 # runs optimization * [time, params]
 async def perp_vs_cash(
-        exchanges,
+        exchange,
         config_name,
         signal_horizon,
         holding_period,
@@ -116,7 +118,7 @@ async def perp_vs_cash(
         mktshare_limit,
         minimum_carry,
         exclusion_list,
-        equity_overrides=dict(),  # {exchange.id:override}
+        equity_override=None,
         backtest_start=None, # None means live-only
         backtest_end=None,
         optional_params=[]):# verbose,warm_start
@@ -155,57 +157,59 @@ async def perp_vs_cash(
     else:
         trajectory = pd.DataFrame()
         pnl = pd.DataFrame()
-        point_in_time = now_time.replace(minute=0, second=0, microsecond=0)-timedelta(hours=1)
+        frequency = pd.Timedelta(exchange.funding_frequency).total_seconds()/3600
+        point_in_time = now_time.replace(hour=int(frequency*np.floor(now_time.hour/frequency)), minute=0, second=0, microsecond=0)
         backtest_start = point_in_time
         backtest_end = point_in_time
 
-    for i_exchange,exchange in enumerate(exchanges):
-        futures = pd.DataFrame(await exchange.fetch_futures()).set_index('name')
-        futures['exchange'] = exchange.id
+    futures = pd.DataFrame(await exchange.fetch_futures()).set_index('name')
+    futures['exchange'] = exchange.id
 
-        universe = await refresh_universe(exchange, param_universe)
-        universe_filtered = futures.loc[universe]
-        universe_filtered=universe_filtered[(~futures['underlying'].isin(exclusion_list))
-                                            &(futures['type'].isin(type_allowed))]
+    universe = await refresh_universe(exchange, param_universe)
+    universe_filtered = futures.loc[universe]
+    universe_filtered=universe_filtered[(~futures['underlying'].isin(exclusion_list))
+                                        &(futures['type'].isin(type_allowed))]
 
-        # previous book
-        if config['exchanges'][i_exchange]['equity_override'] is not None:
-            previous_weights_input = pd.DataFrame(index=[],columns=['optimalWeight'], data=0.0)
-            equity = config['exchanges'][i_exchange]['equity_override']
-        else:
-            start_portfolio = await fetch_portfolio(exchange, now_time)
-            previous_weights_input = -start_portfolio.loc[
-                start_portfolio['attribution'].isin(universe_filtered.index), ['attribution', 'usdAmt']
-            ].set_index('attribution').rename(columns={'usdAmt': 'optimalWeight'})
-            equity = start_portfolio.loc[start_portfolio['event_type'] == 'PV', 'usdAmt'].values[0]
+    # previous book
+    if equity_override is not None:
+        previous_weights_input = pd.DataFrame(index=[],columns=['optimalWeight'], data=0.0)
+        equity = equity_override
+    else:
+        start_portfolio = await fetch_portfolio(exchange, now_time)
+        previous_weights_input = -start_portfolio.loc[
+            start_portfolio['attribution'].isin(universe_filtered.index), ['attribution', 'usdAmt']
+        ].set_index('attribution').rename(columns={'usdAmt': 'optimalWeight'})
+        equity = start_portfolio.loc[start_portfolio['event_type'] == 'PV', 'usdAmt'].values[0]
 
-        ## ----------- enrich/carry filter, get history, populate concentration limit
-        enriched = await enricher(exchange, universe_filtered, holding_period, equity=equity,
-                                  slippage_override=slippage_override, depth=slippage_orderbook_depth,
-                                  slippage_scaler=slippage_scaler,
-                                  params={'override_slippage': True, 'type_allowed': type_allowed, 'fee_mode': 'retail'})
+    ## ----------- enrich/carry filter, get history, populate concentration limit
+    enriched = await enricher(exchange, universe_filtered, holding_period, equity=equity,
+                              slippage_override=slippage_override, depth=slippage_orderbook_depth,
+                              slippage_scaler=slippage_scaler,
+                              params={'override_slippage': True, 'type_allowed': type_allowed, 'fee_mode': 'retail'})
 
-        # nb_of_days = 100
-        # await get_history(dir_name, enriched, 24 * nb_of_days)
-        # await build_history(enriched, exchange)
-        dir_name = configLoader.get_mktdata_folder_for_exchange(exchanges[0].id)
-        hy_history = await get_history(dir_name, enriched, start_or_nb_hours=backtest_start-signal_horizon-holding_period, end=backtest_end)
-        enriched = market_capacity(enriched, hy_history)
+    # nb_of_days = 100
+    # await get_history(dir_name, enriched, 24 * nb_of_days)
+    # await build_history(enriched, exchange)
+    dir_name = configLoader.get_mktdata_folder_for_exchange(exchange.id)
+    hy_history = await get_history(dir_name, enriched, start_or_nb_hours=backtest_start-signal_horizon-holding_period, end=backtest_end)
+    ### remove blanks for this
+    hy_history = hy_history.fillna(method='ffill').dropna(axis=1, how='all')
+    enriched = market_capacity(enriched, hy_history)
 
-        (intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow) = \
-            forecast(
-                exchange, enriched, hy_history,
-                holding_period,  # to convert slippage into rate
-                signal_horizon,filename= log_file if 'verbose' in optional_params else ''
-            )  # historical window for expectations
-        updated = update(enriched, point_in_time, hy_history, equity,
-                         intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow,
-                         minimum_carry=0) # Do not remove futures using minimum_carry
+    (intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow) = \
+        forecast(
+            exchange, enriched, hy_history,
+            holding_period,  # to convert slippage into rate
+            signal_horizon,filename= log_file if 'verbose' in optional_params else ''
+        )  # historical window for expectations
+    updated = update(enriched, point_in_time, hy_history, equity,
+                     intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow,
+                     minimum_carry=0) # Do not remove futures using minimum_carry
 
-        # final filter, needs some history and good avg volumes
-        filtered = updated.loc[~np.isnan(updated['E_intCarry'])]
-        filtered = filtered.sort_values(by='E_intCarry', ascending=False)
-        updated = None # safety
+    # final filter, needs some history and good avg volumes
+    filtered = updated.loc[~np.isnan(updated['E_intCarry'])]
+    filtered = filtered.sort_values(by='E_intCarry', ascending=False)
+    updated = None # safety
 
     if backtest_start == backtest_end:
         initial_weight = previous_weights_input
@@ -294,7 +298,7 @@ async def perp_vs_cash(
             logging.getLogger('pfoptimizer').critical(str(e))
         finally:
             logging.getLogger('pfoptimizer').info(f'{str(point_in_time)} done')
-            point_in_time += timedelta(hours=1)
+            point_in_time += pd.Timedelta(exchange.funding_frequency)
 
     parameters = pd.Series({
             'run_date': datetime.today(),
@@ -382,29 +386,31 @@ async def strategy_wrapper(**kwargs):
     parameters = configLoader.get_pfoptimizer_params(order='sysperp', dirname='prod')
     exchanges = await safe_gather([build_VenueAPI(parameters) for parameters in parameters['exchanges']])
 
-    coroutines = [perp_vs_cash(
-        exchanges=exchanges,
-        config_name=kwargs['config_name'],
-        concentration_limit=concentration_limit,
-        mktshare_limit=mktshare_limit,
-        minimum_carry=minimum_carry,
-        exclusion_list=kwargs['exclusion_list'],
-        signal_horizon=signal_horizon,
-        holding_period=holding_period,
-        slippage_override=slippage_override,
-        backtest_start=kwargs['backtest_start'],
-        backtest_end=kwargs['backtest_end'],
-        optional_params=['warm_start'] + (['verbose'] if (__debug__ and kwargs['backtest_start']==kwargs['backtest_end']) else []))
-        for concentration_limit in kwargs['concentration_limit']
-        for mktshare_limit in kwargs['mktshare_limit']
-        for minimum_carry in kwargs['minimum_carry']
-        for signal_horizon in kwargs['signal_horizon']
-        for holding_period in kwargs['holding_period']
-        for slippage_override in kwargs['slippage_override']]
+    for i,exchange in enumerate(exchanges):
+        coroutines = [perp_vs_cash(
+            exchange=exchange,
+            config_name=kwargs['config_name'],
+            concentration_limit=concentration_limit,
+            mktshare_limit=mktshare_limit,
+            minimum_carry=minimum_carry,
+            exclusion_list=kwargs['exclusion_list'],
+            equity_override=parameters['exchanges'][i]['equity_override'],
+            signal_horizon=signal_horizon,
+            holding_period=holding_period,
+            slippage_override=slippage_override,
+            backtest_start=kwargs['backtest_start'],
+            backtest_end=kwargs['backtest_end'],
+            optional_params=['warm_start'] + (['verbose'] if (__debug__ and kwargs['backtest_start']==kwargs['backtest_end']) else []))
+            for concentration_limit in kwargs['concentration_limit']
+            for mktshare_limit in kwargs['mktshare_limit']
+            for minimum_carry in kwargs['minimum_carry']
+            for signal_horizon in kwargs['signal_horizon']
+            for holding_period in kwargs['holding_period']
+            for slippage_override in kwargs['slippage_override']]
 
-    optimized = await safe_gather(coroutines)
-    for exchange in exchanges:
-        await exchange.close()
+        optimized = await safe_gather(coroutines)
+        for exchange in exchanges:
+            await exchange.close()
 
     return optimized
 
@@ -483,7 +489,7 @@ def main(*args,**kwargs):
                                         holding_period=hol_period,
                                         slippage_override=slippage_override,
                                         backtest_start= datetime(2022,6,17).replace(tzinfo=timezone.utc),#.replace(minute=0, second=0, microsecond=0)-timedelta(days=2),# live start was datetime(2022,6,21,19),
-                                        backtest_end = datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0, second=0, microsecond=0)-timedelta(hours=1)))
+                                        backtest_end = datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0, second=0, microsecond=0)-pd.Timedelta(exchange.funding_frequency)))
         return pd.DataFrame()
     elif run_type in ['unwind','flatten','spread']:
         res = asyncio.run(get_exec_request(run_type,exchange_name,**kwargs))

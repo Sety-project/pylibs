@@ -1,3 +1,4 @@
+import pandas as pd
 import scipy.optimize as opt
 from histfeed.history import *
 from utils.ftx_utils import *
@@ -47,7 +48,12 @@ async def enricher(exchange,
                    depth=0,
                    slippage_scaler=1.0,
                    params={'override_slippage': True, 'type_allowed': ['perpetual'], 'fee_mode': 'retail'}):
-    return futures
+    costs = await fetch_rate_slippage(futures, exchange, holding_period,
+                                      slippage_override, depth, slippage_scaler,
+                                      params)
+
+    return futures.join(costs, how = 'outer')
+
     markets = await exchange.fetch_markets()
     otc_file = None # configLoader.get_static_params_used()
     # pd.read_excel('Runtime/configs/static_params.xlsx',sheet_name='used').set_index('coin')
@@ -161,8 +167,8 @@ def update(futures,point_in_time,history,equity,
     # add borrows
     futures['borrow']=futures['underlying'].apply(lambda f:history.loc[point_in_time, f + '_rate_borrow'])
     futures['lend'] = futures['underlying'].apply(lambda f:history.loc[point_in_time, f + '_rate_borrow'])*.9 # TODO:lending rate
-    futures['quote_borrow'] = history.loc[point_in_time, 'USD_rate_borrow']
-    futures['quote_lend'] = history.loc[point_in_time, 'USD_rate_borrow'] * .9  # TODO:lending rate
+    futures['quote_borrow'] = futures['quote'].apply(lambda f:history.loc[point_in_time, f + '_rate_borrow'])
+    futures['quote_lend'] = futures['quote'].apply(lambda f:history.loc[point_in_time, f + '_rate_borrow']) * .9  # TODO:lending rate
 
     # spot basis
     futures.loc[futures['type'] == 'perpetual', 'basis_mid'] = futures[futures['type'] == 'perpetual'].apply(
@@ -172,7 +178,7 @@ def update(futures,point_in_time,history,equity,
     futures['index'] = futures.apply(
         lambda f: history.loc[point_in_time, f.name + '_indexes_o'],axis=1)
     futures['spot'] = futures.apply(
-        lambda f: history.loc[point_in_time, f['underlying'] + '_price_o'],axis=1)
+        lambda f: history.loc[point_in_time, f.name + '_price_o'],axis=1)
     futures.loc[futures['type'] == 'future','expiryTime'] = futures.loc[futures['type'] == 'future'].apply(
         lambda f: history.loc[point_in_time, f.name + '_rate_T'],axis=1)
     futures.loc[futures['type'] == 'future', 'basis_mid'] = futures[futures['type'] == 'future'].apply(
@@ -204,6 +210,8 @@ def update(futures,point_in_time,history,equity,
 
     ##### assume direction only depends on sign(E[long]-E[short]), no integral.
     # Freeze direction into Carry_t and assign max weights. filter out assets with too little carry.
+    futures['MaxLongWeight'] = 5
+    futures['MaxShortWeight'] = 0
     futures['direction'] = 0
     futures.loc[(futures['E_long'] * futures['MaxLongWeight'] - futures['E_short'] * futures['MaxShortWeight'] < 0)
                 &(futures['E_short']<-minimum_carry)
@@ -232,10 +240,10 @@ def forecast(exchange, futures, hy_history,
              signal_horizon,  # historical window for expectations
              filename=''):             # use external rather than order book
     dated = futures[futures['type'] == 'future']
-    ### remove blanks for this
-    hy_history = hy_history.fillna(method='ffill',limit=2).dropna(axis=1,how='all')
+
     # TODO: check hy_history is hourly
-    holding_hours = int(holding_period.total_seconds() / 3600)
+    holding_nb_periods = int(holding_period.total_seconds() / pd.Timedelta(exchange.funding_frequency).total_seconds())
+    signal_nb_periods = int(signal_horizon.total_seconds() / pd.Timedelta(exchange.funding_frequency).total_seconds())
 
     #---------- compute max leveraged \int{carry moments}, long and short. To find direction, not weights.
     # for perps, compute carry history to estimate moments.
@@ -244,13 +252,13 @@ def forecast(exchange, futures, hy_history,
 
     # 1: spot time series
     LongCarry = futures.apply(lambda f:
-                              (- hy_history['USD_rate_borrow'] +
+                              (- hy_history[f['quote'] + '_rate_borrow'] +
                                hy_history[f.name + '_rate_' + ('funding' if f['type']=='perpetual' else 'c')]),
                               axis=1).T
     LongCarry.columns=futures.index.tolist()
 
     ShortCarry = futures.apply(lambda f:
-                               (- hy_history['USD_rate_borrow'] +
+                               (- hy_history[f['quote'] + '_rate_borrow'] +
                                 hy_history[f.name + '_rate_' + ('funding' if f['type']=='perpetual' else 'c')]
                                 + hy_history[f['underlying'] + '_rate_borrow']),
                                axis=1).T
@@ -259,24 +267,25 @@ def forecast(exchange, futures, hy_history,
     Borrow = futures.apply(lambda f: hy_history[f['underlying'] + '_rate_borrow'],
                            axis=1).T
     Borrow.columns = futures.index.tolist()
-    USDborrow = hy_history['USD_rate_borrow']
+    USDborrow = futures.apply(lambda f: hy_history[f['quote'] + '_rate_borrow'],
+                           axis=1).T
 
     # 2: integrals, and their median.
-    intLongCarry = LongCarry.rolling(holding_hours).mean()
+    intLongCarry = LongCarry.rolling(holding_nb_periods).mean()
     intLongCarry[dated.index]= LongCarry[dated.index]
-    E_long = intLongCarry.rolling(int(signal_horizon.total_seconds()/3600)).mean()
+    E_long = intLongCarry.rolling(signal_nb_periods).mean()
     E_long[dated.index] = intLongCarry[dated.index]
 
-    intShortCarry = ShortCarry.rolling(holding_hours).mean()
+    intShortCarry = ShortCarry.rolling(holding_nb_periods).mean()
     intShortCarry[dated.index] = ShortCarry[dated.index]
-    E_short = intShortCarry.rolling(int(signal_horizon.total_seconds()/3600)).mean()
+    E_short = intShortCarry.rolling(signal_nb_periods).mean()
     E_short[dated.index] = intShortCarry[dated.index]
 
-    intBorrow = Borrow.rolling(holding_hours).mean()
-    E_intBorrow = intBorrow.rolling(int(signal_horizon.total_seconds()/3600)).mean()
+    intBorrow = Borrow.rolling(holding_nb_periods).mean()
+    E_intBorrow = intBorrow.rolling(signal_nb_periods).mean()
 
-    intUSDborrow = USDborrow.rolling(holding_hours).mean()
-    E_intUSDborrow = intUSDborrow.rolling(int(signal_horizon.total_seconds()/3600)).mean()
+    intUSDborrow = USDborrow.rolling(holding_nb_periods).mean()
+    E_intUSDborrow = intUSDborrow.rolling(signal_nb_periods).mean()
 
     # TODO:3: spot premium (approximated using last funding) assumed to converge to median -> IR01 pnl
     # specifically, assume IR01 pnl of f-E[f] and then yield E[f]. More conservative than f stays better than E[f]...as long as holding>1d.
@@ -379,7 +388,7 @@ async def fetch_rate_slippage(input_futures,
                                           (f['future_ask'] - f['spot_bid']) \
                                           / np.max([1, (f['expiryTime'] - point_in_time).total_seconds()/3600])*365.25*24,axis=1) # no less than 1h
 
-    holding_hours = int(holding_period.total_seconds() / 3600)
+    holding_hours = int(holding_period.total_seconds() / pd.Timedelta(exchange.funding_frequency).total_seconds())
     return pd.DataFrame({
         'buy_slippage': buy_slippage*365.25*24/holding_hours,
         'sell_slippage': sell_slippage*365.25*24/holding_hours,

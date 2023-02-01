@@ -293,15 +293,16 @@ class BinanceAPI(CeFiAPI,ccxt.pro.binanceusdm):
             for start_time in start_times])
         borrow = [y for x in lists for y in x]
 
-        data = pd.DataFrame(borrow)
-        data = data.set_index('timestamp')[['rate']] * 365.25
-        data.rename(columns={'rate': coin + '_rate_borrow'}, inplace=True)
-        data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
-        data = data[~data.index.duplicated()].sort_index()
+        if len(borrow) > 0:
+            data = pd.DataFrame(borrow)
+            data = data.set_index('timestamp')[['rate']] * 365.25
+            data.rename(columns={'rate': coin + '_rate_borrow'}, inplace=True)
+            data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
+            data = data[~data.index.duplicated()].sort_index()
 
-        if dirname != '':
-            filename = os.path.join(dirname, coin + '_borrow.csv')
-            await async_to_csv(data, os.path.join(dirname, coin + '_borrow.csv'), mode='a', header=not os.path.isfile(filename))
+            if dirname != '':
+                filename = os.path.join(dirname, coin + '_borrow.csv')
+                await async_to_csv(data, os.path.join(dirname, coin + '_borrow.csv'), mode='a', header=not os.path.isfile(filename))
 
     ######### annualized funding for perps, time is fixing / payment time.
     @ignore_error
@@ -329,9 +330,9 @@ class BinanceAPI(CeFiAPI,ccxt.pro.binanceusdm):
         if len(funding) > 0:
             data = pd.DataFrame(funding)
             data['time'] = data['timestamp'].astype(dtype='int64')
-            data[self.market(future['symbol'])['id'] + '_rate_funding'] = data['fundingRate'] * 365.25 * 8
+            data[self.market(future['symbol'])['id'] + '_rate_funding'] = data['fundingRate'] * 365.25 * self.funding_frequency
             data = data[['time', self.market(future['symbol'])['id'] + '_rate_funding']].set_index('time')
-            data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
+            data.index = [datetime.fromtimestamp(3600*round(x / 1000 /3600,0)) for x in data.index]
             data = data[~data.index.duplicated()].sort_index()
 
             if dirname != '':

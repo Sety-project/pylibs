@@ -509,10 +509,10 @@ async def risk_and_pnl(exchange,**kwargs):
         previous_risk = pd.DataFrame()
         previous_risk = previous_risk.append(pd.DataFrame(index=[0], data=dict(
             zip(['time', 'coin', 'coinAmt', 'event_type', 'attribution', 'spot', 'mark', 'exchange', 'subaccount'],
-                [end_time - timedelta(hours=1), 'USD', 0.0, 'delta', 'USD', 1.0, 1.0]))))
+                [end_time - pd.Timedelta(exchange.funding_frequency), 'USD', 0.0, 'delta', 'USD', 1.0, 1.0]))))
         previous_risk = previous_risk.append(pd.DataFrame(index=[0], data=dict(
             zip(['time', 'coin', 'coinAmt', 'event_type', 'attribution', 'spot', 'mark', 'exchange', 'subaccount'],
-                [end_time - timedelta(hours=1), 'USD', 0.0, 'PV', 'USD', 1.0, 1.0]))))
+                [end_time - pd.Timedelta(exchange.funding_frequency), 'USD', 0.0, 'PV', 'USD', 1.0, 1.0]))))
         return previous_risk
 
     risk_filename = os.path.join(os.sep,database_path,'all_risk.csv')

@@ -1,3 +1,5 @@
+import os.path
+
 from tradeexecutor.interface.builders import build_VenueAPI
 from utils.io_utils import *
 from utils.api_utils import api
@@ -11,7 +13,7 @@ async def get_history(dirname,
                       start_or_nb_hours,
                       end=datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0,second=0,microsecond=0)
                       ):
-    data = pd.concat(await safe_gather((
+    data_list = await safe_gather((
             [async_read_csv(os.path.join(os.sep, dirname, f +'_funding.csv'),index_col=0,parse_dates=True)
              for f in futures[futures['type'] == 'perpetual'].index] +
             [async_read_csv(os.path.join(os.sep, dirname, f +'_futures.csv'),index_col=0,parse_dates=True)
@@ -20,13 +22,16 @@ async def get_history(dirname,
              for f in futures.index] +
             [async_read_csv(os.path.join(os.sep, dirname, coin +'_borrow.csv'),index_col=0,parse_dates=True)
              for coin in set(list(futures['underlying']) + list(futures['quote']))
-             if os.path.isfile(os.path.join(os.sep, dirname, coin + '_borrow.csv'))]
-    )), join='outer', axis=1)
+             if os.path.isfile(os.path.join(dirname, coin +'_borrow.csv'))]
+    ))
+    data = pd.concat(data_list, join='outer', axis=1)
 
     # convert borrow size in usd
     for f in futures['underlying'].unique():
         if f + '_rate_size' in data.columns:
             data[f + '_rate_size']*=data[f + '_price_o']
+        if f+ '_rate_borrow' not in data.columns:
+            data[f + '_rate_borrow'] = 999
 
     start = end - timedelta(hours=start_or_nb_hours) if isinstance(start_or_nb_hours, int) else start_or_nb_hours
     data.index = [t.replace(tzinfo=timezone.utc) for t in data.index]
@@ -67,10 +72,10 @@ async def build_history(futures,
             logger.info("Adding coroutine " + csv_name)
             coroutines.append(exchange.spot_history(f, end, start, frequency, dirname))
 
-    for f in list(futures.loc[futures['spotMargin'] == True, 'underlying'].unique()) + ['USDT','BUSD']:
+    for f in set(list(futures.loc[futures['spotMargin'] == True, 'underlying']) + list(futures['quote'])):
         csv_name = os.path.join(dirname, f + '_borrow.csv')
         csv = pd.read_csv(csv_name,index_col=0,parse_dates=True) if os.path.isfile(csv_name) else None
-        start = max(csv.index).replace(tzinfo=timezone.utc) + timedelta(hours=1) if csv is not None else history_start
+        start = max(csv.index).replace(tzinfo=timezone.utc) + pd.Timedelta(exchange.funding_frequency) if csv is not None else history_start
         if start < end:
             logger.info("Adding coroutine " + csv_name)
             coroutines.append(exchange.borrow_history(f, end, start, dirname))
@@ -83,17 +88,15 @@ async def build_history(futures,
         logger.info("0 coroutines gathered, nothing to do")
 
     # static values for non spot Margin underlyings
-    otc_file = configLoader.get_static_params_used()
-    for f in list(futures.loc[futures['spotMargin'] == False, 'spot_ticker'].unique()):
+    for f in set(futures.loc[futures['spotMargin'] == 'OTC', 'spot_ticker'].unique()):
         try:
             spot_csv = pd.read_csv(os.path.join(dirname, f.replace('/','') + '_price.csv'),index_col=0,parse_dates=True)
             coin = f.split('/')[0]
             to_csv(pd.DataFrame(index=spot_csv.index,
                                 columns=[coin + '_rate_borrow'],
-                                data=otc_file.loc[coin,'borrow'] if futures.loc[f,'spotMargin'] == 'OTC' else 999
-                                ),
+                                data=configLoader.get_static_params_used().loc[coin,'borrow']),
                    os.path.join(dirname, coin +'_borrow.csv'),
-                   mode='a',header=False)
+                   mode='a',header=not os.path.isfile(os.path.join(dirname, coin +'_borrow.csv')))
         except Exception as e:
             logger.warning(e,exc_info=True)
 async def correct_history(futures,exchange,hy_history,dirname=configLoader.get_mktdata_folder_path()):
