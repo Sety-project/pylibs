@@ -2,7 +2,7 @@ import collections, functools
 from abc import abstractmethod
 import numpy as np
 
-import ccxtpro
+import ccxt.pro
 from tradeexecutor.interface.StrategyEnabler import StrategyEnabler
 
 def loop(func):
@@ -12,12 +12,12 @@ def loop(func):
         while True:
             try:
                 value = await func(*args, **kwargs)
-            except ccxtpro.NetworkError as e:
+            except ccxt.pro.NetworkError as e:
                 self.logger.info(str(e))
                 self.logger.info('reconciling after '+func.__name__+' dropped off')
                 await self.reconcile()
             except Exception as e:
-                self.logger.info(e, exc_info=True)
+                self.logger.info(f'{e} running {str(func)} {args}{kwargs}', exc_info=True)
                 raise e
     return wrapper_loop
 

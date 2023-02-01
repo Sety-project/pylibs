@@ -36,7 +36,7 @@ async def main_coroutine(order_name, **kwargs):
             await strategy.exit_gracefully()
             if not isinstance(e, Strategy.ReadyToShutdown):
                 logger = logging.getLogger('tradeexecutor')
-                logger.critical(str(e), exc_info=True)
+                logger.critical(f'{str(e)} running {str(func)} {args}{kwargs}', exc_info=True)
             else:
                 raise e
 

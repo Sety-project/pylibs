@@ -174,7 +174,7 @@ def ignore_error(func):
             return await func(*args, **kwargs)
         except Exception as e:
             logger = logging.getLogger(func.__module__.split('.')[0])
-            logger.warning(e,exc_info=True)
+            logger.warning(f'{e} running {str(func)} {args}{kwargs}',exc_info=False)
     return wrapper_ignore_error
 
 def nested_dict_to_tuple(nested: dict) -> dict[tuple,Any]:

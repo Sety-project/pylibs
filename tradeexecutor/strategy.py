@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 import pandas as pd
-import ccxtpro
+import ccxt.pro
 
 from tradeexecutor.interface.order_manager import OrderManager
 from tradeexecutor.interface.position_manager import PositionManager
@@ -128,7 +128,7 @@ class Strategy(ABC):
             await asyncio.sleep(self.position_manager.limit.check_frequency)
             await self.reconcile()
 
-    @retry.retry((ccxtpro.NetworkError, ConnectionError), tries=10, delay=0.1, backoff=2)  # annoyingly ccxtpro.NetworkError doesn't inherit from ConnectionError
+    @retry.retry((ccxt.pro.NetworkError, ConnectionError), tries=10, delay=0.1, backoff=2)  # annoyingly ccxt.pro.NetworkError doesn't inherit from ConnectionError
     async def reconcile(self):
         '''update risk using rest
         all symbols not present when state is built are ignored !

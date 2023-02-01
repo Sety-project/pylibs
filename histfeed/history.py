@@ -18,9 +18,9 @@ async def get_history(dirname,
              for f in futures.index] +
             [async_read_csv(os.path.join(os.sep, dirname, f +'_price.csv'),index_col=0,parse_dates=True)
              for f in futures.index] +
-            [async_read_csv(os.path.join(os.sep, dirname, f +'_borrow.csv'),index_col=0,parse_dates=True)
-             for f in set(list(futures['underlying']) + list(futures['quote']))
-             if os.path.isfile(os.path.join(os.sep, dirname, f + '_borrow.csv'))]
+            [async_read_csv(os.path.join(os.sep, dirname, coin +'_borrow.csv'),index_col=0,parse_dates=True)
+             for coin in set(list(futures['underlying']) + list(futures['quote']))
+             if os.path.isfile(os.path.join(os.sep, dirname, coin + '_borrow.csv'))]
     )), join='outer', axis=1)
 
     # convert borrow size in usd
@@ -36,16 +36,17 @@ async def build_history(futures,
                         exchange,
                         dirname=configLoader.get_mktdata_folder_path(),
                         end=datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0,second=0,microsecond=0),
-                        frequency: timedelta = '1h'): # Runtime/Mktdata_database
+                        frequency: timedelta = None): # Runtime/Mktdata_database
     '''for now, increments local files and then uploads to s3'''
     logger = logging.getLogger('histfeed')
     logger.info("BUILDING COROUTINES")
+    if frequency is None: frequency = exchange.funding_frequency
 
     coroutines = []
     for _, f in futures[futures['type'] == 'perpetual'].iterrows():
         csv_name = os.path.join(dirname, f.name + '_funding.csv')
         csv = pd.read_csv(csv_name,index_col=0,parse_dates=True) if os.path.isfile(csv_name) else None
-        start = max(csv.index).replace(tzinfo=timezone.utc)+timedelta(hours=8) if csv is not None else history_start
+        start = max(csv.index).replace(tzinfo=timezone.utc)+pd.Timedelta(frequency) if csv is not None else history_start
         if start < end:
             logger.info("Adding coroutine " + csv_name)
             coroutines.append(exchange.funding_history(f, start, end, dirname))
@@ -145,11 +146,9 @@ async def history_main_wrapper(run_type, exchange_name, universe_name, nb_days=1
     # In case universe was not max, is_wide, is_institutional
     # universe = [id for id, data in exchange.markets_by_id.items() if data['base'] in [x.upper() for x in [universe]] and data['contract']]
 
-    try:
+    if universe_name != 'all':
         universe = configLoader.get_bases(universe_name)
         futures = futures[futures.index.isin(universe)]
-    except:
-        pass
 
     logger = logging.getLogger('histfeed')
 

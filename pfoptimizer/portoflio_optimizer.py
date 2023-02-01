@@ -159,20 +159,19 @@ async def perp_vs_cash(
         backtest_start = point_in_time
         backtest_end = point_in_time
 
-    for exchange in exchanges:
+    for i_exchange,exchange in enumerate(exchanges):
         futures = pd.DataFrame(await exchange.fetch_futures()).set_index('name')
         futures['exchange'] = exchange.id
 
         universe = await refresh_universe(exchange, param_universe)
-        universe = [instrument_name for instrument_name in universe if instrument_name.split("-")[0] not in exclusion_list]
-        # universe = universe[~universe['underlying'].isin(exclusion_list)]
-        universe_filtered = futures[(futures['type'].isin(type_allowed))
-                           & (futures['symbol'].isin(universe))]
+        universe_filtered = futures.loc[universe]
+        universe_filtered=universe_filtered[(~futures['underlying'].isin(exclusion_list))
+                                            &(futures['type'].isin(type_allowed))]
 
         # previous book
-        if exchange['equity_override'] is not None:
+        if config['exchanges'][i_exchange]['equity_override'] is not None:
             previous_weights_input = pd.DataFrame(index=[],columns=['optimalWeight'], data=0.0)
-            equity = exchange['equity_override']
+            equity = config['exchanges'][i_exchange]['equity_override']
         else:
             start_portfolio = await fetch_portfolio(exchange, now_time)
             previous_weights_input = -start_portfolio.loc[

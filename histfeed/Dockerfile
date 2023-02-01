@@ -18,7 +18,7 @@ ENV HISTFEED_PATH=$PYLIBS_PATH/histfeed
 ENV UTILS_PATH=$PYLIBS_PATH/utils
 ENV TRADEEXECUTOR_PATH=$PYLIBS_PATH/tradeexecutor
 ENV LOGS_PATH=/tmp/histfeed
-ENV CCXTPRO_PATH=$PYLIBS_PATH/ccxtpro
+ENV CCXTPRO_PATH=$PYLIBS_PATH/ccxt.pro
 
 ENV PYTHONPATH=$PYLIBS_PATH:$HOME
 
@@ -57,7 +57,7 @@ RUN pip3 install -Ur $TRADEEXECUTOR_PATH/requirements.txt
 COPY --chown=$USER:$USER /utils $UTILS_PATH
 COPY --chown=$USER:$USER /histfeed $HISTFEED_PATH
 COPY --chown=$USER:$USER /tradeexecutor $TRADEEXECUTOR_PATH
-COPY --chown=$USER:$USER /ccxtpro $CCXTPRO_PATH
+COPY --chown=$USER:$USER /ccxt.pro $CCXTPRO_PATH
 RUN chmod +x $HISTFEED_PATH/run.sh
 
 # Run container as root to be able to create and write in folders

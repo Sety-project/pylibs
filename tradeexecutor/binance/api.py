@@ -368,11 +368,11 @@ class BinanceAPI(CeFiAPI,ccxt.pro.binanceusdm):
         ###### indexes
         indexes = pd.DataFrame([dict(zip(column_names, row)) for row in indexes], dtype=float).astype(
             dtype={'t': 'int64'}).set_index('t')
-        indexes['volume'] = indexes['volume'] * 24 * 3600 / resolution
+        indexes['volume'] = indexes['volume'] * indexes['c'] *  24 * 3600 / resolution
 
         ###### marks
         mark = pd.DataFrame([dict(zip(column_names, row)) for row in mark]).astype(dtype={'t': 'int64'}).set_index('t')
-        mark['volume'] = mark['volume'] * 24 * 3600 / resolution
+        mark['volume'] = mark['volume'] * mark['c'] * 24 * 3600 / resolution
 
         mark.columns = ['mark_' + column for column in mark.columns]
         indexes.columns = ['indexes_' + column for column in indexes.columns]
@@ -384,8 +384,10 @@ class BinanceAPI(CeFiAPI,ccxt.pro.binanceusdm):
         f = max_oi_data * resolution
         start_times = [int(round(s + k * f)) for k in range(1 + int((e - s) / f)) if s + k * f < e]
 
+        # https://binance-docs.github.io/apidocs/futures/en/#open-interest-statistics --> timeframes in "5m","15m","30m","1h","2h","4h","6h","12h","1d"
+        timeframe = timeframe if timeframe in ["5m","15m","30m","1h","2h","4h","6h","12h","1d"] else '1d'
         openInterest_list = await safe_gather([
-            self.fetch_open_interest_history(symbol, timeframe='5m' if timeframe == '1m' else timeframe,
+            self.fetch_open_interest_history(symbol, timeframe=timeframe,
                                                  since=int(start_time * 1000), limit=max_oi_data)
             for start_time in start_times if start_time > (datetime.now() - timedelta(days=30)).timestamp()])
         openInterest_list = [y for x in openInterest_list for y in x]
@@ -451,7 +453,7 @@ class BinanceAPI(CeFiAPI,ccxt.pro.binanceusdm):
         ###### spot
         data = pd.DataFrame(columns=column_names, data=spot).astype(dtype={'t': 'int64', 'volume': 'float'}).set_index(
             't')
-        data['volume'] = data['volume'] * 24 * 3600 / resolution
+        data['volume'] = data['volume'] * data['c'] * 24 * 3600 / resolution
         data.columns = [symbol.replace('/', '') + '_price_' + column for column in data.columns]
         data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
         data = data[~data.index.duplicated()].sort_index()

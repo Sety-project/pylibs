@@ -19,7 +19,7 @@ ENV UTILS_PATH=$PYLIBS_PATH/utils
 ENV HISTFEED_PATH=$PYLIBS_PATH/histfeed
 ENV RISKPNL_PATH=$PYLIBS_PATH/riskpnl
 ENV TRADEEXECUTOR_PATH=$PYLIBS_PATH/tradeexecutor
-ENV CCXTPRO_PATH=$PYLIBS_PATH/ccxtpro
+ENV CCXTPRO_PATH=$PYLIBS_PATH/ccxt.pro
 
 # LOG PATHS
 ENV LOGS_PATH=/tmp/tradeexecutor
@@ -65,8 +65,8 @@ COPY --chown=$USER:$USER /histfeed $HISTFEED_PATH
 COPY --chown=$USER:$USER /riskpnl $RISKPNL_PATH
 COPY --chown=$USER:$USER /tradeexecutor $TRADEEXECUTOR_PATH
 
-# Add ccxtpro for execution
-COPY --chown=$USER:$USER /ccxtpro $CCXTPRO_PATH
+# Add ccxt.pro for execution
+COPY --chown=$USER:$USER /ccxt.pro $CCXTPRO_PATH
 
 RUN chmod +x $TRADEEXECUTOR_PATH/run.sh
 

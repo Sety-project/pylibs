@@ -97,7 +97,7 @@ def api(func):
             logger.info(f'command returned {str(result)}')
             return result
         except Exception as e:
-            logger.critical(str(e),stack_info=True)
+            logger.critical(f'{e} running {str(func)} {args}{kwargs}',stack_info=True)
             raise e
 
     return wrapper_api

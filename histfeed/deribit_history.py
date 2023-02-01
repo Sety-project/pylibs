@@ -5,7 +5,7 @@ import pandas as pd
 from utils.io_utils import *
 from utils.ccxt_utilities import *
 from histfeed.deribit_smile import deribit_smile_genesisvolatility, MktCurve, VolSurface
-import ccxt as ccxt # needs to be reassigned from ccxtpro
+import ccxt as ccxt # needs to be reassigned from ccxt.pro
 
 funding_start = datetime(2019, 4, 30)
 perp_start = datetime(2018, 8, 14)

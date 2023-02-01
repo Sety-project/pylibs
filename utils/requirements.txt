@@ -24,8 +24,7 @@ bleach==5.0.1
 boto3
 botocore
 cachetools==4.2.2
-ccxt==2.2.1 # =1.88.18
-ccxtpro==1.0.1
+ccxt==2.7.20 # =1.88.18
 certifi==2022.9.14
 cffi==1.15.1
 chardet==4.0.0
