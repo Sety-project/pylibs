@@ -246,7 +246,7 @@ async def perp_vs_cash(
 
             optimized = optimized[
                 np.abs(optimized['optimalWeight']) >
-                optimized.apply(lambda f: float(exchange.market(f.name)['info']['minProvideSize'])
+                optimized.apply(lambda f: float(exchange.market(f.name)['limits']['amount']['min'])
                 if f.name in exchange.markets_by_id else 0, axis=1)
                 ]
 
@@ -362,7 +362,7 @@ async def perp_vs_cash(
 def to_json(exchange, all,config_name):
     exchange_name = exchange.id
     all['exchange'] = exchange_name
-    subaccount = exchange.headers['FTX-SUBACCOUNT']
+    subaccount = 'main'
     all['subaccount'] = subaccount
 
     # send bus message
@@ -456,7 +456,6 @@ def main(*args,**kwargs):
         UNIVERSE = 'max'  # set universe to 'max'
         equities = [10000, 100000, 1000000]
         res = asyncio.run(strategy_wrapper(
-            exchange_name=exchange_name,
             equity_override=equities,
             concentration_limit=[config["CONCENTRATION_LIMIT"]["value"]],
             mktshare_limit=[config["MKTSHARE_LIMIT"]["value"]],
@@ -489,7 +488,7 @@ def main(*args,**kwargs):
                                         holding_period=hol_period,
                                         slippage_override=slippage_override,
                                         backtest_start= datetime(2022,6,17).replace(tzinfo=timezone.utc),#.replace(minute=0, second=0, microsecond=0)-timedelta(days=2),# live start was datetime(2022,6,21,19),
-                                        backtest_end = datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0, second=0, microsecond=0)-pd.Timedelta(exchange.funding_frequency)))
+                                        backtest_end = datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0, second=0, microsecond=0)-pd.Timedelta(BinanceAPI.funding_frequency)))
         return pd.DataFrame()
     elif run_type in ['unwind','flatten','spread']:
         res = asyncio.run(get_exec_request(run_type,exchange_name,**kwargs))

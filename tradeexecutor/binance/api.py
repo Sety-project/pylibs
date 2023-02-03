@@ -24,6 +24,42 @@ class BinanceAPI(CeFiAPI,ccxt.pro.binanceusdm):
     class Static:
         _cache = dict()  # {function_name: result}
 
+        @staticmethod
+        async def fetch_coin_details(exchange):
+            if 'fetch_coin_details' in BinanceAPI.Static._cache:
+                return BinanceAPI.Static._cache['fetch_coin_details']
+            portfolio_collateral_rate = await exchange.sapiGetPortfolioCollateralRate()
+            coin_details = pd.DataFrame((await exchange.fapiPublicGetExchangeInfo())['symbols']).set_index('symbol')[['maintMarginPercent', 'requiredMarginPercent', 'baseAsset']]
+            coin_details['PortfolioCollateralRate'] = coin_details['baseAsset'].apply(
+                lambda f: next((asset['collateralRate'] for asset in portfolio_collateral_rate if asset['asset'] == f),0.0))
+
+            for col in coin_details.columns:
+                coin_details[col] = pd.to_numeric(coin_details[col], errors='ignore')
+
+            all = coin_details[['maintMarginPercent', 'requiredMarginPercent', 'PortfolioCollateralRate']]
+
+            # borrow_rates = pd.DataFrame((await exchange.private_get_spot_margin_borrow_rates())['result']).astype(
+            #     dtype={'coin': 'str', 'estimate': 'float', 'previous': 'float'}).set_index('coin')[['estimate']]
+            # borrow_rates[['estimate']] *= 24 * 365.25
+            # borrow_rates.rename(columns={'estimate': 'borrow'}, inplace=True)
+            #
+            # lending_rates = pd.DataFrame((await exchange.private_get_spot_margin_lending_rates())['result']).astype(
+            #     dtype={'coin': 'str', 'estimate': 'float', 'previous': 'float'}).set_index('coin')[['estimate']]
+            # lending_rates[['estimate']] *= 24 * 365.25
+            # lending_rates.rename(columns={'estimate': 'lend'}, inplace=True)
+            #
+            # borrow_volumes = pd.DataFrame((await exchange.public_get_spot_margin_borrow_summary())['result']).astype(
+            #     dtype={'coin': 'str', 'size': 'float'}).set_index('coin')
+            # borrow_volumes.rename(columns={'size': 'borrow_open_interest'}, inplace=True)
+            #
+            # all = pd.concat([coin_details, borrow_rates, lending_rates, borrow_volumes], join='outer', axis=1)
+            # all = all.loc[coin_details.index]  # borrow summary has beed seen containing provisional underlyings
+            # all.loc[coin_details['spotMargin'] == False, 'borrow'] = None  ### hope this throws an error...
+            # all.loc[coin_details['spotMargin'] == False, 'lend'] = 0
+
+            BinanceAPI.Static._cache['fetch_coin_details'] = all
+            return all
+
     def __init__(self, parameters, private_endpoints=True):
         config = {
             'enableRateLimit': True,
@@ -67,6 +103,7 @@ class BinanceAPI(CeFiAPI,ccxt.pro.binanceusdm):
         # perp_tickers = await self.fetch_tickers(symbols=[f['id'] for f in future_list], params={'type':'future'})
         # delivery_tickers = await self.fetch_tickers(symbols=[f['id'] for f in future_list], params={'type': 'delivery'})
         open_interests = await safe_gather([self.fapiPublicGetOpenInterest({'symbol':f['id']}) for f in perp_markets])
+        coin_details = await BinanceAPI.Static.fetch_coin_details(self)
 
         result = []
         for i in range(0, len(funding_rates)):
@@ -119,7 +156,10 @@ class BinanceAPI(CeFiAPI,ccxt.pro.binanceusdm):
                 'openInterestUsd': float(open_interest['openInterest'])*mark,
                 'expiryTime': expiryTime,
                 'taker_fee': trading_fees[self.safe_string(market, 'symbol')]['taker'],
-                'maker_fee': trading_fees[self.safe_string(market, 'symbol')]['maker']
+                'maker_fee': trading_fees[self.safe_string(market, 'symbol')]['maker'],
+                'maintMarginPercent': coin_details.loc[market['id'],'maintMarginPercent'].squeeze(),
+                'requiredMarginPercent': coin_details.loc[market['id'],'requiredMarginPercent'].squeeze(),
+                'PortfolioCollateralRate': coin_details.loc[market['id'],'PortfolioCollateralRate'].squeeze()
             })
 
         BinanceAPI.Static._cache['fetch_futures'] = result
@@ -395,7 +435,7 @@ class BinanceAPI(CeFiAPI,ccxt.pro.binanceusdm):
         openInterest = pd.DataFrame(openInterest_list, columns=['timestamp', 'openInterestAmount']).astype(
             dtype={'timestamp': 'int64'}).set_index('timestamp') if len(openInterest_list) > 0 else pd.DataFrame()
 
-        data = mark.join(indexes, how='inner').join(openInterest, how='outer')
+        data = mark.join(indexes, how='inner') #TODO:  .join(openInterest, how='outer')
 
         ########## rates from index to mark
         if future['type'] == 'future':

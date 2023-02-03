@@ -2,7 +2,7 @@ import pandas as pd
 import scipy.optimize as opt
 from histfeed.history import *
 from utils.ftx_utils import *
-from tradeexecutor.binance.margin import MarginCalculator
+from tradeexecutor.binance.margin import BasisMarginCalculator
 from tradeexecutor.binance.api import BinanceAPI
 from tradeexecutor.okx.api import OkxAPI
 
@@ -26,6 +26,7 @@ def market_capacity(futures, hy_history, universe_filter_window=[]):
     futures['concentration_limit_long']=futures.apply(lambda f:
                                                       min([f['openInterestUsd'],f['spot_volume_avg']/24,f['future_volume_avg']/24])
                                                       ,axis=1)
+    futures['concentration_limit_short']=0
     # futures['concentration_limit_short'] = futures.apply(lambda f:
     #                                                      min([0 if f['spotMargin']==False else f['borrow_volume_decile'],
     #                                                           f['openInterestUsd'],f['spot_volume_avg'] / 24, f['future_volume_avg'] / 24])
@@ -48,11 +49,11 @@ async def enricher(exchange,
                    depth=0,
                    slippage_scaler=1.0,
                    params={'override_slippage': True, 'type_allowed': ['perpetual'], 'fee_mode': 'retail'}):
-    costs = await fetch_rate_slippage(futures, exchange, holding_period,
-                                      slippage_override, depth, slippage_scaler,
-                                      params)
-
-    return futures.join(costs, how = 'outer')
+    # costs = await fetch_rate_slippage(futures, exchange, holding_period,
+    #                                   slippage_override, depth, slippage_scaler,
+    #                                   params)
+    #
+    # return futures.join(costs, how = 'outer')
 
     markets = await exchange.fetch_markets()
     otc_file = None # configLoader.get_static_params_used()
@@ -63,63 +64,76 @@ async def enricher(exchange,
                      (futures['underlyingType'] == 'COIN')
                     & (futures['type'].isin(params['type_allowed'])==True)]
 
-    ########### add borrows
-    coin_details = pd.DataFrame((await exchange.publicGetWalletCoins())['result']).set_index('id')
-    # Explicitly converts numbers to float64
-    for col in coin_details.columns:
-        coin_details[col] = pd.to_numeric(coin_details[col], errors='ignore')
+    if exchange.id == 'ftx':
+        borrows = await BinanceAPI.Static.fetch_coin_details(exchange)
+        futures = pd.merge(futures, borrows[['borrow', 'lend', 'borrow_open_interest']], how='left', left_on='underlying',
+                           right_index=True)
+        futures['quote_borrow'] = float(borrows.loc['USD', 'borrow'])
+        futures['quote_lend'] = float(borrows.loc['USD', 'lend'])
+        futures['spot'] = 0.5*futures.apply(lambda f: float(find_spot_ticker(markets, f, 'ask'))+float(find_spot_ticker(markets, f, 'bid')),axis=1)
+        ########### naive basis for all futures
+        if not futures[futures['type'] == 'perpetual'].empty:
+            list = await safe_gather([exchange.publicGetFuturesFutureNameStats({'future_name': f})
+                for f in futures[futures['type'] == 'perpetual'].index])
+            list = [float(l['result']['nextFundingRate'])*24*365.325 for l in list]
+            futures.loc[futures['type'] == 'perpetual','basis_mid'] = list
 
-    borrows = await BinanceAPI.Static.fetch_coin_details(exchange)
-    futures = pd.merge(futures, borrows[['borrow', 'lend', 'borrow_open_interest']], how='left', left_on='underlying',
-                       right_index=True)
-    futures['quote_borrow'] = float(borrows.loc['USD', 'borrow'])
-    futures['quote_lend'] = float(borrows.loc['USD', 'lend'])
-    futures['spot'] = 0.5*futures.apply(lambda f: float(find_spot_ticker(markets, f, 'ask'))+float(find_spot_ticker(markets, f, 'bid')),axis=1)
-    ########### naive basis for all futures
-    if not futures[futures['type'] == 'perpetual'].empty:
-        list = await safe_gather([exchange.publicGetFuturesFutureNameStats({'future_name': f})
-            for f in futures[futures['type'] == 'perpetual'].index])
-        list = [float(l['result']['nextFundingRate'])*24*365.325 for l in list]
-        futures.loc[futures['type'] == 'perpetual','basis_mid'] = list
+        if not futures[futures['type'] == 'future'].empty:
+            futures.loc[futures['type'] == 'future', 'basis_mid'] = futures[futures['type'] == 'future'].apply(
+                lambda f: calc_basis(f['mark'], f['index'], f['expiryTime'], datetime.utcnow().replace(tzinfo=timezone.utc)), axis=1)
 
-    if not futures[futures['type'] == 'future'].empty:
-        futures.loc[futures['type'] == 'future', 'basis_mid'] = futures[futures['type'] == 'future'].apply(
-            lambda f: calc_basis(f['mark'], f['index'], f['expiryTime'], datetime.utcnow().replace(tzinfo=timezone.utc)), axis=1)
+        #### fill in borrow for spotMargin==False ot OTC override
+        futures.loc[futures['spotMargin'] == False,'borrow']=999
+        futures.loc[futures['spotMargin'] == False, 'lend'] = -999
+        futures.loc[futures['spotMargin'] == 'OTC','borrow']=futures.loc[futures['spotMargin']=='OTC','underlying'].apply(lambda f:otc_file.loc[f,'borrow'])
+        futures.loc[futures['spotMargin'] == 'OTC', 'lend'] = futures.loc[
+            futures['spotMargin'] == 'OTC', 'underlying'].apply(lambda f: otc_file.loc[f, 'lend'])
+        futures.loc[futures['spotMargin'] == 'OTC', 'borrow_open_interest'] = futures.loc[
+            futures['spotMargin'] == 'OTC', 'underlying'].apply(lambda f: otc_file.loc[f, 'size'])
 
-    #### fill in borrow for spotMargin==False ot OTC override
-    futures.loc[futures['spotMargin'] == False,'borrow']=999
-    futures.loc[futures['spotMargin'] == False, 'lend'] = -999
-    futures.loc[futures['spotMargin'] == 'OTC','borrow']=futures.loc[futures['spotMargin']=='OTC','underlying'].apply(lambda f:otc_file.loc[f,'borrow'])
-    futures.loc[futures['spotMargin'] == 'OTC', 'lend'] = futures.loc[
-        futures['spotMargin'] == 'OTC', 'underlying'].apply(lambda f: otc_file.loc[f, 'lend'])
-    futures.loc[futures['spotMargin'] == 'OTC', 'borrow_open_interest'] = futures.loc[
-        futures['spotMargin'] == 'OTC', 'underlying'].apply(lambda f: otc_file.loc[f, 'size'])
+        # spot carries
+        futures['carryLong']=futures['basis_mid']-futures['quote_borrow']
+        futures['carryShort']=futures['basis_mid']-futures['quote_borrow']+futures['borrow']
+        futures['direction_mid']=0
+        futures['carry_mid'] = 0
+        futures.loc[(futures['carryShort']+futures['carryLong']<0)&(futures['carryShort']<0),'direction_mid']=-1
+        futures.loc[(futures['carryShort']+futures['carryLong']>0)&(futures['carryLong']>0),'direction_mid']=1
+        futures.loc[futures['direction_mid']==-1, 'carry_mid'] = -futures['carryShort']
+        futures.loc[futures['direction_mid']==1, 'carry_mid'] = futures['carryLong']
 
     # transaction costs
     costs = await fetch_rate_slippage(futures, exchange, holding_period,
                                       slippage_override, depth, slippage_scaler,
                                       params)
-    futures = futures.join(costs, how = 'outer')
+    futures = futures.join(costs, how = 'left')
 
-    # spot carries
-    futures['carryLong']=futures['basis_mid']-futures['quote_borrow']
-    futures['carryShort']=futures['basis_mid']-futures['quote_borrow']+futures['borrow']
-    futures['direction_mid']=0
-    futures['carry_mid'] = 0
-    futures.loc[(futures['carryShort']+futures['carryLong']<0)&(futures['carryShort']<0),'direction_mid']=-1
-    futures.loc[(futures['carryShort']+futures['carryLong']>0)&(futures['carryLong']>0),'direction_mid']=1
-    futures.loc[futures['direction_mid']==-1, 'carry_mid'] = -futures['carryShort']
-    futures.loc[futures['direction_mid']==1, 'carry_mid'] = futures['carryLong']
+    if exchange.id == 'binanceusdm':
+        futures['MaxLongWeight'] = 5 # 1 / (1.1 + (futures['requiredMarginPercent'] - futures['collateralWeight']))
+        futures['MaxShortWeight'] = 0 # -1 / (futures['requiredMarginPercent'] + 1.1 / futures['collateralWeight'] - 1)
+        futures.loc[futures['spotMargin']==False,'MaxShortWeight']=0
 
-    ##### max weights ---> TODO CHECK formulas, short < long no ??
-    future_im = futures.apply(lambda f:
-                              (f['imfFactor'] * np.sqrt(equity / f['mark'])).clip(min=1 / f['account_leverage']),
-                              axis=1)
-    futures['MaxLongWeight'] = 1 / (1.1 + (future_im - futures['collateralWeight']))
-    futures['MaxShortWeight'] = -1 / (future_im + 1.1 / futures.apply(lambda f:collateralWeightInitial(f),axis=1) - 1)
-    futures.loc[futures['spotMargin']==False,'MaxShortWeight']=0
+        return futures
+    elif exchange.id == 'ftx':
+        coin_details = pd.DataFrame((await exchange.publicGetWalletCoins())['result']).set_index('id')
+        futures = pd.merge(futures, borrows[['borrow', 'lend', 'borrow_open_interest']], how='left',
+                           left_on='underlying',
+                           right_index=True)
+        # Explicitly converts numbers to float64
+        for col in coin_details.columns:
+            coin_details[col] = pd.to_numeric(coin_details[col], errors='ignore')
 
-    return futures.drop(columns=['carryLong','carryShort'])
+        ##### max weights ---> TODO CHECK formulas, short < long no ??
+        future_im = futures.apply(lambda f:
+                                  (f['imfFactor'] * np.sqrt(equity / f['mark'])).clip(min=1 / f['account_leverage']),
+                                  axis=1)
+        futures['MaxLongWeight'] = 1 / (1.1 + (future_im - futures['collateralWeight']))
+        futures['MaxShortWeight'] = -1 / (
+                    future_im + 1.1 / futures.apply(lambda f: collateralWeightInitial(f), axis=1) - 1)
+        futures.loc[futures['spotMargin'] == False, 'MaxShortWeight'] = 0
+
+        return futures.drop(columns=['carryLong', 'carryShort'])
+    else:
+        pass
 
 def enricher_wrapper(exchange_name,instrument_type,depth) ->pd.DataFrame():
     async def enricher_subwrapper(exchange_name,instrument_type,depth):
@@ -443,18 +457,18 @@ def cash_carry_optimizer(exchange, futures,
                            else sell_slippage[i] for i in range(len(x - xt))])))
     )
 
-    #subject to weight bounds, margin and loss probability ceiling
-    # TODO: covar pre-update
-    #loss_tolerance_constraint = {'type': 'ineq',
-    #            'fun': lambda x: loss_tolerance - norm(loc=np.dot(x,E_int), scale=np.dot(x,np.dot(C_int,x))).cdf(0)}
-    futures_dict = futures[['new_symbol', 'account_leverage','imfFactor','mark']].set_index('new_symbol').to_dict()
-    spot_dict = futures[['underlying','collateralWeight','index']].set_index('underlying').to_dict()
-    excess_margin = MarginCalculator(futures['account_leverage'].values[0],
-                                         spot_dict['collateralWeight'],
-                                         futures_dict['imfFactor'],
-                                         equity,
-                                         spot_dict['index'],#TODO: strictly speaking whould be price of spot
-                                         futures_dict['mark'])
+    # build margin engine and create constraints
+    maintMarginPercent = futures[['symbol','maintMarginPercent']].set_index('symbol').to_dict()
+    requiredMarginPercent = futures[['symbol','requiredMarginPercent']].set_index('symbol').to_dict()
+    PortfolioCollateralRate = futures[['symbol','PortfolioCollateralRate']].set_index('symbol').to_dict()
+    futures_dict = futures[['symbol','mark']].set_index('symbol').to_dict()
+    spot_dict = futures[['underlying','index']].set_index('underlying').to_dict()
+
+    excess_margin = BasisMarginCalculator(maintMarginPercent, requiredMarginPercent, PortfolioCollateralRate,
+                                     equity,
+                                     spot_dict['index'],#TODO: strictly speaking whould be price of spot
+                                     futures_dict['mark'])
+
     margin_constraint = {'type': 'ineq',
                          'fun': lambda x: excess_margin.shockedEstimate(x)['totalIM']}
     stopout_constraint = {'type': 'ineq',
@@ -542,7 +556,7 @@ def cash_carry_optimizer(exchange, futures,
             # https://github.com/scipy/scipy/issues/3056 -> SLSQP is unfomfortable with numerical jacobian when solution is on bounds, but in fact does converge.
             violation = - min([constraint['fun'](res['x']) for constraint in constraints])
             if res['message'] == 'Iteration limit reached':
-                logging.getLogger('pfoptimizer').warning(res['message'] + '...but SLSQP is unfomfortable with numerical jacobian when solution is on bounds, but in fact does converge.')
+                logging.getLogger('pfoptimizer').warning(res['message'] + '...but SLSQP is uncomfortable with numerical jacobian when solution is on bounds, but in fact does converge.')
             elif res['message'] == "Inequality constraints incompatible" and violation < equity / 100:
                 logging.getLogger('pfoptimizer').warning(res['message'] + '...but only by' + str(violation))
             else:
@@ -565,8 +579,8 @@ def cash_carry_optimizer(exchange, futures,
         summary['ExpectedCarry'] = res['x'] * (E_intCarry+E_intUSDborrow)
         summary['RealizedCarry'] = summary.apply(lambda f: f['previousWeight'] * (f['funding'] + (f['borrow'] if f['previousWeight']<0 else -f['quote_borrow'])),axis=1)
 
-        summary['excessIM'] = summary.apply(lambda f:excess_margin.shockedEstimate(res['x'])['IM'].loc[[f.name.split('-PERP')[0]+'/USD',f.name.split('-PERP')[0]+'/USD:USD']].sum(),axis=1)
-        summary['excessMM'] = summary.apply(lambda f:excess_margin.shockedEstimate(res['x'])['MM'].loc[[f.name.split('-PERP')[0]+'/USD',f.name.split('-PERP')[0]+'/USD:USD']].sum(),axis=1)
+        summary['excessIM'] = futures.apply(lambda f:excess_margin.shockedEstimate(res['x'])['IM'].loc[[f['underlying']+'/USDT',f['symbol']]].sum(),axis=1)
+        summary['excessMM'] = futures.apply(lambda f:excess_margin.shockedEstimate(res['x'])['MM'].loc[[f['underlying']+'/USDT',f['symbol']]].sum(),axis=1)
 
         weight_move=summary['optimalWeight']-previous_weights
         summary['transactionCost']=weight_move*futures['buy_slippage']
