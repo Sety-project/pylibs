@@ -458,16 +458,16 @@ def cash_carry_optimizer(exchange, futures,
     )
 
     # build margin engine and create constraints
-    maintMarginPercent = futures[['symbol','maintMarginPercent']].set_index('symbol').to_dict()
-    requiredMarginPercent = futures[['symbol','requiredMarginPercent']].set_index('symbol').to_dict()
-    PortfolioCollateralRate = futures[['symbol','PortfolioCollateralRate']].set_index('symbol').to_dict()
-    futures_dict = futures[['symbol','mark']].set_index('symbol').to_dict()
-    spot_dict = futures[['underlying','index']].set_index('underlying').to_dict()
+    maintMarginPercent = (futures[['symbol','maintMarginPercent']].set_index('symbol').squeeze()/100).to_dict()
+    requiredMarginPercent = (futures[['symbol','requiredMarginPercent']].set_index('symbol').squeeze()/100).to_dict()
+    PortfolioCollateralRate = futures[['symbol','PortfolioCollateralRate']].set_index('symbol').squeeze().to_dict()
+    futures_dict = futures[['symbol','mark']].set_index('symbol').squeeze().to_dict()
+    spot_dict = futures[['underlying','index']].set_index('underlying').squeeze().to_dict()
 
     excess_margin = BasisMarginCalculator(maintMarginPercent, requiredMarginPercent, PortfolioCollateralRate,
                                      equity,
-                                     spot_dict['index'],#TODO: strictly speaking whould be price of spot
-                                     futures_dict['mark'])
+                                     spot_dict,#TODO: strictly speaking whould be price of spot
+                                     futures_dict)
 
     margin_constraint = {'type': 'ineq',
                          'fun': lambda x: excess_margin.shockedEstimate(x)['totalIM']}

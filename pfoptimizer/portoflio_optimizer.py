@@ -4,7 +4,7 @@ import datetime
 import pandas as pd
 
 from tradeexecutor.interface.builders import build_VenueAPI
-from pfoptimizer.ftx_snap_basis import *
+from pfoptimizer.binance_snap_basis import *
 from riskpnl.ftx_risk_pnl import *
 from utils.ftx_utils import find_spot_ticker
 from tradeexecutor.binance.api import BinanceAPI
@@ -324,7 +324,7 @@ async def perp_vs_cash(
             os.makedirs(pfoptimizer_path, mode=0o777)
         pfoptimizer_res_filename = os.path.join(os.sep,
                                                 pfoptimizer_path,
-                                                'ftx_optimal_cash_carry_' + datetime.utcnow().strftime("%Y%m%d_%H%M%S"))
+                                                'binance_optimal_cash_carry_' + datetime.utcnow().strftime("%Y%m%d_%H%M%S"))
 
         # stdout display
         display = optimized[['optimalWeight', 'ExpectedCarry', 'transactionCost']]
@@ -349,7 +349,7 @@ async def perp_vs_cash(
         spot_version = pd.DataFrame()
         spot_version['benchmark'] = optimized['spot']
         spot_version['target'] = optimized['optimalWeight'] / optimized['spot']
-        spot_version.index = [f.replace(':USD', '') for f in futures_version.index]
+        spot_version.index = [f.replace(':USDT', '') for f in futures_version.index]
         all = pd.concat([futures_version, spot_version], axis=0, join='outer')
 
         to_json(exchange, all, config_name)

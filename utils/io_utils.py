@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
 import functools
-import importlib
-import inspect
-import subprocess
 import logging
-import asyncio,aiofiles
-from utils.config_loader import configLoader
+import retry
 from utils.async_utils import async_wrap
-import sys,os,shutil,platform
+from utils.config_loader import configLoader
+import os
 import json
 import pandas as pd
 import numpy as np
 from datetime import timedelta, datetime, timezone
-import dateutil
 import pyarrow, pyarrow.parquet,s3fs
 from typing import Any
+from ccxt import NetworkError
 
 # this is for jupyter
 # import cufflinks as cf
@@ -167,6 +164,8 @@ def myUtcNow(return_type='float'):
         return result
     raise Exception(f'invalid return_type {return_type}')
 
+
+@retry.retry((NetworkError, ConnectionError), tries=3, delay=1,backoff=2)
 def ignore_error(func):
     @functools.wraps(func)
     async def wrapper_ignore_error(*args, **kwargs):
