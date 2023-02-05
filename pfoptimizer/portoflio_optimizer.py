@@ -478,6 +478,7 @@ def main(*args,**kwargs):
                         for sig_horizon in [[parse_time_param(h) for h in [config["SIGNAL_HORIZON"]["value"]]]]:
                             for hol_period in [[parse_time_param(h) for h in [config["HOLDING_PERIOD"]["value"]]]]:
                                 for slippage_override in [[config["SLIPPAGE_OVERRIDE"]["value"]]]:
+                                    backtest_end = datetime.utcnow()-pd.Timedelta('8h')
                                     asyncio.run(strategy_wrapper(
                                         config_name=None,  # yuk..
                                         concentration_limit=concentration_limit,
@@ -488,7 +489,8 @@ def main(*args,**kwargs):
                                         holding_period=hol_period,
                                         slippage_override=slippage_override,
                                         backtest_start= datetime(2022,6,17).replace(tzinfo=timezone.utc),#.replace(minute=0, second=0, microsecond=0)-timedelta(days=2),# live start was datetime(2022,6,21,19),
-                                        backtest_end = datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0, second=0, microsecond=0)-pd.Timedelta(BinanceAPI.funding_frequency)))
+                                        backtest_end = backtest_end.replace(hour=8*int(backtest_end.hour/8),minute=0, second=0, microsecond=0,
+                                                                                 tzinfo=timezone.utc)))
         return pd.DataFrame()
     elif run_type in ['unwind','flatten','spread']:
         res = asyncio.run(get_exec_request(run_type,exchange_name,**kwargs))

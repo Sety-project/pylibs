@@ -335,9 +335,9 @@ class BinanceAPI(CeFiAPI,ccxt.pro.binanceusdm):
 
         if len(borrow) > 0:
             data = pd.DataFrame(borrow)
+            data['timestamp'] = data['timestamp'].apply(lambda x: datetime.fromtimestamp(x/1000).replace(hour=8*int(datetime.fromtimestamp(x/1000).hour/8), minute=0, second=0, microsecond=0,tzinfo=None))
             data = data.set_index('timestamp')[['rate']] * 365.25
             data.rename(columns={'rate': coin + '_rate_borrow'}, inplace=True)
-            data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
             data = data[~data.index.duplicated()].sort_index()
 
             if dirname != '':
@@ -369,10 +369,9 @@ class BinanceAPI(CeFiAPI,ccxt.pro.binanceusdm):
 
         if len(funding) > 0:
             data = pd.DataFrame(funding)
-            data['time'] = data['timestamp'].astype(dtype='int64')
-            data[self.market(future['symbol'])['id'] + '_rate_funding'] = data['fundingRate'] * 365.25 * self.funding_frequency
-            data = data[['time', self.market(future['symbol'])['id'] + '_rate_funding']].set_index('time')
-            data.index = [datetime.fromtimestamp(3600*round(x / 1000 /3600,0)) for x in data.index]
+            data['datetime'] = data['datetime'].apply(lambda x: dateutil.parser.parse(x).replace(hour=8*int(dateutil.parser.parse(x).hour/8),minute=0, second=0, microsecond=0,tzinfo=None))
+            data[self.market(future['symbol'])['id'] + '_rate_funding'] = data['fundingRate'] * pd.Timedelta('365d').total_seconds() / pd.Timedelta(self.funding_frequency).total_seconds()
+            data = data[['datetime', self.market(future['symbol'])['id'] + '_rate_funding']].set_index('datetime')
             data = data[~data.index.duplicated()].sort_index()
 
             if dirname != '':
@@ -461,7 +460,8 @@ class BinanceAPI(CeFiAPI,ccxt.pro.binanceusdm):
             raise Exception('what is ' + future['symbol'] + ' ?')
 
         data.columns = [self.market(future['symbol'])['id'] + '_' + c for c in data.columns]
-        data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
+        data.index = [datetime.fromtimestamp(x / 1000).replace(hour=8*int(datetime.fromtimestamp(x / 1000).hour/8),
+                                                               minute=0, second=0, microsecond=0,tzinfo=None) for x in data.index]
         data = data[~data.index.duplicated()].sort_index()
 
         if dirname != '':
@@ -496,7 +496,7 @@ class BinanceAPI(CeFiAPI,ccxt.pro.binanceusdm):
             't')
         data['volume'] = data['volume'] * data['c'] * 24 * 3600 / resolution
         data.columns = [symbol.replace('/', '') + '_price_' + column for column in data.columns]
-        data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
+        data.index = [datetime.fromtimestamp(x / 1000).replace(hour=8*int(datetime.fromtimestamp(x / 1000).hour/8),minute=0, second=0, microsecond=0,tzinfo=None) for x in data.index]
         data = data[~data.index.duplicated()].sort_index()
         if dirname != '':
             filename = os.path.join(dirname,symbol.replace('/', '') + '_price.csv')
