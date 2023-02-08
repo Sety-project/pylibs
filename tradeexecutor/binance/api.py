@@ -65,7 +65,7 @@ class BinanceAPI(CeFiAPI,ccxt.pro.binanceusdm):
             'enableRateLimit': True,
             'newUpdates': True}
         if private_endpoints:  ## David personnal
-            config |= {'apiKey': 'V2KfGbMd9Zd9fATONTESrbtUtkEHFcVDr6xAI4KyGBjKs7z08pQspTaPhqITwh1M',
+            config |= {'apiKey': 'rcRg52mpbuZySr2fa3WpRn0I2fHwJWcGQK4K6Vg110TOpuUIvgU2vl8wWPh0jADT',
             'secret': api_params['binance']['key']}
         super().__init__(parameters)
         super(ccxt.pro.binance,self).__init__(config=config)

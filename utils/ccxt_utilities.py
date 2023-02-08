@@ -62,10 +62,10 @@ async def open_exchange(exchange_name,subaccount,config={}):
         } | config)
         if subaccount!='': exchange.headers= {'FTX-SUBACCOUNT': subaccount}
 
-    elif exchange_name in ['binance','binanceusdm','binancecoin']:
+    elif exchange_name in ['binance', 'binanceusdm', 'binancecoin']:
         exchange = getattr(ccxt,exchange_name)(config={# subaccount convexity
         'enableRateLimit': True,
-        'apiKey': 'V2KfGbMd9Zd9fATONTESrbtUtkEHFcVDr6xAI4KyGBjKs7z08pQspTaPhqITwh1M',
+        'apiKey': 'rcRg52mpbuZySr2fa3WpRn0I2fHwJWcGQK4K6Vg110TOpuUIvgU2vl8wWPh0jADT',
         'secret': api_params['binance']['key'],
     }|config)
     elif exchange_name == 'okex5':
