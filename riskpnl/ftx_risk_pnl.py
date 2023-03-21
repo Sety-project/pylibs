@@ -546,7 +546,7 @@ async def risk_and_pnl(exchange,**kwargs):
 
     # return pnl period is specified
     if 'period' in kwargs:
-        period = parse_time_param(kwargs['period'])
+        period = parse_time_or_path(kwargs['period'])
         result = pnl[pnl['time']>end_time-period]
         logging.getLogger('riskpnl').info(result)
         return result

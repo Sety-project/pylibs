@@ -1,6 +1,7 @@
 import logging,os,sys,datetime,subprocess,importlib,functools,pathlib,shutil
-from utils.io_utils import parse_time_param
+from utils.io_utils import parse_time_or_path
 from utils.config_loader import configLoader
+from pathlib import Path
 
 def build_logging(app_name,
                   log_date=datetime.datetime.utcnow(),
@@ -190,7 +191,7 @@ MyModules.register(name='riskpnl',
                        ['exchange',lambda x: x in ['ftx', 'binanceusdm'],'not in {}'.format(["ftx, binance"])],
                        ['subaccount', lambda x: True, 'not in {}'.format([""])]],
                    kwargs_validation={'nb_runs':[lambda x: isinstance(int(x),int),'integer needed'],
-                                      'period':[lambda x: isinstance(parse_time_param(x),datetime.timedelta),'time period needed'],
+                                      'period':[lambda x: isinstance(parse_time_or_path(x), datetime.timedelta) or isinstance(parse_time_or_path(x), Path), 'time period needed'],
                                       'dirname':[lambda x: os.path.isdir(x),'not found'],
                                       'filename':[lambda x: True,'not found'],# skew it....
                                       'config':[lambda x: os.path.isdir(os.path.join(os.sep,configLoader.get_config_folder_path(config_name=x))),'not found']})

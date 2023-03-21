@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 import functools
 import logging
+import typing
+
 import retry
 from utils.async_utils import async_wrap
 from utils.config_loader import configLoader
 import os
+from pathlib import Path
 import json
 import pandas as pd
 import numpy as np
@@ -137,20 +140,24 @@ class NpEncoder(json.JSONEncoder):
             return obj.isoformat()
         return super(NpEncoder, self).default(obj)
 
-def parse_time_param(param):
+def parse_time_or_path(param) -> typing.Union[timedelta, Path]:
     if 'mn' in param:
         horizon = int(param.split('mn')[0])
-        horizon = timedelta(minutes=horizon)
+        result = timedelta(minutes=horizon)
     elif 'h' in param:
         horizon = int(param.split('h')[0])
-        horizon = timedelta(hours=horizon)
+        result = timedelta(hours=horizon)
     elif 'd' in param:
         horizon = int(param.split('d')[0])
-        horizon = timedelta(days=horizon)
+        result = timedelta(days=horizon)
     elif 'w' in param:
         horizon = int(param.split('w')[0])
-        horizon = timedelta(weeks=horizon)
-    return horizon
+        result = timedelta(weeks=horizon)
+    elif os.path.isfile(os.path.join(os.sep, Path.home(), *param)):
+        result = os.path.join(os.sep, Path.home(), *param)
+    else:
+        raise ValueError
+    return result
 
 def myUtcNow(return_type='float'):
     result = datetime.utcnow()

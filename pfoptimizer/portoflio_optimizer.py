@@ -1,5 +1,7 @@
 import copy
 import datetime
+import pickle
+import typing
 
 import pandas as pd
 
@@ -111,7 +113,7 @@ async def get_exec_request(run_type, exchange, **kwargs):
 async def perp_vs_cash(
         exchange,
         config_name,
-        signal_horizon,
+        signal_horizon: typing.Union[timedelta, Path],
         holding_period,
         slippage_override,
         concentration_limit,
@@ -126,6 +128,12 @@ async def perp_vs_cash(
     # Load defaults params
     now_time = datetime.utcnow().replace(tzinfo=timezone.utc)
     config = configLoader.get_pfoptimizer_params(dirname=config_name)
+    if isinstance(signal_horizon, Path):
+        with open(signal_horizon, 'rb') as fp:
+            forecaster = pickle.load(signal_horizon)
+        signal_horizon = timedelta(days=7)
+    else:
+        forcaster = None
 
     # Qualitative filtering
     param_type_allowed = config['TYPE_ALLOWED']['value']
@@ -233,10 +241,8 @@ async def perp_vs_cash(
                              minimum_carry=minimum_carry,
                              previous_weights_index=previous_weights.index)
 
-            optimized = cash_carry_optimizer(exchange, updated,
+            optimized = cash_carry_optimizer(updated,
                                              previous_weights_df=previous_weights,
-                                             holding_period=holding_period,
-                                             signal_horizon=signal_horizon,
                                              concentration_limit=concentration_limit,
                                              mktshare_limit=mktshare_limit,
                                              equity=equity,
@@ -445,8 +451,8 @@ def main(*args,**kwargs):
             mktshare_limit=[config["MKTSHARE_LIMIT"]["value"]],
             minimum_carry=[config["MINIMUM_CARRY"]["value"]],
             exclusion_list=config['EXCLUSION_LIST']["value"],
-            signal_horizon=[parse_time_param(config['SIGNAL_HORIZON']['value'])],
-            holding_period=[parse_time_param(config['HOLDING_PERIOD']['value'])],
+            signal_horizon=[parse_time_or_path(config['SIGNAL_HORIZON']['value'])],
+            holding_period=[parse_time_or_path(config['HOLDING_PERIOD']['value'])],
             slippage_override=[config["SLIPPAGE_OVERRIDE"]["value"]],
             backtest_start=None,
             backtest_end=None))
@@ -461,8 +467,8 @@ def main(*args,**kwargs):
             mktshare_limit=[config["MKTSHARE_LIMIT"]["value"]],
             minimum_carry=[config["MINIMUM_CARRY"]["value"]],
             exclusion_list=config['EXCLUSION_LIST']["value"],
-            signal_horizon=[parse_time_param(config['SIGNAL_HORIZON']['value'])],
-            holding_period=[parse_time_param(config['HOLDING_PERIOD']['value'])],
+            signal_horizon=[parse_time_or_path(config['SIGNAL_HORIZON']['value'])],
+            holding_period=[parse_time_or_path(config['HOLDING_PERIOD']['value'])],
             slippage_override=[config["SLIPPAGE_OVERRIDE"]["value"]],
             backtest_start=None,
             backtest_end=None))
@@ -475,8 +481,8 @@ def main(*args,**kwargs):
             for concentration_limit in [[config["CONCENTRATION_LIMIT"]["value"]]]:
                 for mktshare_limit in [[config["MKTSHARE_LIMIT"]["value"]]]:
                     for minimum_carry in [[config["MINIMUM_CARRY"]["value"]]]:
-                        for sig_horizon in [[parse_time_param(h) for h in [config["SIGNAL_HORIZON"]["value"]]]]:
-                            for hol_period in [[parse_time_param(h) for h in [config["HOLDING_PERIOD"]["value"]]]]:
+                        for sig_horizon in [[parse_time_or_path(h) for h in [config["SIGNAL_HORIZON"]["value"]]]]:
+                            for hol_period in [[parse_time_or_path(h) for h in [config["HOLDING_PERIOD"]["value"]]]]:
                                 for slippage_override in [[config["SLIPPAGE_OVERRIDE"]["value"]]]:
                                     backtest_end = datetime.utcnow()-pd.Timedelta('8h')
                                     asyncio.run(strategy_wrapper(

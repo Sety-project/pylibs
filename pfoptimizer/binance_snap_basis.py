@@ -138,8 +138,8 @@ async def enricher(exchange,
 def enricher_wrapper(exchange_name,instrument_type,depth) ->pd.DataFrame():
     async def enricher_subwrapper(exchange_name,instrument_type,depth):
         exclusion_list = configLoader.get_pfoptimizer_params()['EXCLUSION_LIST']['value']
-        holding_period = parse_time_param(configLoader.get_pfoptimizer_params()['HOLDING_PERIOD']['value'])
-        signal_horizon = parse_time_param(configLoader.get_pfoptimizer_params()['SIGNAL_HORIZON']['value'])
+        holding_period = parse_time_or_path(configLoader.get_pfoptimizer_params()['HOLDING_PERIOD']['value'])
+        signal_horizon = parse_time_or_path(configLoader.get_pfoptimizer_params()['SIGNAL_HORIZON']['value'])
         dirname = configLoader.get_mktdata_folder_for_exchange('binance')
 
         exchange = await open_exchange(exchange_name,'')
@@ -282,7 +282,7 @@ def forecast(exchange, futures, hy_history,
                            axis=1).T
     Borrow.columns = futures.index.tolist()
     USDborrow = futures.apply(lambda f: hy_history[f['quote'] + '_rate_borrow'],
-                           axis=1).T
+                              axis=1).T
 
     # 2: integrals, and their median.
     intLongCarry = LongCarry.rolling(holding_nb_periods).mean()
@@ -419,11 +419,8 @@ def transaction_cost_calculator(dx,buy_slippage,sell_slippage):
 
 ###### use convex optimiziation
 # https://docs.scipy.org/doc/scipy/reference/tutorial/optimize.html#sequential-least-squares-programming-slsqp-algorithm-method-slsqp
-def cash_carry_optimizer(exchange, futures,
-                         previous_weights_df,
-                         holding_period,  # to convert slippag into rate
-                         signal_horizon,  # historical window for expectations
-                         concentration_limit,
+def cash_carry_optimizer(futures,
+                         previous_weights_df,                         concentration_limit,
                          mktshare_limit,
                          equity,# for markovitz
                          optional_params=[]):  # verbose,warm_start, cost_blind

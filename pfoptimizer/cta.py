@@ -18,7 +18,7 @@ from sklearn.neural_network import MLPRegressor, MLPClassifier
 from sklearn.model_selection import TimeSeriesSplit, cross_validate, cross_val_score, cross_val_predict, train_test_split
 from sklearn.metrics import RocCurveDisplay
 # import shap
-from sklearn_utils import GroupTimeSeriesSplit
+# from sklearn_utils import GroupTimeSeriesSplit
 from histfeed.history import get_history, history_start
 
 Instrument = NewType("Instrument", str)  # eg 'ETHUSDT'
@@ -194,29 +194,33 @@ class ResearchEngine:
     async def read_from_disk(dirpath,
                           start_date,
                           selected_instruments: set[Instrument]) -> FileData:
-        file_data: FileData = FileData(dict())
         start_date = dateutil.parser.isoparse(start_date).replace(tzinfo=timezone.utc)
         dirname = os.path.join(os.sep, Path.home(), *dirpath)
 
-        futures= pd.DataFrame()
+        futures = pd.DataFrame()
         for future in selected_instruments:
+            quote_asset = next(xxx for xxx in ['USDT', 'BUSD'] if xxx in future)
             futures.loc[future, 'type'] = 'perpetual'
-            futures.loc[future, 'underlying'] = future.split('USDT')[0]
-            futures.loc[future, 'quote'] = 'USDT'
+            futures.loc[future, 'underlying'] = future.split(quote_asset)[0]
+            futures.loc[future, 'quote'] = quote_asset
 
         history = await get_history(dirname, futures, start_date)
 
-        result = FileData(dict())
+        result: FileData = FileData(dict())
         for future in selected_instruments:
             df = history[[column for column in history.columns if future in column]]
             df['close_premium'] = (df[f'{future}_mark_c']/df[f'{future}_indexes_c']-1)*24*365.25/8
+            borrow = history['{}_rate_borrow'.format(futures.loc[future, 'underlying'])]
+            quote_borrow = history['{}_rate_borrow'.format(futures.loc[future, 'quote'])]
+            df['carry_long'] = df['close_premium'] - quote_borrow
+            df['carry_short'] = df['close_premium'] + borrow
             column_mapping = {f'{future}_price_o': 'open',
                               f'{future}_price_h': 'high',
                               f'{future}_price_l': 'low',
                               f'{future}_price_c': 'close',
                               f'{future}_price_volume': 'volume'}
             df.rename(columns=column_mapping, inplace=True)
-            result |= {future: df[list(column_mapping.values())+['close_premium']].dropna()}
+            result |= {future: df[list(column_mapping.values())+['close_premium', 'carry_long', 'carry_short']].dropna()}
 
         return result
 
@@ -392,7 +396,6 @@ class ResearchEngine:
         '''
         result: Data = Data(dict())
         for instrument, raw_feature in itertools.product(file_data.keys(), label_map.keys()):
-
             for horizon in label_map[raw_feature]['horizons']:
                 if raw_feature == 'quantized_zscore':
                     # record performance for use in backtest
@@ -411,16 +414,10 @@ class ResearchEngine:
                     log_perf = (file_data[instrument]['close'].shift(-1) /
                                 file_data[instrument]['close']).apply(np.log)
                     temp = winning_trade(log_perf, horizon)
-                elif raw_feature == 'carry':
-                    future_carry = file_data[instrument]['close_premium'].rolling(horizon).mean().shift(-horizon) # rescale for 1d ???
+                elif 'carry' in raw_feature:
+                    temp = file_data[instrument][raw_feature].rolling(horizon).mean().shift(-horizon) # rescale for 1d ???
                     # record performance for use in backtest
-                    self.performance[instrument] = future_carry
-
-                    z_score = future_carry
-
-                    def quantized(x,buckets=label_map[raw_feature]['carry_buckets']):
-                        return next((key for key,values in buckets.items() if values[0] < x <= values[1]), np.NaN)
-                    temp = z_score.apply(quantized).dropna()
+                    self.performance[instrument] = temp
                 else:
                     raise NotImplementedError
 
