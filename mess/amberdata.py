@@ -1,7 +1,6 @@
 import asyncio
 import aiohttp
 import typing
-import web3data
 import pandas as pd
 import datetime
 import json
@@ -9,6 +8,7 @@ import requests
 import os
 from pathlib import Path
 from pfoptimizer.deribit_portoflio import black_scholes as bs
+from pfoptimizer.deribit_portoflio import orderbook_slippage
 from utils.async_utils import safe_gather
 from dateutil.parser import parse
 
@@ -18,6 +18,7 @@ from dateutil.parser import parse
 
 
 class AmberdataAPI:
+    safe_gather_limit = 100
     date_type_map = {
         # 'funding_rate': ('funding-rates', datetime.timedelta(days=1).total_seconds()*1000, 'list'),
         'open_interest': ('open-interest', datetime.timedelta(days=1).total_seconds()*1000, 'list'),
@@ -50,9 +51,14 @@ class AmberdataAPI:
                 else:
                     raise e
 
-        option_reference = dict()
+        if os.path.isfile('option_reference.json'):
+            with open('option_reference.json', 'r') as fp:
+                option_reference = json.load(fp)
+        else:
+            option_reference = dict()
+
         i = 0
-        while i < 100:
+        while i < 0:
             additional_data = get_option_reference()
             if os.path.isfile('option_reference.json'):
                 with open('option_reference.json', 'r') as fp:
@@ -86,10 +92,10 @@ class AmberdataAPI:
             t -= frequency
         return result
 
-    def requests(self, queries: list[str]) -> dict[str, typing.Any]:
+    def async_requests(self, queries: list[str]) -> dict[str, typing.Any]:
         async def async_wrapper():
             async with aiohttp.ClientSession(headers=self.headers) as session:
-                responses = await safe_gather([session.get(url) for url in queries], 100)
+                responses = await safe_gather([session.get(url) for url in queries], n=AmberdataAPI.safe_gather_limit)
             return dict(zip(queries, responses))
         return asyncio.run(async_wrapper())
 
@@ -188,22 +194,40 @@ class AmberdataAPI:
         response = requests.request("GET", url, headers=self.headers, data=payload)
         return json.loads(response.text)
 
-    def option_order_book(self, coin: str = 'ETH',
-                          startDate: datetime = None, endDate: datetime = None):
-        instruments = [instrument for instrument, data in self.option_reference.items()
-                       if 'expiration' in data and data['expiration'] != ''
-                       and startDate < parse(data['expiration']) < startDate + datetime.timedelta(days=15)
-                       and data['quoteAsset'] == coin
-                       and data['contractType'] != 'perpetual']
-        queries = [f"https://web3api.io/api/v2/market/options/order-book-snapshots/{instrument}/historical?exchange=deribit&startDate={int(start/1000)}&endDate={int(end/1000)}"
-                   for start, end in AmberdataAPI.regular_dates(startDate.timestamp()*1000,
-                                                                endDate.timestamp()*1000,
-                                                                3600000)
-                   for instrument in instruments]
-        return self.requests(queries)
+    def option_order_book(self,
+                          coin: str,
+                          days_to_expiry: int,
+                          startDate: datetime, endDate: datetime):
+        data_availability = self.paginate('https://web3api.io/api/v2/market/options/order-book-snapshots/information', 'list')
+
+        labels= []
+        queries = []
+        for timestamp, _ in AmberdataAPI.regular_dates(startDate.timestamp() * 1000,
+                                                     endDate.timestamp() * 1000,
+                                                     7 * 24 * 3600 * 1000):
+            expiry = (datetime.datetime.fromtimestamp(timestamp/1000) + datetime.timedelta(days=days_to_expiry)).replace(hour=8,minute=0,second=0,microsecond=0)
+            for instrument, data in self.option_reference.items():
+                if ('expiration' in data) and (data['expiration'] != '') and (parse(data['expiration']) == expiry) and data['quoteAsset'] == coin and data['contractType'] != 'perpetual':
+                    found = next((available for available in data_availability if available['instrument'] == instrument), None)
+                    if found is not None and found['startDate'] <= data['expiration'] <= found['endDate']:
+                        start = timestamp - 5 * 60 * 1000
+                        end = timestamp + 5 * 60 * 1000
+                        queries.append({'timestamp':timestamp,
+                                       'name':instrument,
+                                       'strike': data['strikePrice'],
+                                       'expiry': expiry,
+                                       'query': f"https://web3api.io/api/v2/market/options/order-book-snapshots/{instrument}/historical?exchange=deribit&startDate={int(start/1000)}&endDate={int(end/1000)}"})
+
+        data = []
+        for order_book in self.async_requests([x['query'] for x in queries]).values():
+            try:
+                data += [eval(asyncio.run(order_book.read()))['payload']['data']]
+            except:
+                pass
+        slippages = map(orderbook_slippage, data)
 
 api = AmberdataAPI()
-options = api.option_order_book('ETH',
+options = api.option_order_book('ETH',7,
                                 datetime.datetime.now() - datetime.timedelta(days=90),
                                 datetime.datetime.now())
 lyra = AmberdataAPI().lyra_greeks()

@@ -6,6 +6,9 @@ import scipy
 
 from histfeed.deribit_history import deribit_history_main
 
+def orderbook_slippage(whatever) -> float:
+    return 0
+
 class black_scholes:
     @staticmethod
     def d1(S, K, V, T):
