@@ -1,5 +1,6 @@
 import asyncio
 import shutil
+import sys
 
 import aiohttp
 import typing
@@ -57,8 +58,8 @@ class AmberdataAPI:
         def get_option_reference():
             try:
                 return self.paginate(
-                "https://web3api.io/api/v2/market/options/exchanges/reference?exchange=deribit&includeInactive=true",
-                'dict')
+                    "https://web3api.io/api/v2/market/options/exchanges/reference?exchange=deribit&includeInactive=true",
+                    'dict')
             except Exception as e:
                 if len(e.args) > 0 and isinstance(e.args[0], dict):
                     return e.args[0]['partial_result']
@@ -112,18 +113,25 @@ class AmberdataAPI:
     async def async_requests(self, queries: list[typing.Tuple[str, typing.Any]], **kwargs) -> dict[str, typing.Any]:
         async with aiohttp.ClientSession(headers=self.headers) as session:
             responses = await safe_gather([session.request(method='GET', url=url, data=data) for (url, data) in queries],
-                                          n=AmberdataAPI.safe_gather_limit)
-            results = [json.loads(await response.content.read())['data'] for response in responses]
+                                          n=AmberdataAPI.safe_gather_limit,
+                                          return_exceptions=True)
+            temps = await safe_gather([response.content.read() for response in responses])
+            results = [json.loads(temp)['data'] for temp in temps]
         return dict(zip(queries, results))
 
-    def async_get(self, queries: list[str], **kwargs) -> dict[str, typing.Any]:
-        async def async_wrapper():
-            async with aiohttp.ClientSession(headers=self.headers) as session:
-                responses = await safe_gather([session.get(url) for url in queries],
-                                              n=AmberdataAPI.safe_gather_limit)
-            return dict(zip(queries, responses))
-        return asyncio.run(async_wrapper())
-
+    async def async_get(self, queries: list[str], **kwargs) -> dict[str, typing.Any]:
+        results = dict()
+        async with aiohttp.ClientSession(headers=self.headers) as session:
+            responses = await safe_gather([session.get(url) for url in queries],
+                                          n=AmberdataAPI.safe_gather_limit,
+                                          return_exceptions=True)
+            for i, response in enumerate(responses):
+                if response.status == 200:
+                    temp = await response.content.read()
+                    results[queries[i]] = json.loads(temp)['payload']['data']
+                else:
+                    log.error(f'Error {response.status} for {queries[i]}')
+        return results
 
     def paginate(self, query: str, data_type: str) -> typing.Union[dict, list]:
         result = eval(data_type)()
@@ -158,8 +166,8 @@ class AmberdataAPI:
                         return result
             except Exception as e:
                 log.warning({'current_query': current_query,
-                                 'text': current.text,
-                                 'partial_result': result})
+                             'text': current.text,
+                             'partial_result': result})
 
     def supported_cex(self, instrument_type='futures'):
         date_ranges = self.paginate(
@@ -199,23 +207,23 @@ class AmberdataAPI:
         response = requests.get("https://web3api.io/api/v2/market/defi/dex/exchanges", headers=self.headers)
         return json.loads(response.text)['payload']
 
-    def v3_pools(self,
-                 start: datetime = (datetime.now()-timedelta(days=90)).strftime('%Y-%m-%d'),
-                 end: datetime = datetime.now().strftime('%Y-%m-%d'),
-                 filename: Path = os.path.join(Path.home(), 'mktdata', 'saved.json'),
-                 enrich: bool = False,
-                 basic_filter: typing.Callable = None,
-                 advanced_filter: typing.Callable = None) -> dict:
+    async def v3_pools(self,
+                       start: datetime = (datetime.now()-timedelta(days=90)).strftime('%Y-%m-%d'),
+                       end: datetime = datetime.now().strftime('%Y-%m-%d'),
+                       filename: Path = os.path.join(Path.home(), 'mktdata', 'saved.json'),
+                       enrich: bool = False,
+                       basic_filter: typing.Callable = None,
+                       advanced_filter: typing.Callable = None) -> dict:
         pools = self.paginate("https://web3api.io/api/v2/market/defi/dex/pairs?exchange=uniswapv3", 'list')
         if basic_filter is not None:
             pools = list(filter(basic_filter, pools))
         if enrich:
-            enrichments = self.async_get([('https://web3api.io/api/v2/market/defi/metrics/exchanges/uniswapv3/pairs/{}/latest'.format(pool['pairAddress']), None)
-                                               for pool in pools])
+            enrichments = await self.async_get([('https://web3api.io/api/v2/market/defi/metrics/exchanges/uniswapv3/pairs/{}/latest'.format(pool['pairAddress']), None)
+                                                for pool in pools])
             for pool in pools:
                 enrichment_buffer = enrichments['https://web3api.io/api/v2/market/defi/metrics/exchanges/uniswapv3/pairs/{}/latest'.format(pool['pairAddress'])]
                 try:
-                    enrichment = eval(asyncio.run(enrichment_buffer.read()))
+                    enrichment = eval(await enrichment_buffer.read())
                     pool |= enrichment
                     log.info('pool {} enriched'.format(pool['pairName']))
                 except Exception as e:
@@ -230,12 +238,14 @@ class AmberdataAPI:
         return async_wrap(self.paginate)(query['query'], 'list')
 
     async def lens(self, protocol: str, poolAddress: str,
-                   startDate: datetime, endDate: datetime,
+                   startDate: datetime,
+                   endDate: datetime,
+                   frequency: timedelta,
                    filename: str=None):
         queries = []
         for start, end in AmberdataAPI.regular_dates(startDate.timestamp() * 1000,
                                                      endDate.timestamp() * 1000,
-                                                     24 * 3600 * 1000):
+                                                     frequency.total_seconds() * 1000):
             queries.append({'start': start,
                             'query': f"https://web3api.io/api/v2/defi/dex/{protocol}/pools/{poolAddress}?startDate={int(start/1000)}&endDate={int(end/1000)}&size=1000"})
 
@@ -265,10 +275,10 @@ class AmberdataAPI:
         return json.loads(response.text)
 
     async def deribit_smile_genesisvolatility(self, currency: str,
-                                        start: datetime, 
-                                        end: datetime, 
-                                        frequency: timedelta,
-                                        output_path: str=os.path.join(Path.home(), 'mktdata', 'genesisvolatility', 'surface_history.csv')) -> pd.DataFrame:
+                                              start: datetime,
+                                              end: datetime,
+                                              frequency: timedelta,
+                                              output_path: str=os.path.join(Path.home(), 'mktdata', 'genesisvolatility', 'surface_history.csv')) -> pd.DataFrame:
         '''
         full volsurface history as multiindex dataframe: date as milli x (tenor as years, strike of 'atm')
         '''
@@ -285,6 +295,9 @@ class AmberdataAPI:
 
         results = await self.async_requests(queries)
         results = sum([smiles_chunk['MoneynessSurface'] for smiles_chunk in results.values()], [])
+        if results == []:
+            return pd.DataFrame()
+
         results = pd.DataFrame(results)
         results['date'] = results['date'].apply(lambda x: datetime.fromtimestamp(float(x) / 1000))
 
@@ -299,18 +312,20 @@ class AmberdataAPI:
 
         return results
 
-    def option_order_book(self,
-                          coin: str,
-                          days_to_expiry: int,
-                          startDate: datetime, endDate: datetime):
+    async def option_order_book(self,
+                                coin: str,
+                                days_to_expiry: int,
+                                startDate: datetime,
+                                endDate: datetime,
+                                frequency: timedelta):
         # data_availability = self.paginate('https://web3api.io/api/v2/market/options/order-book-snapshots/information', 'list')
 
         labels = []
         queries = []
         for timestamp, _ in AmberdataAPI.regular_dates(startDate.timestamp() * 1000,
-                                                     endDate.timestamp() * 1000,
-                                                     7 * 24 * 3600 * 1000):
-            expiry = (datetime.fromtimestamp(timestamp/1000) + timedelta(days=days_to_expiry)).replace(hour=8,minute=0,second=0,microsecond=0)
+                                                       endDate.timestamp() * 1000,
+                                                       frequency.total_seconds() * 1000):
+            expiry = (datetime.fromtimestamp(timestamp/1000) + timedelta(days=days_to_expiry)).replace(hour=8, minute=0, second=0, microsecond=0)
             for strike in np.linspace(1000, 3000, 50):  # instrument, data in self.option_reference.items():
                 #if ('expiration' in data) and (data['expiration'] != '') and (parse(data['expiration']) == expiry) and data['quoteAsset'] == coin and data['contractType'] != 'perpetual':
                 # found = next((available for available in data_availability if available['instrument'] == instrument), None)
@@ -319,22 +334,20 @@ class AmberdataAPI:
                 end = timestamp + 5 * 60 * 1000
                 instrument = '{}-{}-{}-C'.format(coin, expiry.strftime("%d%b%y").upper(), int(strike))
                 queries.append({'timestamp': timestamp,
-                               'name': instrument,
-                               'strike': strike,
-                               'expiry': expiry,
-                               'query': f"https://web3api.io/api/v2/market/options/order-book-snapshots/{instrument}/historical?exchange=deribit&startDate={int(start/1000)}&endDate={int(end/1000)}"})
+                                'name': instrument,
+                                'strike': strike,
+                                'expiry': expiry,
+                                'query': f"https://web3api.io/api/v2/market/options/order-book-snapshots/{instrument}/historical?exchange=deribit&startDate={int(start/1000)}&endDate={int(end/1000)}"})
 
-        data = []
-        for order_book in self.async_get([x['query'] for x in queries]).values():
-            try:
-                data += [eval(asyncio.run(order_book.read()))['payload']['data']]
-            except:
-                pass
+        data = await self.async_get([x['query'] for x in queries])
+        with open('orderbook.json', 'w') as f:
+            json.dump(data, f)
         slippages = map(orderbook_slippage, data)
-    def run_filtered_pools(self,
-                           startDate: datetime,
-                           endDate: datetime
-                           ):
+    async def run_filtered_pools(self,
+                                 startDate: datetime,
+                                 endDate: datetime,
+                                 frequency: timedelta=timedelta(days=1)
+                                 ):
         tokens = ['WETH', 'USDC', 'WBTC', 'DAI', 'LDO', 'GMX', 'UNI', 'LINK', 'MATIC', '1INCH']
         basic_filter = lambda x: (x['baseSymbol'] in tokens) & (x['quoteSymbol'] in tokens)
         # basic_filter = lambda x: (x['poolFees'] == '0.0005') & (x['pairName'] == 'USDC_WETH')
@@ -343,31 +356,46 @@ class AmberdataAPI:
                 return ((x['liquidityTotalUSD'] > 1e7) & (x['feesUSD']/x['liquidityTotalUSD'] > 1e-4))
             else:
                 return False
-        filtered_pools = self.v3_pools(enrich=False, basic_filter=basic_filter, advanced_filter=None)
+        filtered_pools = await self.v3_pools(enrich=False, basic_filter=basic_filter, advanced_filter=None)
 
         log.info('Found {} pools'.format(len(filtered_pools)))
         protocol = 'uniswapv3'
-        uniswap_events = asyncio.run(safe_gather([self.lens(protocol=protocol,
-                                                            poolAddress=pool['pairAddress'],
-                                                            startDate=startDate,
-                                                            endDate=endDate,
-                                                            filename='{}_{}_{}_{}_{}.json'.format(protocol,
-                                                                                         pool['pairName'],
-                                                                                         startDate.strftime('%Y-%m-%d'),
-                                                                                         endDate.strftime('%Y-%m-%d'),
-                                                            pool['pairAddress']))
-                                     for pool in filtered_pools]))
+        uniswap_events = await safe_gather([self.lens(protocol=protocol,
+                                                      poolAddress=pool['pairAddress'],
+                                                      startDate=startDate,
+                                                      endDate=endDate,
+                                                      frequency=frequency,
+                                                      filename='{}_{}_{}_{}_{}.json'.format(protocol,
+                                                                                            pool['pairName'],
+                                                                                            startDate.strftime('%Y-%m-%d'),
+                                                                                            endDate.strftime('%Y-%m-%d'),
+                                                                                            pool['pairAddress']))
+                                            for pool in filtered_pools])
 
-api = AmberdataAPI()
-asyncio.run(api.deribit_smile_genesisvolatility('ETH',
-                                    start=datetime(2022, 1, 1),
-                                    end=datetime.now(),
-                                    frequency=timedelta(hours=1)))
-api.run_filtered_pools(startDate=AmberdataAPI.v3_launch_date,
-                       endDate=datetime.now())
-options = api.option_order_book('ETH',7,
-                                datetime.now() - timedelta(days=90),
-                                datetime.now())
-lyra = AmberdataAPI().lyra_greeks()
-s = AmberdataAPI().supported_cex()
-a = AmberdataAPI().all_supported_dex()
+if __name__ == "__main__":
+    api = AmberdataAPI()
+    if sys.argv[1] == 'option_order_book':
+        options = asyncio.run(api.option_order_book(coin='ETH',
+                                                    days_to_expiry=7,
+                                                    startDate=datetime.now() - timedelta(days=2),
+                                                    endDate=datetime.now(),
+                                                    frequency=timedelta(hours=1)))
+    elif sys.argv[1] == 'smiles':
+        smiles = []
+        dates = []
+        date = datetime(2021, 1, 1)
+        while date < datetime.now():
+            dates.append((date, date + timedelta(days=30)))
+            date += timedelta(days=30)
+            smiles.append(asyncio.run(api.deribit_smile_genesisvolatility('ETH',
+                                                                              start=dates[-1][0],
+                                                                              end=dates[-1][1],
+                                                                              frequency=timedelta(hours=1))))
+    elif sys.argv[1] == 'pools':
+        v3_pools = asyncio.run(api.run_filtered_pools(startDate=datetime.now() - timedelta(days=1), ## .v3_launch_date,
+                                                      endDate=datetime.now()))
+    elif sys.argv[1] == 'lyra_greeks':
+        lyra = AmberdataAPI().lyra_greeks()
+    elif sys.argv[1] == 'supported':
+        s = AmberdataAPI().supported_cex()
+        a = AmberdataAPI().all_supported_dex()
