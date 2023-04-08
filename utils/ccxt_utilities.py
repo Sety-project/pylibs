@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import asyncio
+
 from utils.async_utils import *
 import logging
 
@@ -94,6 +96,12 @@ async def open_exchange(exchange_name,subaccount,config={}):
         exchange = ccxt.kucoin(config={
                                            'enableRateLimit': True,
                                            'apiKey': '62091838bff2a30001b0d3f6',
+                                           'secret': api_params[exchange_name]['key'],
+                                       } | config)
+    elif exchange_name == 'bybit':
+        exchange = ccxt.bybit(config={
+                                           'enableRateLimit': True,
+                                           'apiKey': 'LkcKNcftmAvjnokyph',
                                            'secret': api_params[exchange_name]['key'],
                                        } | config)
     elif exchange_name == 'paradigm':
