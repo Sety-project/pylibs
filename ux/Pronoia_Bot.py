@@ -149,7 +149,7 @@ def main(*args,**kwargs):
     # Post version 12 this will no longer be necessary
     logger = kwargs.pop('__logger')
 
-    updater = Updater('1752990518:AAF0NpZBMgBzRTSfoaDDk69Zr5AdtoKtWGk', use_context=True)
+    updater = Updater('telegram_token', use_context=True)
 
     # Get the dispatcher to register handlers
     dp = updater.dispatcher
