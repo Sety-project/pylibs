@@ -23,4 +23,4 @@ A pretty generic architecture for event-based algo trading, robust to network di
 
 - SignalEngine: computes derived data from venue_api and/or externally generated client orders.
 ## 6. ux
-A telegram bot to operate the trading bots.
+A telegram bot to operate the trading bots, and jupyter notebook to display backetest, pnl, latency..

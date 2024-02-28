@@ -17,7 +17,7 @@ from utils.api_utils import rename_logfile
 
 class Strategy(ABC):
     '''abstract class Strategy leverages StrategyEnabler to implement quoter (ie generate orders from mkt change or order feed, risk, external request..)
-    If there was a bus, its graph would be a tree and Strategy would be the top'''
+    If there was a bus, Strategy would be at the center'''
     class ReadyToShutdown(Exception):
         def __init__(self, text):
             super().__init__(text)
