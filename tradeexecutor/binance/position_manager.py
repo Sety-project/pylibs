@@ -35,7 +35,7 @@ class BinancePositionManager(PositionManager):
         # delta is noisy for perps, so override to delta 1.
         self.pv = 0
         for coin, balance in state.balances.items():
-            if coin not in ['USDT','BUSD'] and balance != 0.0:
+            if coin not in ['USDT','USDC'] and balance != 0.0:
                 symbol = coin + '/USDT'
                 mid = state.markets[symbol]
                 delta = balance * mid
@@ -46,7 +46,7 @@ class BinancePositionManager(PositionManager):
                 self.pv += delta
 
         # doesn't contribute to delta, only pv !
-        for stablecoin in ['USDT', 'BUSD']:
+        for stablecoin in ['USDT', 'USDC']:
             if stablecoin in state.balances:
                 self.pv += state.balances[stablecoin]
 

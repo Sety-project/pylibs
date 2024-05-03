@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 import pandas as pd
-import ccxtpro
+import ccxt.pro as ccxtpro
 
 from tradeexecutor.interface.order_manager import OrderManager
 from tradeexecutor.interface.position_manager import PositionManager

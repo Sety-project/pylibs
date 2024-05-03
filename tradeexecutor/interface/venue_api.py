@@ -2,7 +2,7 @@ import collections, functools
 from abc import abstractmethod
 import numpy as np
 
-import ccxtpro
+import ccxt.pro as ccxtpro
 from tradeexecutor.interface.StrategyEnabler import StrategyEnabler
 
 def loop(func):

@@ -4,7 +4,7 @@ import dateutil
 import numpy as np
 import pandas as pd
 
-import ccxtpro
+import ccxt.pro as ccxtpro
 from utils.async_utils import safe_gather, safe_gather_limit
 from utils.ccxt_utilities import api_params, calc_basis
 from utils.config_loader import configLoader

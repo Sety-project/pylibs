@@ -4,7 +4,7 @@ from utils.io_utils import *
 from utils.api_utils import api
 from utils.async_utils import *
 
-history_start = datetime(2021, 11, 26).replace(tzinfo=timezone.utc)
+history_start = datetime(2023, 9, 1).replace(tzinfo=timezone.utc)
 
 # all rates annualized, all volumes daily in usd
 async def get_history(dirname,
@@ -65,9 +65,9 @@ async def build_history(futures,
             logger.info("Adding coroutine " + csv_name)
             coroutines.append(exchange.spot_history(f, end, start, frequency, dirname))
 
-    for f in list(futures.loc[futures['spotMargin'] == True, 'underlying'].unique()) + ['USDT','BUSD']:
+    for f in list(futures.loc[futures['spotMargin'] == True, 'underlying'].unique()) + ['USDT', 'USDC']:
         csv_name = os.path.join(dirname, f + '_borrow.csv')
-        csv = pd.read_csv(csv_name,index_col=0,parse_dates=True) if os.path.isfile(csv_name) else None
+        csv = pd.read_csv(csv_name, index_col=0,parse_dates=True) if os.path.isfile(csv_name) else None
         start = max(csv.index).replace(tzinfo=timezone.utc) + timedelta(hours=1) if csv is not None else history_start
         if start < end:
             logger.info("Adding coroutine " + csv_name)
@@ -134,10 +134,9 @@ async def history_main_wrapper(run_type, exchange_name, universe_name, nb_days=1
     parameters = configLoader.get_executor_params(order='listen_binance', dirname='prod')
     exchange = await build_VenueAPI(parameters['venue_api'])
 
-    universe = configLoader.get_bases(universe_name)
+    universe = [] # configLoader.get_bases(universe_name)
     nb_days = int(nb_days)
     futures = pd.DataFrame(await BinanceAPI.Static.fetch_futures(exchange)).set_index('name')
-    await exchange.load_markets()
 
     #universe should be either 'all', either a universe name, or a list of currencies
     dir_name = configLoader.get_mktdata_folder_for_exchange(exchange_name)
@@ -175,7 +174,7 @@ def main(*args,**kwargs):
         example: histfeed get ftx wide 5 1h
         args:
            run_type = "build", "correct", "get"
-           exchange = "binanceusdm"
+           exchange = "binance"
            universe = "institutional", "wide", "max", "all"
            nb_days = int
            frequency = str

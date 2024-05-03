@@ -27,7 +27,7 @@ async def build_VenueAPI(parameters):
         #     spot_symbols = [future['spot_ticker'] for future in futures if future['spot_ticker'] in exchange.markets]
         #     symbols = future_symbols + spot_symbols
         # exchange.static = await FtxAPI.Static.build(exchange, symbols)
-    elif parameters['exchange'] == 'binanceusdm':
+    elif parameters['exchange'] == 'binance':
         exchange = BinanceAPI(parameters)
         exchange.verbose = False
         #if 'subaccount' in parameters: {'FTX-SUBACCOUNT': parameters['subaccount'] if 'subaccount' in parameters else 'SysPerp'}
@@ -74,7 +74,7 @@ async def build_SignalEngine(parameters):
 async def build_PositionManager(parameters):
     if parameters['exchange'] == 'gmx':
         result = GMXPositionManager(parameters)
-    elif parameters['exchange'] == 'binanceusdm':
+    elif parameters['exchange'] == 'binance':
         result = BinancePositionManager(parameters)
     elif parameters['exchange'] == 'ftx':
         result = FtxPositionManager(parameters)

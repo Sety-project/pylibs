@@ -8,13 +8,13 @@ import dateutil, os, asyncio
 import numpy as np
 import pandas as pd
 
-import ccxtpro
+import ccxt.pro as ccxtpro
 from tradeexecutor.interface.venue_api import CeFiAPI, PegRule, VenueAPI
 from utils.async_utils import safe_gather
 from utils.ccxt_utilities import api_params, calc_basis
 from utils.config_loader import configLoader
 
-class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
+class BinanceAPI(CeFiAPI,ccxtpro.binance):
     '''VenueAPI implements rest calls and websocket loops to observe raw market data / order events and place orders
     send events for Strategy to action
     send events to SignalEngine for further processing'''
@@ -37,9 +37,9 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
                                            if _filter['filterType'] == 'PRICE_FILTER')['tickSize']),
                         'sizeIncrement': float(next(_filter for _filter in market['info']['filters']
                                           if _filter['filterType'] == 'LOT_SIZE')['stepSize']),
-                        'taker_fee': trading_fees[symbol]['taker'],
-                        'maker_fee': trading_fees[symbol]['maker'],
-                        'takerVsMakerFee': trading_fees[symbol]['taker'] - trading_fees[symbol]['maker']
+                        'taker_fee': trading_fees[symbol]['taker'] if symbol in trading_fees else None,
+                        'maker_fee': trading_fees[symbol]['maker'] if symbol in trading_fees else None,
+                        'takerVsMakerFee': (trading_fees[symbol]['taker'] - trading_fees[symbol]['maker'])  if symbol in trading_fees else None
                     }
             return result
 
@@ -51,36 +51,33 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
 
             includeExpired = False
             includeIndex = False
-            includeInverse = False
+            includeInverse = True
 
-            perp_markets = await self.fetch_markets({'type': 'future'})
-            #future_markets = await self.fetch_markets({'type': 'delivery'})
-            margin_markets = await self.fetch_markets({'type': 'margin'})
+            all_markets = await self.fetch_markets()
+            spot_markets = [f for f in all_markets if f['margin'] and f['active']]
+            perp_markets = [f | {'margin': next((m for m in spot_markets if m['id'] == f['id']), None)}
+                           for f in all_markets
+                           if f['active'] and f['swap']]
+            lev_perp_markets = [f for f in perp_markets if f['margin']]
 
-            future_list = [f for f in perp_markets
-                           if (('status' in f['info'] and f['info']['status'] == 'TRADING')) # only for linear perps it seems
-                           and (f['info']['underlyingType'] == 'COIN' or includeIndex)]
+            coinm_obj = ccxtpro.binancecoinm()
+            usdm_obj = ccxtpro.binanceusdm()
+            funding_rates = await safe_gather([(usdm_obj if f['linear'] else coinm_obj if f['inverse'] else None).fetch_funding_rate(symbol=f['symbol']) for f in lev_perp_markets])
+            open_interests = await safe_gather([getattr(self, f"{'f' if f['linear'] else 'd' if f['inverse'] else None}apiPublicGetOpenInterest")({'symbol': f['id']}) for f in lev_perp_markets], return_exceptions=True)
 
-            # otc_file = configLoader.get_static_params_used()
+            otc_file = configLoader.get_static_params_used()
 
-            perp_list = [f['id'] for f in future_list if f['expiry'] == None]
-            funding_rates = await safe_gather([self.fetch_funding_rate(symbol=f) for f in perp_list])
-            # perp_tickers = await self.fetch_tickers(symbols=[f['id'] for f in future_list], params={'type':'future'})
-            # delivery_tickers = await self.fetch_tickers(symbols=[f['id'] for f in future_list], params={'type': 'delivery'})
-            open_interests = await safe_gather([self.fapiPublicGetOpenInterest({'symbol':f}) for f in perp_list])
 
             result = []
-            for i in range(0, len(funding_rates)):
-                funding_rate = funding_rates[i]
-                market = next(m for m in perp_markets if m['symbol'] == funding_rate['symbol'])
-                margin_market = next((m for m in margin_markets if m['symbol'] == funding_rate['symbol']), None)
+            for funding_rate in funding_rates:
+                market = next(m for m in lev_perp_markets if m['symbol'] == funding_rate['symbol'])
                 open_interest = next((m for m in open_interests if m['symbol'] == market['id']), None)
 
                 index = funding_rate['indexPrice']
                 mark = funding_rate['markPrice']
                 expiryTime = dateutil.parser.isoparse(market['expiryDatetime']).replace(
-                    tzinfo=timezone.utc) if bool(market['delivery']) else np.NaN
-                if bool(market['delivery']):
+                    tzinfo=timezone.utc) if market['expiryDatetime'] else np.NaN
+                if market['expiryDatetime']:
                     future_carry = calc_basis(mark, index, expiryTime,
                                               datetime.utcnow().replace(tzinfo=timezone.utc))
                 elif bool(market['swap']):
@@ -111,7 +108,7 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
                     'underlyingType': self.safe_number(market, 'underlyingType'),
                     'underlyingSubType': self.safe_number(market, 'underlyingSubType'),
                     'spot_ticker': '{}/{}'.format(market['base'], market['quote']),
-                    'spotMargin': margin_market['info']['isMarginTradingAllowed'] if margin_market else False,
+                    'spotMargin': 'margin' in market,
                     'cash_borrow': None,
                     'future_carry': future_carry,
                     'openInterestUsd': float(open_interest['openInterest'])*mark,
@@ -126,10 +123,10 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
             'enableRateLimit': True,
             'newUpdates': True}
         if private_endpoints:  ## David personnal
-            config |= {'apiKey': 'rcRg52mpbuZySr2fa3WpRn0I2fHwJWcGQK4K6Vg110TOpuUIvgU2vl8wWPh0jADT',
+            config |= {'apiKey': 'kXk2ijhipBZfLCWuZKzRZ3zwTHklsJyJLF5McIPeyn6kD4KVv0B6Khna3EeFFWET',
             'secret': api_params['binance']['key']}
         super().__init__(parameters)
-        super(ccxtpro.binance,self).__init__(config=config)
+        super(ccxtpro.binance, self).__init__(config=config)
         self.state = CeFiAPI.State()
 
         self.options['tradesLimit'] = VenueAPI.cache_size # TODO: shoud be in signalengine with a different name. inherited from ccxt....

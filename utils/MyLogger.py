@@ -40,7 +40,7 @@ class ExecutionLogger:
             await file.write(json.dumps(new_records, cls=NpEncoder))
 
     @staticmethod
-    def batch_summarize_exec_logs(exchange='binanceusdm', subaccount='', dirname=os.path.join(os.sep, 'tmp', '', 'tradeexecutor'),
+    def batch_summarize_exec_logs(exchange='binance', subaccount='', dirname=os.path.join(os.sep, 'tmp', '', 'tradeexecutor'),
                                   start=datetime(1970, 1, 1),
                                   end=datetime.now(),
                                   rebuild=True,
@@ -155,7 +155,7 @@ class ExecutionLogger:
                      1 if clientOrderId_data['last_fill_event']['side'] == 'buy' else -1),
                  'price': clientOrderId_data['last_fill_event']['price'],
                  # TODO: what happens when there are only partial fills ?
-                 'fee': clientOrderId_data['last_fill_event']['fee']['cost'] * (1 if clientOrderId_data['last_fill_event']['fee']['currency'] in ['USDT','BUSD'] else
+                 'fee': clientOrderId_data['last_fill_event']['fee']['cost'] * (1 if clientOrderId_data['last_fill_event']['fee']['currency'] in ['USDT','USDC'] else
                                          (clientOrderId_data['last_fill_event']['price']
                                           if clientOrderId_data['last_fill_event']['fee']['currency'] == clientOrderId_data['inception_event']['symbol'][:3] else
                                           np.NAN)),
