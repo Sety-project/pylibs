@@ -5,8 +5,8 @@ from pathlib import Path
 
 class configLoader():
     _home = Path.home() # but docker run -v ~/config/prod:/home/ec2-user/config
-    _config_folder_path = os.path.join(os.sep, _home, "config")
-    _mktdata_folder_path = os.path.join(os.sep, _home, "mktdata")
+    _config_folder_path = os.path.join(os.sep, _home, "Sety-project", "config")
+    _mktdata_folder_path = os.path.join(os.sep, _home, "Sety-project", "mktdata")
 
     _universe_pool = ["all", "max", "wide", "institutional"]
     _universe = None             # dict

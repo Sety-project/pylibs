@@ -61,7 +61,7 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
                            if (('status' in f['info'] and f['info']['status'] == 'TRADING')) # only for linear perps it seems
                            and (f['info']['underlyingType'] == 'COIN' or includeIndex)]
 
-            otc_file = configLoader.get_static_params_used()
+            # otc_file = configLoader.get_static_params_used()
 
             perp_list = [f['id'] for f in future_list if f['expiry'] == None]
             funding_rates = await safe_gather([self.fetch_funding_rate(symbol=f) for f in perp_list])
@@ -126,7 +126,7 @@ class BinanceAPI(CeFiAPI,ccxtpro.binanceusdm):
             'enableRateLimit': True,
             'newUpdates': True}
         if private_endpoints:  ## David personnal
-            config |= {'apiKey': 'V2KfGbMd9Zd9fATONTESrbtUtkEHFcVDr6xAI4KyGBjKs7z08pQspTaPhqITwh1M',
+            config |= {'apiKey': 'rcRg52mpbuZySr2fa3WpRn0I2fHwJWcGQK4K6Vg110TOpuUIvgU2vl8wWPh0jADT',
             'secret': api_params['binance']['key']}
         super().__init__(parameters)
         super(ccxtpro.binance,self).__init__(config=config)

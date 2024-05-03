@@ -21,7 +21,7 @@ def open_exchange(exchange_name,subaccount,config={}):
     if exchange_name == 'deribit':
         exchange = ccxt.deribit(config={
             'enableRateLimit': True,
-            'apiKey': '4vc_41O4',
+            'apiKey': 'P_DBveHf',
             'secret': 'viEFbpRQpQLgUAujPrwWleL6Xutq9I8YVUVMkEfQG1E',
         }|config)
     else: print('what exchange?')
