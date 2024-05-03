@@ -134,6 +134,10 @@ async def history_main_wrapper(run_type, exchange_name, universe_name, nb_days=1
     parameters = configLoader.get_executor_params(order='listen_binance', dirname='prod')
     exchange = await build_VenueAPI(parameters['venue_api'])
 
+    def _array_concat(a, b):
+        return (a or []) + (b or [])
+    exchange.array_concat = _array_concat
+
     universe = [] # configLoader.get_bases(universe_name)
     nb_days = int(nb_days)
     futures = pd.DataFrame(await BinanceAPI.Static.fetch_futures(exchange)).set_index('name')
@@ -146,6 +150,8 @@ async def history_main_wrapper(run_type, exchange_name, universe_name, nb_days=1
 
     if universe != []:
         futures = futures[futures.index.isin(universe)]
+    else:
+        futures = futures.sort_values('openInterestUsd', ascending=False)
 
     logger = logging.getLogger('histfeed')
 

@@ -229,45 +229,7 @@ class BinanceAPI(CeFiAPI,ccxtpro.binance):
             account['positions'] = self.filter_by_array(positions, 'symbol', symbols, False)
             return account
 
-    async def fetch_borrow_rate_history(self, code, since=None, limit=None, params={}):
-        """ fix interface bug in ccxt
-        retrieves a history of a currencies borrow interest rate at specific time slots
-        :param str code: unified currency code
-        :param int|None since: timestamp for the earliest borrow rate
-        :param int|None limit: the maximum number of `borrow rate structures <https://docs.ccxt.com/en/latest/manual.html#borrow-rate-structure>` to retrieve
-        :param dict params: extra parameters specific to the exchange api endpoint
-        :returns [dict]: an array of `borrow rate structures <https://docs.ccxt.com/en/latest/manual.html#borrow-rate-structure>`
-        """
-        await self.load_markets()
-        if limit is None:
-            limit = 93
-        elif limit > 93:
-            # Binance API says the limit is 100, but "Illegal characters found in a parameter." is returned when limit is > 93
-            raise ccxt.base.errors.BadRequest(self.id + ' fetchBorrowRateHistory() limit parameter cannot exceed 92')
-        currency = self.currency(code)
-        request = {
-            'asset': currency['id'],
-            'limit': limit,
-        }
-        if since is not None:
-            request['startTime'] = since
-            endTime = self.sum(since, limit * 86400000) - 1  # required when startTime is further than 93 days in the past
-            now = self.milliseconds()
-            request['endTime'] = min(endTime, now)  # cannot have an endTime later than current time
-        response = await self.sapiGetMarginInterestRateHistory(self.extend(request, params))
-        #
-        #     [
-        #         {
-        #             "asset": "USDT",
-        #             "timestamp": 1638230400000,
-        #             "dailyInterestRate": "0.0006",
-        #             "vipLevel": 0
-        #         },
-        #     ]
-        #
-        return self.parse_borrow_rate_history(response, code, since, limit)
-
-    async def fetch_open_orders(self, symbol=None, since=None, limit=None, params={}):
+    async def fetch_open_orders(self, symbol=None, since=None, limit=None, params=None):
         """ fix bug in ccxt
         fetch all unfilled currently open orders
         :param str|None symbol: unified market symbol
@@ -277,6 +239,8 @@ class BinanceAPI(CeFiAPI,ccxtpro.binance):
         :param str|None params['marginMode']: 'cross' or 'isolated', for spot margin trading
         :returns [dict]: a list of `order structures <https://docs.ccxt.com/en/latest/manual.html#order-structure>`
         """
+        if params is None:
+            params = {}
         await self.load_markets()
         market = None
         request = {}
@@ -315,60 +279,51 @@ class BinanceAPI(CeFiAPI,ccxtpro.binance):
         return result
 
     def mid(self,symbol):
-        if symbol == 'USDT/USDT': return 1.0
-        data = self.tickers[symbol]['mid'] if symbol in self.tickers else self.state.markets[symbol]
-        return data
+        if symbol == 'USDT/USDT':
+            return 1.0
+        return (
+            self.tickers[symbol]['mid']
+            if symbol in self.tickers
+            else self.state.markets[symbol]
+        )
 
     ### only perps, only borrow and funding, only hourly, time is fixing / payment time.
-    @ignore_error
+    #@ignore_error
     async def borrow_history(self, coin,
                              end=(datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)),
                              start=(datetime.now(tz=timezone.utc).replace(minute=0, second=0,
                                                                           microsecond=0)) - timedelta(days=30),
                              dirname=''):
-        max_funding_data = int(92)  # in days, limit is 92 only
-        resolution = pd.Timedelta(self.describe()['timeframes']['1d']).total_seconds()
+        borrow = await self.fetch_funding_rate_history(coin,
+                                                       since=int(start.timestamp() * 1000),
+                                                       params={'until': int(end.timestamp() * 1000),
+                                                               'paginate': True,
+                                                               'maxEntriesPerRequest': 90,
+                                                               'paginationCalls': 1000})
 
-        e = end.timestamp()
-        s = start.timestamp()
-        f = max_funding_data * resolution
-        start_times = [int(round(e - k * f)) for k in range(1 + int((e - s) / f)) if e - k * f > s] + [s]
+        if len(borrow) > 0:
+            data = pd.DataFrame(borrow)
+            data = data.set_index('timestamp')[['rate']] * 365.25
+            data.rename(columns={'rate': coin + '_rate_borrow'}, inplace=True)
+            data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
+            data = data[~data.index.duplicated()].sort_index()
 
-        lists = await safe_gather([
-            self.fetch_borrow_rate_history(coin, since=int(start_time * 1000), limit=max_funding_data)
-            for start_time in start_times])
-        borrow = [y for x in lists for y in x]
-
-        data = pd.DataFrame(borrow)
-        data = data.set_index('timestamp')[['rate']] * 365.25
-        data.rename(columns={'rate': coin + '_rate_borrow'}, inplace=True)
-        data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
-        data = data[~data.index.duplicated()].sort_index()
-
-        if dirname != '': await async_to_csv(data, os.path.join(dirname, coin + '_borrow.csv'), mode='a', header=False)
+            if dirname != '': await async_to_csv(data, os.path.join(dirname, coin + '_borrow.csv'), mode='a', header=False)
 
     ######### annualized funding for perps, time is fixing / payment time.
-    @ignore_error
+    #@ignore_error
     async def funding_history(self, future,
                               start=(datetime.now(tz=timezone.utc).replace(minute=0, second=0,
                                                                            microsecond=0)) - timedelta(days=30),
                               end=(datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)),
                               dirname=''):
 
-        max_funding_data = int(100)  # in hour. limit is 100 :(
-        resolution = pd.Timedelta(self.describe()['timeframes']['1h']).total_seconds()
-
-        e = end.timestamp()
-        s = start.timestamp()
-        f = max_funding_data * resolution
-        start_times = [int(round(s + k * f)) for k in range(1 + int((e - s) / f)) if s + k * f < e]
-
-        lists = await safe_gather([
-            self.fetch_funding_rate_history(self.market(future['symbol'])['symbol'],
-                                                params={'startTime': start_time * 1000,
-                                                        'endTime': (start_time + f) * 1000})
-            for start_time in start_times])
-        funding = [y for x in lists for y in x]
+        funding = await self.fetch_funding_rate_history(self.market(future['symbol'])['symbol'],
+                                                        since=int(start.timestamp() * 1000),
+                                                        params={'until': int(end.timestamp() * 1000),
+                                                                'paginate': True,
+                                                                'maxEntriesPerRequest': 100,
+                                                                'paginationCalls': 1000})
 
         if len(funding) > 0:
             data = pd.DataFrame(funding)
@@ -384,30 +339,32 @@ class BinanceAPI(CeFiAPI,ccxtpro.binance):
                                                  mode='a', header=False)
 
     #### annualized rates for futures and perp, volumes are daily
-    @ignore_error
-    async def rate_history( self, future,
+    #@ignore_error
+    async def rate_history(self, future,
                            end=datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0),
                            start=datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0) - timedelta(
                                days=30),
                            timeframe='1h',
                            dirname=''):
         symbol = self.market(future['symbol'])['symbol']
-
-        max_mark_data = int(500)
         resolution = pd.Timedelta(self.describe()['timeframes'][timeframe]).total_seconds()
 
-        e = end.timestamp()
-        s = start.timestamp()
-        f = max_mark_data * resolution
-        start_times = [int(round(s + k * f)) for k in range(1 + int((e - s) / f)) if s + k * f < e]
-
-        mark_indexes = await safe_gather([
-            self.fetch_ohlcv(symbol, timeframe=timeframe, params=params)  # volume is for max_mark_data*resolution
-            for start_time in start_times
-            for params in [{'startTime': start_time * 1000, 'endTime': (start_time + f - resolution) * 1000},
-                           {'start_time': start_time, 'end_time': start_time + f - resolution, 'price': 'index'}]])
-        mark = [y for x in mark_indexes[::2] for y in x]
-        indexes = [y for x in mark_indexes[1::2] for y in x]
+        mark_indexes = await safe_gather(
+            [self.fetch_ohlcv(symbol, timeframe=timeframe,
+                              since=int(start.timestamp() * 1000),
+                              params={'until': int(end.timestamp() * 1000),
+                                      'paginate': True,
+                                      'maxEntriesPerRequest': 500,
+                                      'paginationCalls': 1000}),
+             self.fetch_ohlcv(symbol, timeframe=timeframe,
+                              since=int(start.timestamp() * 1000),
+                              params={'until': int(end.timestamp() * 1000),
+                                      'paginate': True,
+                                      'maxEntriesPerRequest': 500,
+                                      'paginationCalls': 1000,
+                                      'price': 'index'})])
+        mark = mark_indexes[0]
+        indexes = mark_indexes[1]
         column_names = ['t', 'o', 'h', 'l', 'c', 'volume']
 
         ###### indexes
@@ -423,21 +380,24 @@ class BinanceAPI(CeFiAPI,ccxtpro.binance):
         indexes.columns = ['indexes_' + column for column in indexes.columns]
 
         ##### openInterestUsd
-        max_oi_data = 500
-        e = end.timestamp()
-        s = start.timestamp()
-        f = max_oi_data * resolution
-        start_times = [int(round(s + k * f)) for k in range(1 + int((e - s) / f)) if s + k * f < e]
+        # max_oi_data = 500
+        # e = end.timestamp()
+        # s = start.timestamp()
+        # f = max_oi_data * resolution
+        # start_times = [int(round(s + k * f)) for k in range(1 + int((e - s) / f)) if s + k * f < e]
 
-        openInterest_list = await safe_gather([
-            self.fetch_open_interest_history(symbol, timeframe='5m' if timeframe == '1m' else timeframe,
-                                                 since=int(start_time * 1000), limit=max_oi_data)
-            for start_time in start_times])
-        openInterest_list = [y for x in openInterest_list for y in x]
-        openInterest = pd.DataFrame(openInterest_list, columns=['timestamp', 'openInterestAmount']).astype(
-            dtype={'timestamp': 'int64'}).set_index('timestamp')
-
-        data = mark.join(indexes, how='inner').join(openInterest, how='inner')
+        # min_openInterest_time = datetime.now().timestamp() - 30 * 24 * 3600
+        # openInterest_list = await safe_gather([
+        #     self.fetch_open_interest_history(symbol, timeframe='5m' if timeframe == '1m' else timeframe,
+        #                                      since=int(min(min_openInterest_time, start_time) * 1000), limit=max_oi_data)
+        #     for start_time in start_times
+        #     if start_time + f > datetime.now().timestamp() - 30 * 24 * 3600])
+        # openInterest_list = [y for x in openInterest_list for y in x]
+        # openInterest = pd.DataFrame(openInterest_list, columns=['timestamp', 'openInterestAmount']).astype(
+        #     dtype={'timestamp': 'int64'}).set_index('timestamp')
+        #
+        # data = mark.join(indexes, how='inner').join(openInterest, how='outer').bfill()
+        data = mark.join(indexes, how='inner', on=None)
 
         ########## rates from index to mark
         if future['type'] == 'future':
@@ -456,9 +416,9 @@ class BinanceAPI(CeFiAPI,ccxtpro.binance):
                                      datetime.fromtimestamp(int(y.name / 1000), tz=timezone.utc)), axis=1)
         elif future['type'] == 'perpetual':  ### 1h funding = (mark/spot-1)/24
             data['rate_T'] = None
-            data['rate_c'] = (mark['mark_c'] / indexes['indexes_c'] - 1) * 365.25
-            data['rate_h'] = (mark['mark_h'] / indexes['indexes_h'] - 1) * 365.25
-            data['rate_l'] = (mark['mark_l'] / indexes['indexes_l'] - 1) * 365.25
+            data['rate_c'] = (data['mark_c'] / data['indexes_c'] - 1) * 365.25
+            data['rate_h'] = (data['mark_h'] / data['indexes_h'] - 1) * 365.25
+            data['rate_l'] = (data['mark_l'] / data['indexes_l'] - 1) * 365.25
         else:
             raise Exception('what is ' + future['symbol'] + ' ?')
 
@@ -479,19 +439,22 @@ class BinanceAPI(CeFiAPI,ccxtpro.binance):
                                days=30),
                            timeframe='1h',
                            dirname=''):
-        max_mark_data = int(500)
         resolution = pd.Timedelta(self.describe()['timeframes'][timeframe]).total_seconds()
 
-        e = end.timestamp()
-        s = start.timestamp()
-        f = max_mark_data * resolution
-        start_times = [int(round(s + k * f)) for k in range(1 + int((e - s) / f)) if s + k * f < e]
-
-        spot_lists = await safe_gather([
-            self.fetch_ohlcv(symbol, timeframe=timeframe, params={'startTime': start_time * 1000,
-                                                                      'endTime': (start_time + f - resolution) * 1000})
-            for start_time in start_times])
-        spot = [y for x in spot_lists for y in x]
+        spot = await self.fetch_ohlcv(symbol, timeframe=timeframe,
+                                      since=int(start.timestamp() * 1000),
+                                      params={'until': int(end.timestamp() * 1000),
+                                              'paginate': True,
+                                              'maxEntriesPerRequest': 500,
+                                              'paginationCalls': 1000})
+        # f = max_mark_data * resolution
+        # start_times = [int(round(s + k * f)) for k in range(1 + int((e - s) / f)) if s + k * f < e]
+        #
+        # spot_lists = await safe_gather([
+        #     self.fetch_ohlcv(symbol, timeframe=timeframe, params={'startTime': start_time * 1000,
+        #                                                               'endTime': (start_time + f - resolution) * 1000})
+        #     for start_time in start_times])
+        # spot = [y for x in spot_lists for y in x]
         column_names = ['t', 'o', 'h', 'l', 'c', 'volume']
 
         ###### spot
