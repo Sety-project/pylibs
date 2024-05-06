@@ -45,28 +45,52 @@ class BinanceAPI(CeFiAPI,ccxtpro.binance):
 
        ### get all static fields TODO: only works for perps
         @staticmethod
-        async def fetch_futures(self):
+        async def fetch_futures(exchange):
             if 'fetch_futures' in BinanceAPI.Static._cache:
                 return BinanceAPI.Static._cache['fetch_futures']
 
-            includeExpired = False
-            includeIndex = False
-            includeInverse = True
-
-            all_markets = await self.fetch_markets()
-            spot_markets = [f for f in all_markets if f['margin'] and f['active']]
-            perp_markets = [f | {'margin': next((m for m in spot_markets if m['id'] == f['id']), None)}
-                           for f in all_markets
-                           if f['active'] and f['swap']]
-            lev_perp_markets = [f for f in perp_markets if f['margin']]
+            async def get_lev_perp_markets():
+                all_markets = await exchange.fetch_markets()
+                spot_markets = [f for f in all_markets if f['margin'] and f['active']]
+                perp_markets = [f | {'margin': next((m for m in spot_markets if m['id'] == f['id']), None)}
+                                for f in all_markets
+                                if f['active'] and f['swap']]
+                return [f for f in perp_markets if f['margin'] and f['margin']['info']['isMarginTradingAllowed']]
+            lev_perp_markets = await get_lev_perp_markets()
 
             coinm_obj = ccxtpro.binancecoinm()
             usdm_obj = ccxtpro.binanceusdm()
             funding_rates = await safe_gather([(usdm_obj if f['linear'] else coinm_obj if f['inverse'] else None).fetch_funding_rate(symbol=f['symbol']) for f in lev_perp_markets])
-            open_interests = await safe_gather([getattr(self, f"{'f' if f['linear'] else 'd' if f['inverse'] else None}apiPublicGetOpenInterest")({'symbol': f['id']}) for f in lev_perp_markets], return_exceptions=True)
+            open_interests = await safe_gather([getattr(exchange, f"{'f' if f['linear'] else 'd' if f['inverse'] else None}apiPublicGetOpenInterest")({'symbol': f['id']}) for f in lev_perp_markets], return_exceptions=True)
 
             otc_file = configLoader.get_static_params_used()
 
+            collateral_ratios = {}
+            crossMarginCollateralRatio_response = await exchange.sapiGetMarginCrossMarginCollateralRatio()
+            for collateral_tier in crossMarginCollateralRatio_response:
+                for coin in collateral_tier['assetNames']:
+                    collateral_ratios[coin] = [[float(x['minUsdValue']), float(x['discountRate'])] for x in collateral_tier['collaterals']]
+            collateral_ratios = pd.Series({coin: next((x[1] for x in reversed(value) if x[0] < 1e6), 0)
+                                              for coin, value in collateral_ratios.items()})
+
+            portfolioCollateralRate_response = await exchange.sapiGetPortfolioCollateralRate()
+            collateral_rate = pd.Series(
+                {x['asset']: float(x['collateralRate']) for x in portfolioCollateralRate_response})
+
+            # um_leverage_brackets_response = await exchange.fetch_leverage_tiers(reload=True,
+            #                                                                       params={'portfolioMargin': True,
+            #                                                                               'type': 'swap',
+            #                                                                               'subtype': 'linear'})
+            # cm_leverage_brackets_response = await exchange.fetch_leverage_tiers(reload=True,
+            #                                                                       params={'portfolioMargin': True,
+            #                                                                               'type': 'swap',
+            #                                                                               'subtype': 'inverse'})
+            # spot_leverage_brackets_response = await exchange.fetch_leverage_tiers(reload=True,
+            #                                                                         params={'portfolioMargin': True,
+            #                                                                                 'type': 'spot'})
+            # leverage_brackets = pd.Series({future: np.interp(1e6,
+            #                                                  [float(x[0]) for x in value],
+            #                                                  [float(x[1]) for x in value]) for future, value in leverage_brackets_response.items()})
 
             result = []
             for funding_rate in funding_rates:
@@ -86,11 +110,11 @@ class BinanceAPI(CeFiAPI,ccxtpro.binance):
                     future_carry = 0
 
                 result.append({
-                    'symbol': self.safe_string(market, 'symbol'),
+                    'symbol': exchange.safe_string(market, 'symbol'),
                     'index': index,
                     'mark': mark,
-                    'name': self.safe_string(market, 'id'),
-                    'perpetual': bool(self.safe_value(market, 'swap')),
+                    'name': exchange.safe_string(market, 'id'),
+                    'perpetual': bool(exchange.safe_value(market, 'swap')),
                     'priceIncrement': float(next(_filter for _filter in market['info']['filters']
                                                  if _filter['filterType'] == 'PRICE_FILTER')['tickSize']),
                     'sizeIncrement': max(float(next(_filter for _filter in market['info']['filters']
@@ -105,18 +129,51 @@ class BinanceAPI(CeFiAPI,ccxtpro.binance):
                     'underlying': market['base'],
                     'quote': market['quote'],
                     'type': 'perpetual' if market['swap'] else None,
-                    'underlyingType': self.safe_number(market, 'underlyingType'),
-                    'underlyingSubType': self.safe_number(market, 'underlyingSubType'),
-                    'spot_ticker': '{}/{}'.format(market['base'], market['quote']),
+                    'underlyingType': exchange.safe_number(market, 'underlyingType'),
+                    'underlyingSubType': exchange.safe_number(market, 'underlyingSubType'),
+                    'spot_ticker': '{}{}'.format(market['base'], market['quote']),
                     'spotMargin': 'margin' in market,
                     'cash_borrow': None,
                     'future_carry': future_carry,
                     'openInterestUsd': float(open_interest['openInterest'])*mark,
-                    'expiryTime': expiryTime
+                    'expiryTime': expiryTime,
+                    'collateral_ratio': collateral_ratios[market['base']], # collateral_rate.loc[market['base']]['collateralRate'],
+                    'MM': float(market['info']['maintMarginPercent'])/100,
+                    'IM': float(market['info']['requiredMarginPercent'])/100,
                 })
 
             BinanceAPI.Static._cache['fetch_futures'] = result
             return result
+
+        @staticmethod
+        async def fetch_coin_details(exchange):
+            if 'fetch_coin_details' in BinanceAPI.Static._cache:
+                return BinanceAPI.Static._cache['fetch_coin_details']
+
+            borrow_rates = pd.DataFrame((await exchange.sapiGetMarginCrossMarginData(datetime.now().timestamp()*1000))['result']).astype(
+                dtype={'yearlyInterest': 'float'}).set_index('coin')
+
+            borrow_rates = pd.DataFrame((await exchange.private_get_spot_margin_borrow_rates())['result']).astype(
+                dtype={'coin': 'str', 'estimate': 'float', 'previous': 'float'}).set_index('coin')[['estimate']]
+            borrow_rates[['estimate']] *= 24 * 365.25
+            borrow_rates.rename(columns={'estimate': 'borrow'}, inplace=True)
+
+            lending_rates = pd.DataFrame((await exchange.private_get_spot_margin_lending_rates())['result']).astype(
+                dtype={'coin': 'str', 'estimate': 'float', 'previous': 'float'}).set_index('coin')[['estimate']]
+            lending_rates[['estimate']] *= 24 * 365.25
+            lending_rates.rename(columns={'estimate': 'lend'}, inplace=True)
+
+            borrow_volumes = pd.DataFrame((await exchange.public_get_spot_margin_borrow_summary())['result']).astype(
+                dtype={'coin': 'str', 'size': 'float'}).set_index('coin')
+            borrow_volumes.rename(columns={'size': 'borrow_open_interest'}, inplace=True)
+
+            all = pd.concat([coin_details, borrow_rates, lending_rates, borrow_volumes], join='outer', axis=1)
+            all = all.loc[coin_details.index]  # borrow summary has beed seen containing provisional underlyings
+            all.loc[coin_details['spotMargin'] == False, 'borrow'] = None  ### hope this throws an error...
+            all.loc[coin_details['spotMargin'] == False, 'lend'] = 0
+
+            BinanceAPI.Static._cache['fetch_coin_details'] = all
+            return all
 
     def __init__(self, parameters, private_endpoints=True):
         config = {
@@ -132,6 +189,7 @@ class BinanceAPI(CeFiAPI,ccxtpro.binance):
         self.options['tradesLimit'] = VenueAPI.cache_size # TODO: shoud be in signalengine with a different name. inherited from ccxt....
 
         self.peg_rules: dict[str, PegRule] = dict()
+        self.stablecoin: str = 'USDT'
 
     async def reconcile(self):
         # fetch mark,spot and balances as closely as possible
@@ -288,30 +346,37 @@ class BinanceAPI(CeFiAPI,ccxtpro.binance):
         )
 
     ### only perps, only borrow and funding, only hourly, time is fixing / payment time.
-    #@ignore_error
+    @ignore_error
     async def borrow_history(self, coin,
                              end=(datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0)),
                              start=(datetime.now(tz=timezone.utc).replace(minute=0, second=0,
                                                                           microsecond=0)) - timedelta(days=30),
                              dirname=''):
-        borrow = await self.fetch_funding_rate_history(coin,
-                                                       since=int(start.timestamp() * 1000),
-                                                       params={'until': int(end.timestamp() * 1000),
-                                                               'paginate': True,
-                                                               'maxEntriesPerRequest': 90,
-                                                               'paginationCalls': 1000})
+        max_funding_data = 30
+        resolution = pd.Timedelta(self.describe()['timeframes']['1h']).total_seconds()
 
-        if len(borrow) > 0:
+        e = end.timestamp()
+        s = start.timestamp()
+        f = max_funding_data * resolution
+        start_times = [int(round(e - k * f)) for k in range(1 + int((e - s) / f)) if e - k * f > s] + [s]
+
+        lists = await safe_gather([
+            self.fetch_borrow_rate_history(coin, since=int(start_time * 1000), limit=max_funding_data)
+            for start_time in start_times])
+
+        if borrow := [y for x in lists for y in x]:
             data = pd.DataFrame(borrow)
             data = data.set_index('timestamp')[['rate']] * 365.25
             data.rename(columns={'rate': coin + '_rate_borrow'}, inplace=True)
             data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
             data = data[~data.index.duplicated()].sort_index()
 
-            if dirname != '': await async_to_csv(data, os.path.join(dirname, coin + '_borrow.csv'), mode='a', header=False)
+            if dirname != '':
+                filename = os.path.join(dirname, coin + '_borrow.csv')
+                await async_to_csv(data, filename, mode='a', header=not os.path.exists(filename))
 
     ######### annualized funding for perps, time is fixing / payment time.
-    #@ignore_error
+    @ignore_error
     async def funding_history(self, future,
                               start=(datetime.now(tz=timezone.utc).replace(minute=0, second=0,
                                                                            microsecond=0)) - timedelta(days=30),
@@ -333,13 +398,12 @@ class BinanceAPI(CeFiAPI,ccxtpro.binance):
             data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
             data = data[~data.index.duplicated()].sort_index()
 
-            if dirname != '': await async_to_csv(data, os.path.join(dirname,
-                                                                    self.market(future['symbol'])[
-                                                                        'id'] + '_funding.csv'),
-                                                 mode='a', header=False)
+            if dirname != '':
+                filename = os.path.join(dirname, self.market(future['symbol'])['id'] + '_funding.csv')
+                await async_to_csv(data, filename, mode='a', header=not os.path.exists(filename))
 
     #### annualized rates for futures and perp, volumes are daily
-    #@ignore_error
+    @ignore_error
     async def rate_history(self, future,
                            end=datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0),
                            start=datetime.now(tz=timezone.utc).replace(minute=0, second=0, microsecond=0) - timedelta(
@@ -370,11 +434,11 @@ class BinanceAPI(CeFiAPI,ccxtpro.binance):
         ###### indexes
         indexes = pd.DataFrame([dict(zip(column_names, row)) for row in indexes], dtype=float).astype(
             dtype={'t': 'int64'}).set_index('t')
-        indexes['volume'] = indexes['volume'] * 24 * 3600 / resolution
+        indexes['volume'] = indexes['volume'] * indexes['c'] * 24 * 3600 / resolution
 
         ###### marks
         mark = pd.DataFrame([dict(zip(column_names, row)) for row in mark]).astype(dtype={'t': 'int64'}).set_index('t')
-        mark['volume'] = mark['volume'] * 24 * 3600 / resolution
+        mark['volume'] = mark['volume'] * mark['c'] * 24 * 3600 / resolution
 
         mark.columns = ['mark_' + column for column in mark.columns]
         indexes.columns = ['indexes_' + column for column in indexes.columns]
@@ -426,10 +490,9 @@ class BinanceAPI(CeFiAPI,ccxtpro.binance):
         data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
         data = data[~data.index.duplicated()].sort_index()
 
-        if dirname != '': await async_to_csv(data,
-                                             os.path.join(dirname,
-                                                          self.market(future['symbol'])['id'] + '_futures.csv'),
-                                             mode='a', header=False)
+        if dirname != '':
+            filename = os.path.join(dirname, self.market(future['symbol'])['id'] + '_futures.csv')
+            await async_to_csv(data,filename,mode='a', header=not os.path.exists(filename))
 
     ## populates future_price or spot_price depending on type
     @ignore_error
@@ -460,14 +523,13 @@ class BinanceAPI(CeFiAPI,ccxtpro.binance):
         ###### spot
         data = pd.DataFrame(columns=column_names, data=spot).astype(dtype={'t': 'int64', 'volume': 'float'}).set_index(
             't')
-        data['volume'] = data['volume'] * 24 * 3600 / resolution
+        data['volume'] = data['volume'] * data['c'] * 24 * 3600 / resolution
         data.columns = [symbol.replace('/', '') + '_price_' + column for column in data.columns]
         data.index = [datetime.fromtimestamp(x / 1000) for x in data.index]
         data = data[~data.index.duplicated()].sort_index()
-        if dirname != '': await async_to_csv(data,
-                                             os.path.join(dirname,
-                                                          symbol.replace('/', '') + '_price.csv'),
-                                             mode='a', header=False)
+        if dirname != '':
+            filename = os.path.join(dirname, symbol.replace('/', '') + '_price.csv')
+            await async_to_csv(data, filename, mode='a', header=not os.path.exists(filename))
 
     @ignore_error
     async def fetch_trades_history(self,symbol,

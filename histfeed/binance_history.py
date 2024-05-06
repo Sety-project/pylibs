@@ -10,67 +10,65 @@ history_start = datetime(2023, 9, 1).replace(tzinfo=timezone.utc)
 async def get_history(dirname,
                       futures,
                       start_or_nb_hours,
-                      end=datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0,second=0,microsecond=0)
-                      ):
+                      end=datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0,second=0,microsecond=0),
+                      resample='8h'):
     data = pd.concat(await safe_gather((
             [async_read_csv(dirname + os.sep + f + '_funding.csv',index_col=0,parse_dates=True)
              for f in futures[futures['type'] == 'perpetual'].index] +
             [async_read_csv(dirname + os.sep + f + '_futures.csv',index_col=0,parse_dates=True)
              for f in futures.index] +
             [async_read_csv(dirname + os.sep + f + '_price.csv',index_col=0,parse_dates=True)
-             for f in futures['underlying'].unique()] +
+             for f in futures['spot_ticker'].unique()] +
             [async_read_csv(dirname + os.sep + f + '_borrow.csv',index_col=0,parse_dates=True)
-             for f in (list(futures['underlying'].unique()) + ['USD'])]
+             for f in set(list(futures['underlying'].unique()) + ['USDT', 'USDC', 'FDUSD'])]
     )), join='outer', axis=1)
-
-    # convert borrow size in usd
-    for f in futures['underlying'].unique():
-        data[f + '_rate_size']*=data[f + '_price_o']
 
     start = end - timedelta(hours=start_or_nb_hours) if isinstance(start_or_nb_hours, int) else start_or_nb_hours
     data.index = [t.replace(tzinfo=timezone.utc) for t in data.index]
-    return data[~data.index.duplicated()].sort_index()[start:end]
+    data = data[~data.index.duplicated()].sort_index()[start:end]
+    data = data.ffill().resample(resample).last()
+    return data
 
 async def build_history(futures,
                         exchange,
                         dirname=configLoader.get_mktdata_folder_path(),
                         end=datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0,second=0,microsecond=0),
-                        frequency: timedelta = '1h'): # Runtime/Mktdata_database
+                        frequency: timedelta = '1h'):    # Runtime/Mktdata_database
     '''for now, increments local files and then uploads to s3'''
     logger = logging.getLogger('histfeed')
     logger.info("BUILDING COROUTINES")
 
     coroutines = []
     for _, f in futures[futures['type'] == 'perpetual'].iterrows():
-        csv_name = os.path.join(dirname, f.name + '_funding.csv')
-        csv = pd.read_csv(csv_name,index_col=0,parse_dates=True) if os.path.isfile(csv_name) else None
+        csv_name = os.path.join(dirname, f'{f.name}_funding.csv')
+        csv = pd.read_csv(csv_name,index_col=0, parse_dates=True) if os.path.isfile(csv_name) else None
         start = max(csv.index).replace(tzinfo=timezone.utc)+timedelta(hours=8) if csv is not None else history_start
         if start < end:
-            logger.info("Adding coroutine " + csv_name)
+            logger.info(f"Adding coroutine {csv_name}")
             coroutines.append(exchange.funding_history(f, start, end, dirname))
 
     for _, f in futures.iterrows():
-        csv_name = os.path.join(dirname, f.name + '_futures.csv')
-        csv = pd.read_csv(csv_name,index_col=0,parse_dates=True) if os.path.isfile(csv_name) else None
+        csv_name = os.path.join(dirname, f'{f.name}_futures.csv')
+        csv = pd.read_csv(csv_name, index_col=0, parse_dates=True) if os.path.isfile(csv_name) else None
         start = max(csv.index).replace(tzinfo=timezone.utc) + pd.Timedelta(frequency) if csv is not None else history_start
         if start < end:
-            logger.info("Adding coroutine " + csv_name)
+            logger.info(f"Adding coroutine {csv_name}")
             coroutines.append(exchange.rate_history(f, end, start, frequency, dirname))
 
     for f in futures['spot_ticker'].unique():
-        csv_name = os.path.join(dirname, f.replace('/','') + '_price.csv')
-        csv = pd.read_csv(csv_name,index_col=0,parse_dates=True) if os.path.isfile(csv_name) else None
+        csv_name = os.path.join(dirname, f'{f}_price.csv')
+        csv = pd.read_csv(csv_name, index_col=0, parse_dates=True) if os.path.isfile(csv_name) else None
         start = max(csv.index).replace(tzinfo=timezone.utc) + pd.Timedelta(frequency) if csv is not None else history_start
         if start < end:
-            logger.info("Adding coroutine " + csv_name)
+            logger.info(f"Adding coroutine {csv_name}")
             coroutines.append(exchange.spot_history(f, end, start, frequency, dirname))
 
-    for f in list(futures.loc[futures['spotMargin'] == True, 'underlying'].unique()) + ['USDT', 'USDC']:
-        csv_name = os.path.join(dirname, f + '_borrow.csv')
-        csv = pd.read_csv(csv_name, index_col=0,parse_dates=True) if os.path.isfile(csv_name) else None
+    for f in set(list(futures['underlying'].unique()) + ['USDT', 'FDUSD']):
+        csv_name = os.path.join(dirname, f'{f}_borrow.csv')
+        csv = pd.read_csv(csv_name, index_col=0, parse_dates=True) if os.path.isfile(csv_name) else None
         start = max(csv.index).replace(tzinfo=timezone.utc) + timedelta(hours=1) if csv is not None else history_start
         if start < end:
-            logger.info("Adding coroutine " + csv_name)
+            logger.info(f"Adding coroutine {csv_name}")
             coroutines.append(exchange.borrow_history(f, end, start, dirname))
 
     if coroutines:
@@ -131,7 +129,7 @@ async def correct_history(futures,exchange,hy_history,dirname=configLoader.get_m
     await safe_gather(coroutines)
 
 async def history_main_wrapper(run_type, exchange_name, universe_name, nb_days=1, frequency='1h'):
-    parameters = configLoader.get_executor_params(order='listen_binance', dirname='prod')
+    parameters = configLoader.get_executor_params(order='listen_binance')
     exchange = await build_VenueAPI(parameters['venue_api'])
 
     def _array_concat(a, b):
