@@ -178,6 +178,19 @@ async def perp_vs_cash(
 
     # Run a trajectory
     log_path = os.path.join(os.sep, "tmp", "pfoptimizer")
+    parameters = pd.Series({
+        'run_date': datetime.today(),
+        'universe': param_universe,
+        'exclusion_list': exclusion_list,
+        'type_allowed': type_allowed,
+        'signal_horizon': signal_horizon,
+        'holding_period': holding_period,
+        'slippage_override': slippage_override,
+        'concentration_limit': concentration_limit,
+        'equity': equity,
+        'slippage_scaler': slippage_scaler,
+        'slippage_orderbook_depth': slippage_orderbook_depth})
+    parameters.to_csv(os.path.join(os.sep, log_path, 'parameters.csv'))
     if not os.path.exists(log_path):
         os.umask(0)
         os.makedirs(log_path, mode=0o777)
@@ -288,8 +301,7 @@ async def perp_vs_cash(
                 # weights
                 cash_flow['amtUSD'] = cash_flow['previousWeight']
                 cash_flow['bucket'] = 'weights'
-                # TODO dupe ...
-                cash_flow.loc[cash_flow['name'] == 'total', 'amtUSD'] = cash_flow['amtUSD'].sum()
+                cash_flow.loc[cash_flow['name'] == 'total', 'amtUSD'] = cash_flow['amtUSD'].sum()/2
                 pnl_list += [cash_flow[['name', 'end_time', 'bucket', 'amtUSD']]]
 
                 # spot_vs_index
@@ -300,8 +312,15 @@ async def perp_vs_cash(
 
                 # carry
                 cash_flow['amtUSD'] = cash_flow['RealizedCarry'] * (
-                            time - prev_time).total_seconds() / 365.25 / 24 / 3600 * 8
+                            time - prev_time).total_seconds() / 365.25 / 24 / 3600
                 cash_flow['bucket'] = 'carry(USD not annualized)'
+                cash_flow.loc[cash_flow['name'] == 'total', 'amtUSD'] = cash_flow['amtUSD'].sum()
+                pnl_list += [cash_flow[['name', 'end_time', 'bucket', 'amtUSD']]]
+
+                # tx_cost
+                cash_flow['amtUSD'] = (cash_flow['transactionCost'] * (cash_flow['previousWeight'] - cash_flow['optimalWeight']).apply(abs)
+                                       * (time - prev_time).total_seconds() / 365.25 / 24 / 3600)
+                cash_flow['bucket'] = 'tx_cost(USD not annualized, fwd)'
                 cash_flow.loc[cash_flow['name'] == 'total', 'amtUSD'] = cash_flow['amtUSD'].sum()
                 pnl_list += [cash_flow[['name', 'end_time', 'bucket', 'amtUSD']]]
 
@@ -323,21 +342,12 @@ async def perp_vs_cash(
             logging.getLogger('pfoptimizer').critical(str(e))
         finally:
             logging.getLogger('pfoptimizer').info(f'{str(point_in_time)} done')
-            point_in_time = next(time for time in hy_history.index if time > point_in_time)
+            try:
+                point_in_time = next(time for time in sorted(hy_history.index) if time > point_in_time)
+            except StopIteration:
+                if point_in_time + timedelta(hours=8) <= backtest_end:
+                    raise Exception("have you deleted trajectory.csv?")
 
-    parameters = pd.Series({
-        'run_date': datetime.today(),
-        'universe': param_universe,
-        'exclusion_list': exclusion_list,
-        'type_allowed': type_allowed,
-        'signal_horizon': signal_horizon,
-        'holding_period': holding_period,
-        'slippage_override': slippage_override,
-        'concentration_limit': concentration_limit,
-        'equity': equity,
-        'slippage_scaler': slippage_scaler,
-        'slippage_orderbook_depth': slippage_orderbook_depth})
-    parameters.to_csv(os.path.join(os.sep, log_path, 'parameters.csv'))
 
     # for live, send last optimized, and also shard them by coin.
     if backtest_start == backtest_end:
@@ -471,7 +481,7 @@ def main(*args, **kwargs):
 
     run_type = args[0]
     exchange_name = args[1]
-    config = configLoader.get_pfoptimizer_params(dirname=kwargs['config'] if 'config' in kwargs else None)
+    config = configLoader.get_pfoptimizer_params()
 
     # dirname = "/home/user/Sety-project/mktdata/binance"
     # for file in os.listdir(dirname):
@@ -525,7 +535,7 @@ def main(*args, **kwargs):
         logger.info(pd.concat({res.loc['total', 'optimalWeight']: res[['optimalWeight', 'ExpectedCarry']] / res.loc[
             'total', 'optimalWeight'] for res in res}, axis=1))
     elif run_type == 'backtest':
-        for equity in [[1000000]]:
+        for equity in [[config["EQUITY_OVERRIDE"]["value"]]]:
             for concentration_limit in [[config["CONCENTRATION_LIMIT"]["value"]]]:
                 for mktshare_limit in [[config["MKTSHARE_LIMIT"]["value"]]]:
                     for minimum_carry in [[config["MINIMUM_CARRY"]["value"]]]:

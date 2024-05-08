@@ -1,5 +1,7 @@
 import pandas as pd
 import scipy.optimize as opt
+from pandas import DataFrame
+
 from tradeexecutor.binance.margin import MarginCalculator, BasisMarginCalculator
 from histfeed.binance_history import *
 from tradeexecutor.binance.api import BinanceAPI
@@ -324,7 +326,7 @@ async def fetch_rate_slippage(input_futures,
                               slippage_override: int = -999,
                               slippage_orderbook_depth: float = 0,
                               slippage_scaler: float = 1.0,
-                              params={'override_slippage': True, 'fee_mode': 'retail'}) -> None:
+                              params={'override_slippage': True, 'fee_mode': 'retail'}) -> DataFrame:
     futures = input_futures.copy()
     point_in_time = datetime.utcnow().replace(tzinfo=timezone.utc)
 
@@ -383,25 +385,20 @@ async def fetch_rate_slippage(input_futures,
                                           axis=1)  # .replace(tzinfo=timezone.utc)
 
     # buy is negative, sell is positive
-    buy_slippage = futures['future_bid'] - futures['spot_ask']
     bid_rate_slippage = futures.apply(lambda f: \
                                           (f['future_bid'] - f['spot_ask']) \
                                           / np.max([1, (f[
-                                                            'expiryTime'] - point_in_time).total_seconds() / 3600]) * 365.25 * 24 * 3,
-                                      axis=1)  # no less than 1h
-    sell_slippage = futures['future_ask'] - futures['spot_bid']
+                                                            'expiryTime'] - point_in_time).total_seconds() / 3600]),
+                                      axis=1)
     ask_rate_slippage = futures.apply(lambda f: \
                                           (f['future_ask'] - f['spot_bid']) \
                                           / np.max([1, (f[
-                                                            'expiryTime'] - point_in_time).total_seconds() / 3600]) * 365.25 * 24 * 3,
-                                      axis=1)  # no less than 1h
+                                                            'expiryTime'] - point_in_time).total_seconds() / 3600]),
+                                      axis=1)
 
-    holding_hours = int(holding_period.total_seconds() / 3600)
     return pd.DataFrame({
-        'buy_slippage': buy_slippage * 365.25 * 24 / holding_hours,
-        'sell_slippage': sell_slippage * 365.25 * 24 / holding_hours,
-        'bid_rate_slippage': bid_rate_slippage,
-        'ask_rate_slippage': ask_rate_slippage,
+        'buy_slippage': bid_rate_slippage * 365.25 * 24 * 3600 / holding_period.total_seconds(),
+        'sell_slippage': ask_rate_slippage * 365.25 * 24 * 3600 / holding_period.total_seconds(),
     })
 
 
