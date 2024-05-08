@@ -589,6 +589,7 @@ def cash_carry_optimizer(exchange, futures,
         weight_move = summary['optimalWeight'] - previous_weights
         summary['transactionCost'] = weight_move * futures['buy_slippage']
         summary.loc[weight_move < 0, 'transactionCost'] = weight_move[weight_move < 0] * sell_slippage[weight_move < 0]
+        summary['transactionCost'] = summary['transactionCost'].apply(abs)
 
         summary.loc[exchange.stablecoin, 'spotBenchmark'] = futures.iloc[0]['quote_borrow']
         summary.loc[exchange.stablecoin, 'ExpectedBenchmark'] = E_intUSDborrow
