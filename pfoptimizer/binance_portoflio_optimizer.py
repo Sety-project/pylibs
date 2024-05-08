@@ -318,8 +318,7 @@ async def perp_vs_cash(
                 pnl_list += [cash_flow[['name', 'end_time', 'bucket', 'amtUSD']]]
 
                 # tx_cost
-                cash_flow['amtUSD'] = (cash_flow['transactionCost'] * (cash_flow['previousWeight'] - cash_flow['optimalWeight']).apply(abs)
-                                       * (time - prev_time).total_seconds() / 365.25 / 24 / 3600)
+                cash_flow['amtUSD'] = cash_flow['transactionCost'].apply(abs) * holding_period.total_seconds() / 365.25 / 24 / 3600
                 cash_flow['bucket'] = 'tx_cost(USD not annualized, fwd)'
                 cash_flow.loc[cash_flow['name'] == 'total', 'amtUSD'] = cash_flow['amtUSD'].sum()
                 pnl_list += [cash_flow[['name', 'end_time', 'bucket', 'amtUSD']]]
@@ -553,7 +552,7 @@ def main(*args, **kwargs):
                                         signal_horizon=sig_horizon,
                                         holding_period=hol_period,
                                         slippage_override=slippage_override,
-                                        backtest_start=datetime(2024, 1, 1).replace(tzinfo=timezone.utc),
+                                        backtest_start=datetime(2023, 9, 10).replace(tzinfo=timezone.utc),
                                         # .replace(minute=0, second=0, microsecond=0)-timedelta(days=2),# live start was datetime(2022,6,21,19),
                                         backtest_end=datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0,
                                                                                                             second=0,
