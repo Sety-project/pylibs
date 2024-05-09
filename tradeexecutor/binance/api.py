@@ -59,7 +59,7 @@ class BinanceAPI(CeFiAPI, ccxtpro.binance):
                                 if f['active'] and f['swap']]
                 return [f for f in perp_markets if f['margin'] and f['margin']['info']['isMarginTradingAllowed']]
 
-            lev_perp_markets = (await get_lev_perp_markets())[:1] if __debug__ else await get_lev_perp_markets()
+            lev_perp_markets = await get_lev_perp_markets()
             funding_info = await exchange.fapiPublicGetFundingInfo()
 
             coinm_obj = ccxtpro.binancecoinm()
@@ -117,7 +117,8 @@ class BinanceAPI(CeFiAPI, ccxtpro.binance):
             for funding_rate in funding_rates:
                 market = next(m for m in lev_perp_markets if m['symbol'] == funding_rate['symbol'])
                 open_interest = next((m for m in open_interests if m['symbol'] == market['id']), None)
-
+                fundingIntervalHours = next((int(x['fundingIntervalHours']) for x in funding_info
+                      if x['symbol'] == market['id']), 8)
                 index = funding_rate['indexPrice']
                 mark = funding_rate['markPrice']
                 expiryTime = dateutil.parser.isoparse(market['expiryDatetime']).replace(
@@ -126,7 +127,7 @@ class BinanceAPI(CeFiAPI, ccxtpro.binance):
                     future_carry = calc_basis(mark, index, expiryTime,
                                               datetime.utcnow().replace(tzinfo=timezone.utc))
                 elif bool(market['swap']):
-                    future_carry = funding_rate['fundingRate'] * 3 * 365.25
+                    future_carry = funding_rate['fundingRate'] * 365.25 * 24 / fundingIntervalHours
                 else:
                     future_carry = 0
 
@@ -136,8 +137,7 @@ class BinanceAPI(CeFiAPI, ccxtpro.binance):
                     'mark': mark,
                     'name': exchange.safe_string(market, 'id'),
                     'perpetual': bool(exchange.safe_value(market, 'swap')),
-                    'fundingIntervalHours': next((int(x['fundingIntervalHours']) for x in funding_info
-                                                  if x['symbol'] == market['id']), 8),
+                    'fundingIntervalHours': fundingIntervalHours,
                     'priceIncrement': float(next(_filter for _filter in market['info']['filters']
                                                  if _filter['filterType'] == 'PRICE_FILTER')['tickSize']),
                     'sizeIncrement': max(float(next(_filter for _filter in market['info']['filters']
