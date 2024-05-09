@@ -21,6 +21,7 @@ async def refresh_universe(exchange, universe_filter):
 
     try:
         universe = configLoader.get_bases(universe_filter)
+        logging.getLogger('pfoptimizer').info("Loaded universe unverse from disk. delete config/univers.json if you want to refresh it.")
         return universe
     except FileNotFoundError as e:
         futures = pd.DataFrame(await BinanceAPI.Static.fetch_futures(exchange)).set_index('name')
@@ -160,7 +161,6 @@ async def perp_vs_cash(
     # universe = universe[~universe['underlying'].isin(exclusion_list)]
     type_allowed = param_type_allowed
     futures = pd.DataFrame(await BinanceAPI.Static.fetch_futures(exchange)).set_index('name')
-    futures.to_csv(os.path.join(os.sep, dir_name, 'futures.csv'))
     universe_filtered = futures[(futures['type'].isin(type_allowed))
                                 & (futures['spot_ticker'].isin(universe))]
 
