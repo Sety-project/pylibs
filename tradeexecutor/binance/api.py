@@ -1,3 +1,4 @@
+import logging
 from datetime import timezone, datetime, timedelta
 
 import ccxt.base.errors
@@ -51,8 +52,10 @@ class BinanceAPI(CeFiAPI, ccxtpro.binance):
             if 'fetch_futures' in BinanceAPI.Static._cache:
                 return BinanceAPI.Static._cache['fetch_futures']
             dir_name = configLoader.get_mktdata_folder_for_exchange(exchange.id)
-            if os.path.isfile(os.path.join(os.sep, dir_name, 'futures.csv')):
-                return pd.read_csv(os.path.join(os.sep, dir_name, 'futures.csv')).to_dict('records')
+            filename = os.path.join(os.sep, dir_name, 'futures.csv')
+            if os.path.isfile(filename):
+                logging.getLogger('pfoptimizer').warning(f'loading futures from file. Delete {filename} if you want to refresh')
+                return pd.read_csv(filename).to_dict('records')
 
             async def get_lev_perp_markets():
                 all_markets = await exchange.fetch_markets()
