@@ -573,14 +573,12 @@ def cash_carry_optimizer(exchange, futures,
         summary['borrow'] = futures['borrow']
         summary['quote_borrow'] = futures['quote_borrow']
         summary['ExpectedBenchmark'] = (E_intCarry + E_intUSDborrow - futures['direction'].apply(
-            lambda f: 0 if f > 0 else 1.0).values * E_intBorrow) / 365.25
+            lambda f: 0 if f > 0 else 1.0).values * E_intBorrow) / 365.25 / 3
         summary['funding'] = futures['basis_mid']
         summary['previousWeight'] = previous_weights
         summary['optimalWeight'] = res['x']
         summary['ExpectedCarry'] = res['x'] * (E_intCarry + E_intUSDborrow)
-        summary['RealizedCarry'] = summary.apply(lambda f: f['previousWeight'] * (
-                f['funding'] + (f['borrow'] if f['previousWeight'] < 0 else -f['quote_borrow'])), axis=1)
-
+        summary['RealizedCarry'] = summary['previousWeight'] * summary['funding']
         summary['excessIM'] = pd.Series(excess_margin.shockedEstimate(res['x'])['IM'])
         summary['excessMM'] = pd.Series(excess_margin.shockedEstimate(res['x'])['MM'])
 
@@ -591,13 +589,11 @@ def cash_carry_optimizer(exchange, futures,
 
         summary.loc[exchange.stablecoin, 'spotBenchmark'] = futures.iloc[0]['quote_borrow']
         summary.loc[exchange.stablecoin, 'ExpectedBenchmark'] = E_intUSDborrow
-        summary.loc[exchange.stablecoin, 'FundingBenchmark'] = futures.iloc[0]['quote_borrow'] / 365.25
+        summary.loc[exchange.stablecoin, 'FundingBenchmark'] = futures.iloc[0]['quote_borrow'] / 365.25 / 3
         summary.loc[exchange.stablecoin, 'previousWeight'] = equity - sum(previous_weights.values)
         summary.loc[exchange.stablecoin, 'optimalWeight'] = equity - sum(res['x'])
         summary.loc[exchange.stablecoin, 'ExpectedCarry'] = np.min([0, equity - sum(res['x'])]) * E_intUSDborrow
-        summary.loc[exchange.stablecoin, 'RealizedCarry'] = min(
-            [summary.loc[exchange.stablecoin, 'previousWeight'], 0]) * summary[
-                                                                'quote_borrow'].mean()
+        summary.loc[exchange.stablecoin, 'RealizedCarry'] = min([equity + summary.loc[exchange.stablecoin, 'previousWeight'], 0]) * summary['quote_borrow'].mean()
         summary.loc[exchange.stablecoin, 'excessIM'] = excess_margin.shockedEstimate(res['x'])['totalIM'] - summary[
             'excessIM'].sum()
         summary.loc[exchange.stablecoin, 'excessMM'] = excess_margin.shockedEstimate(res['x'])['totalMM'] - summary[
