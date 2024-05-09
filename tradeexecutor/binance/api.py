@@ -50,6 +50,9 @@ class BinanceAPI(CeFiAPI, ccxtpro.binance):
         async def fetch_futures(exchange):
             if 'fetch_futures' in BinanceAPI.Static._cache:
                 return BinanceAPI.Static._cache['fetch_futures']
+            dir_name = configLoader.get_mktdata_folder_for_exchange(exchange.id)
+            if os.path.isfile(os.path.join(os.sep, dir_name, 'futures.csv')):
+                return pd.read_csv(os.path.join(os.sep, dir_name, 'futures.csv')).to_dict('records')
 
             async def get_lev_perp_markets():
                 all_markets = await exchange.fetch_markets()
@@ -172,6 +175,7 @@ class BinanceAPI(CeFiAPI, ccxtpro.binance):
                 })
 
             BinanceAPI.Static._cache['fetch_futures'] = result
+            pd.DataFrame(result).set_index('name').to_csv(os.path.join(os.sep, dir_name, 'futures.csv'))
             return result
 
         @staticmethod
