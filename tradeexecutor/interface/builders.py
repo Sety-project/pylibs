@@ -30,9 +30,7 @@ async def build_VenueAPI(parameters):
     elif parameters['exchange'] == 'binance':
         exchange = BinanceAPI(parameters)
         exchange.verbose = False
-        #if 'subaccount' in parameters: {'FTX-SUBACCOUNT': parameters['subaccount'] if 'subaccount' in parameters else 'SysPerp'}
-        await exchange.authenticate()
-        await exchange.load_markets()
+
         if 'symbol' in parameters:
             symbols = parameters['symbols']
         else:
