@@ -148,16 +148,19 @@ async def perp_vs_cash(
     now_time = datetime.utcnow().replace(tzinfo=timezone.utc)
     config = configLoader.get_pfoptimizer_params(dirname=config_name)
     dir_name = configLoader.get_mktdata_folder_for_exchange(exchange.id)
+    if minimum_carry < 0:
+        optional_params.append('ignore_direction')
 
     # Qualitative filtering
     param_type_allowed = config['TYPE_ALLOWED']['value']
     param_universe = config['UNIVERSE']['value']
-    futures = pd.DataFrame(await BinanceAPI.Static.fetch_futures(exchange)).set_index('name')
 
     universe = await refresh_universe(exchange, param_universe)
     universe = [instrument_name for instrument_name in universe if instrument_name.split("-")[0] not in exclusion_list]
     # universe = universe[~universe['underlying'].isin(exclusion_list)]
     type_allowed = param_type_allowed
+    futures = pd.DataFrame(await BinanceAPI.Static.fetch_futures(exchange)).set_index('name')
+    futures.to_csv(os.path.join(os.sep, dir_name, 'futures.csv'))
     universe_filtered = futures[(futures['type'].isin(type_allowed))
                                 & (futures['spot_ticker'].isin(universe))]
 
@@ -198,7 +201,7 @@ async def perp_vs_cash(
     if backtest_start and backtest_end:
         trajectory_filename = os.path.join(os.sep, log_path, 'trajectory.csv')
         pnl_filename = os.path.join(os.sep, log_path, 'pnl.csv')
-        if os.path.isfile(trajectory_filename) and os.path.isfile(pnl_filename):
+        if os.path.isfile(trajectory_filename) and os.path.isfile(pnl_filename) and ('resume_trajectory' in optional_params):
             trajectory = pd.read_csv(trajectory_filename, parse_dates=['time'], index_col=0)
             pnl = pd.read_csv(pnl_filename, parse_dates=['end_time'], index_col=0)
             point_in_time = max(backtest_start,
@@ -226,6 +229,7 @@ async def perp_vs_cash(
     # await build_history(enriched, exchange)
     hy_history = await get_history(dir_name, enriched,
                                    start_or_nb_hours=backtest_start - signal_horizon - holding_period, end=backtest_end)
+    hy_history.to_csv(os.path.join(os.sep, log_path, 'history.csv'))
     enriched = market_capacity(enriched, hy_history)
 
     (intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow) = \
@@ -236,7 +240,7 @@ async def perp_vs_cash(
         )  # historical window for expectations
     updated = update(enriched, point_in_time, hy_history, equity,
                      intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow,
-                     minimum_carry=0)  # Do not remove futures using minimum_carry
+                     minimum_carry=-1)  # Do not remove futures using minimum_carry
 
     # final filter, needs some history and good avg volumes
     filtered = updated.loc[~np.isnan(updated['E_intCarry'])]
@@ -266,6 +270,8 @@ async def perp_vs_cash(
                              minimum_carry=minimum_carry,
                              previous_weights_index=previous_weights.index)
 
+            if (point_in_time == backtest_start) & (backtest_start != backtest_end):
+                optional_params.append('cost_blind')
             optimized = cash_carry_optimizer(exchange, updated,
                                              previous_weights_df=previous_weights,
                                              holding_period=holding_period,
@@ -273,10 +279,7 @@ async def perp_vs_cash(
                                              concentration_limit=concentration_limit,
                                              mktshare_limit=mktshare_limit,
                                              equity=equity,
-                                             optional_params=optional_params + (['cost_blind']
-                                                                                if (point_in_time == backtest_start) & (
-                                                         backtest_start != backtest_end)
-                                                                                else []))  # Ignore costs on first time of a backtest
+                                             optional_params=optional_params)
 
             # optimized = optimized[
             #     np.abs(optimized['optimalWeight']) >
@@ -344,9 +347,7 @@ async def perp_vs_cash(
             try:
                 point_in_time = next(time for time in sorted(hy_history.index) if time > point_in_time)
             except StopIteration:
-                if point_in_time + timedelta(hours=8) <= backtest_end:
-                    raise Exception("have you deleted trajectory.csv?")
-
+                point_in_time = backtest_end + timedelta(seconds=1)  # end of backtest
 
     # for live, send last optimized, and also shard them by coin.
     if backtest_start == backtest_end:
@@ -431,7 +432,6 @@ async def strategy_wrapper(**kwargs):
         equity_override = None
     else:
         raise Exception('override must be either None or numeric')
-    await exchange.load_markets()
 
     coroutines = [perp_vs_cash(
         exchange=exchange,
@@ -447,7 +447,7 @@ async def strategy_wrapper(**kwargs):
         backtest_start=kwargs['backtest_start'],
         backtest_end=kwargs['backtest_end'],
         optional_params=['warn_start'] + (
-            ['verbose'] if (__debug__ and kwargs['backtest_start'] == kwargs['backtest_end']) else []))
+            ['verbose'] if __debug__ else []))
         for concentration_limit in kwargs['concentration_limit']
         for mktshare_limit in kwargs['mktshare_limit']
         for minimum_carry in kwargs['minimum_carry']

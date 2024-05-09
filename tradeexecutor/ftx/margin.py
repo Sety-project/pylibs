@@ -186,6 +186,7 @@ class BasisMarginCalculator(MarginCalculator):
 
     def __init__(self, account_leverage, collateralWeight, imfFactor,
                  equity, spot_marks, future_marks):
+        assert len(spot_marks) == len(future_marks) == len(equity)
         super().__init__(account_leverage, collateralWeight, imfFactor)
 
         self._equity = equity
@@ -195,7 +196,7 @@ class BasisMarginCalculator(MarginCalculator):
         pf_params = configLoader.get_pfoptimizer_params()
         self._long_blowup = float(pf_params['LONG_BLOWUP']['value'])
         self._short_blowup = float(pf_params['SHORT_BLOWUP']['value'])
-        self._nb_blowups = int(pf_params['NB_BLOWUPS']['value'])
+        self._nb_blowups = min(int(pf_params['NB_BLOWUPS']['value']), len(spot_marks))
         self._open_order_headroom = float(pf_params['OPEN_ORDERS_HEADROOM']['value'])
 
     def futureMargins(self, weights):

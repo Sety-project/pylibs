@@ -14,7 +14,7 @@ class MarginCalculator:
                  future_IM, future_MM,
                  stablecoin: str, margin_quote_IM: float, margin_quote_MM: float, collateral_ratio_quote: float,
                  equity: float = None):
-        # Load defaults params
+        assert len(collateral_ratio) == len(margin_IM) == len(margin_MM) == len(future_IM) == len(future_MM)
 
         self.collateral_ratio = collateral_ratio | {f'{stablecoin}{stablecoin}': collateral_ratio_quote}
         self.margin_IM = margin_IM | {f'{stablecoin}{stablecoin}': margin_quote_IM}
@@ -205,7 +205,7 @@ class BasisMarginCalculator(MarginCalculator):
         pf_params = configLoader.get_pfoptimizer_params()
         self._long_blowup = float(pf_params['LONG_BLOWUP']['value'])
         self._short_blowup = float(pf_params['SHORT_BLOWUP']['value'])
-        self._nb_blowups = int(pf_params['NB_BLOWUPS']['value'])
+        self._nb_blowups = min(int(pf_params['NB_BLOWUPS']['value']), len(spot_marks))
         self._open_order_headroom = float(pf_params['OPEN_ORDERS_HEADROOM']['value'])
 
     def futureMargins(self, weights):

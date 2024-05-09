@@ -28,9 +28,7 @@ def market_capacity(futures, hy_history, universe_filter_window=[]):
                                                              f['future_volume_avg'] / 24])
                                                         , axis=1)
     futures['concentration_limit_short'] = futures.apply(lambda f:
-                                                         min([0,
-                                                              # if f['spotMargin']==False else f['borrow_volume_decile'],
-                                                              f['openInterestUsd'], f['spot_volume_avg'] / 24,
+                                                         min([f['openInterestUsd'], f['spot_volume_avg'] / 24,
                                                               f['future_volume_avg'] / 24])
                                                          , axis=1)
     # futures['carry_native_spot'] = futures['carry_mid'] * futures.apply(
@@ -474,11 +472,11 @@ def cash_carry_optimizer(exchange, futures,
 
     # bounds: mktshare and concentration
     # scipy understands [0,0] bounds
-    lower_bound = futures.apply(lambda future: 0 if future['direction'] > 0 else
+    lower_bound = futures.apply(lambda future: 0 if (('ignore_direction' not in optional_params) and (future['direction'] > 0)) else
     max(-concentration_limit * equity, -mktshare_limit * future['concentration_limit_short'])
                                 # 0 bounds if short  + no spotMargin...invalid for institutionals
                                 , axis=1)
-    upper_bound = futures.apply(lambda future: 0 if future['direction'] < 0 else
+    upper_bound = futures.apply(lambda future: 0 if (('ignore_direction' not in optional_params) and (future['direction'] < 0)) else
     min(concentration_limit * equity, mktshare_limit * future['concentration_limit_long'])
                                 , axis=1)
 
@@ -550,7 +548,7 @@ def cash_carry_optimizer(exchange, futures,
                            bounds=bounds,
                            callback=(lambda x: callbackF(x, progress_display,
                                                          'interim' if 'verbose' in optional_params else None)),
-                           options={'ftol': 1e-2, 'disp': False, 'finite_diff_rel_step': finite_diff_rel_step,
+                           options={'ftol': 1e-4, 'disp': False, 'finite_diff_rel_step': finite_diff_rel_step,
                                     'maxiter': 50 * len(x1)})
         if not res['success']:
             # cheeky ignore that exception:
