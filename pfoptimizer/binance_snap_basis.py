@@ -8,7 +8,7 @@ from tradeexecutor.binance.api import BinanceAPI
 from utils.ccxt_utilities import calc_basis
 
 finite_diff_rel_step = 1e-4
-
+ftol = 1e-3
 
 def market_capacity(futures, hy_history, universe_filter_window=[]):
     if len(universe_filter_window) == 0:
@@ -329,10 +329,10 @@ async def fetch_rate_slippage(input_futures,
     point_in_time = datetime.utcnow().replace(tzinfo=timezone.utc)
 
     if params['override_slippage']:
-        futures['spot_ask'] = slippage_override
-        futures['spot_bid'] = -slippage_override
-        futures['future_ask'] = slippage_override
-        futures['future_bid'] = -slippage_override
+        futures['spot_ask'] = slippage_override * 365.25 * 24 * 3600 / holding_period.total_seconds()
+        futures['spot_bid'] = -slippage_override * 365.25 * 24 * 3600 / holding_period.total_seconds()
+        futures['future_ask'] = slippage_override * 365.25 * 24 * 3600 / holding_period.total_seconds()
+        futures['future_bid'] = -slippage_override * 365.25 * 24 * 3600 / holding_period.total_seconds()
     else:  ## rubble calc:
         markets = await exchange.fetch_tickers(futures['symbol'].values)
         trading_fees = await exchange.fetch_trading_fees()
@@ -548,7 +548,7 @@ def cash_carry_optimizer(exchange, futures,
                            bounds=bounds,
                            callback=(lambda x: callbackF(x, progress_display,
                                                          'interim' if 'verbose' in optional_params else None)),
-                           options={'ftol': 1e-4, 'disp': False, 'finite_diff_rel_step': finite_diff_rel_step,
+                           options={'ftol': ftol, 'disp': False, 'finite_diff_rel_step': finite_diff_rel_step,
                                     'maxiter': 50 * len(x1)})
         if not res['success']:
             # cheeky ignore that exception:

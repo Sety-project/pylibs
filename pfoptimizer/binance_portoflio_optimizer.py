@@ -270,8 +270,9 @@ async def perp_vs_cash(
                              minimum_carry=minimum_carry,
                              previous_weights_index=previous_weights.index)
 
+            used_optional_params = copy.deepcopy(optional_params)
             if (point_in_time == backtest_start) & (backtest_start != backtest_end):
-                optional_params.append('cost_blind')
+                used_optional_params += ['cost_blind']
             optimized = cash_carry_optimizer(exchange, updated,
                                              previous_weights_df=previous_weights,
                                              holding_period=holding_period,
@@ -279,7 +280,7 @@ async def perp_vs_cash(
                                              concentration_limit=concentration_limit,
                                              mktshare_limit=mktshare_limit,
                                              equity=equity,
-                                             optional_params=optional_params)
+                                             optional_params=used_optional_params)
 
             # optimized = optimized[
             #     np.abs(optimized['optimalWeight']) >
@@ -320,7 +321,7 @@ async def perp_vs_cash(
                 cash_flow.loc[cash_flow['name'] == 'total', 'amtUSD'] = cash_flow['amtUSD'].sum()
                 pnl_list += [cash_flow[['name', 'end_time', 'bucket', 'amtUSD']]]
 
-                # tx_cost
+                # tx_cost. de-annulaize it
                 cash_flow['amtUSD'] = cash_flow['transactionCost'].apply(abs) * holding_period.total_seconds() / 365.25 / 24 / 3600
                 cash_flow['bucket'] = 'tx_cost(USD not annualized, fwd)'
                 cash_flow.loc[cash_flow['name'] == 'total', 'amtUSD'] = cash_flow['amtUSD'].sum()
