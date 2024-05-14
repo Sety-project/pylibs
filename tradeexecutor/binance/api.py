@@ -27,6 +27,47 @@ class BinanceAPI(CeFiAPI, ccxtpro.binance):
     class Static(dict):
         _cache = dict()  # {function_name: result}
 
+        noborrow = {'ACE',
+                    'BB',
+                    'BEAMX',
+                    'ENA',
+                    'OMNI',
+                    'ORDI',
+                    'PYTH',
+                    'RONIN',
+                    'STEEM',
+                    'TAO',
+                    'TIA',
+                    'W',
+                    'AEVO',
+                    'AI',
+                    'ALT',
+                    'ARK',
+                    'AXL',
+                    'BLUR',
+                    'BOME',
+                    'DYM',
+                    'ETHFI',
+                    'JTO',
+                    'JUP',
+                    'MANTA',
+                    'MEME',
+                    'METIS',
+                    'NFP',
+                    'NTRN',
+                    'PIXEL',
+                    'PORTAL',
+                    'REZ',
+                    'SAGA',
+                    'SNT',
+                    'STRK',
+                    'TNSR',
+                    'VANRY',
+                    'WIF',
+                    'XAI',
+                    'ZEC',
+                    '1000SATS'}
+
         @staticmethod
         async def build(self, symbols):
             result = BinanceAPI.Static()
@@ -50,12 +91,16 @@ class BinanceAPI(CeFiAPI, ccxtpro.binance):
         @staticmethod
         async def fetch_futures(exchange):
             if 'fetch_futures' in BinanceAPI.Static._cache:
-                return BinanceAPI.Static._cache['fetch_futures']
+                result = BinanceAPI.Static._cache['fetch_futures']
+                BinanceAPI.Static._cache['fetch_futures'] = result
+                return result
             dir_name = configLoader.get_mktdata_folder_for_exchange(exchange.id)
             filename = os.path.join(os.sep, dir_name, 'futures.csv')
             if os.path.isfile(filename):
                 logging.getLogger('pfoptimizer').warning(f'loading futures from file. Delete {filename} if you want to refresh')
-                return pd.read_csv(filename).to_dict('records')
+                result = pd.read_csv(filename).to_dict('records')
+                BinanceAPI.Static._cache['fetch_futures'] = result
+                return result
 
             async def get_lev_perp_markets():
                 all_markets = await exchange.fetch_markets()
@@ -63,7 +108,10 @@ class BinanceAPI(CeFiAPI, ccxtpro.binance):
                 perp_markets = [f | {'margin': next((m for m in spot_markets if m['id'] == f['id']), None)}
                                 for f in all_markets
                                 if f['active'] and f['swap']]
-                return [f for f in perp_markets if f['margin'] and f['margin']['info']['isMarginTradingAllowed']]
+                return [f for f in perp_markets
+                        if f['margin']
+                        and f['margin']['info']['isMarginTradingAllowed']
+                        and f['base'] not in BinanceAPI.Static.noborrow]
 
             lev_perp_markets = await get_lev_perp_markets()
             funding_info = await exchange.fapiPublicGetFundingInfo()
