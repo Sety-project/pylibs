@@ -8,7 +8,7 @@ from tradeexecutor.binance.api import BinanceAPI
 from utils.ccxt_utilities import calc_basis
 
 finite_diff_rel_step = 1e-4
-ftol = 1e-3
+ftol = 1e-4
 
 def market_capacity(futures, hy_history, universe_filter_window=[]):
     if len(universe_filter_window) == 0:
@@ -191,7 +191,7 @@ def update(futures, point_in_time, history, equity,
     futures['carry_mid'] = 0
     futures.loc[(futures['carryShort'] + futures['carryLong'] < 0) & (futures['carryShort'] < 0), 'direction_mid'] = -1
     futures.loc[(futures['carryShort'] + futures['carryLong'] > 0) & (futures['carryLong'] > 0), 'direction_mid'] = 1
-    futures.loc[futures['direction_mid'] == -1, 'carry_mid'] = -futures['carryShort']
+    futures.loc[futures['direction_mid'] == -1, 'carry_mid'] = futures['carryShort']
     futures.loc[futures['direction_mid'] == 1, 'carry_mid'] = futures['carryLong']
 
     ####### expectations. This is what optimizer uses.
@@ -221,9 +221,11 @@ def update(futures, point_in_time, history, equity,
         raise Exception('empty future, are all data missing at that date ?')
 
     # compute realized=\int(carry) and E[\int(carry)]. We're done with direction so remove the max leverage.
-    futures['intCarry'] = futures.apply(lambda f: f['intShortCarry'] if f['direction'] < 0 else f['intLongCarry'],
-                                        axis=1)
-    futures['E_intCarry'] = futures.apply(lambda f: f['E_short'] if f['direction'] < 0 else f['E_long'], axis=1)
+    futures.loc[futures['direction'] < 0, 'intCarry'] = futures.loc[futures['direction'] < 0, 'intShortCarry']
+    futures.loc[futures['direction'] >= 0, 'intCarry'] = futures.loc[futures['direction'] >= 0, 'intLongCarry']
+    futures.loc[futures['direction'] < 0, 'E_intCarry'] = futures.loc[futures['direction'] < 0, 'E_short']
+    futures.loc[futures['direction'] >= 0, 'E_intCarry'] = futures.loc[futures['direction'] >= 0, 'E_long']
+
     # TODO: covar pre-update
     # C_int = integralCarry_t.ewm(times=hy_history.index, halflife=signal_horizon, axis=0).cov().loc[point_in_time]
 
@@ -577,8 +579,8 @@ def cash_carry_optimizer(exchange, futures,
         summary['funding'] = futures['basis_mid']
         summary['previousWeight'] = previous_weights
         summary['optimalWeight'] = res['x']
-        summary['ExpectedCarry'] = res['x'] * (E_intCarry + E_intUSDborrow)
-        summary['RealizedCarry'] = summary['previousWeight'] * summary['funding']
+        summary['ExpectedCarry'] = res['x'] * E_intCarry
+        summary['RealizedCarry'] = summary['previousWeight'] * futures['carry_mid']
         summary['excessIM'] = pd.Series(excess_margin.shockedEstimate(res['x'])['IM'])
         summary['excessMM'] = pd.Series(excess_margin.shockedEstimate(res['x'])['MM'])
 
@@ -592,8 +594,8 @@ def cash_carry_optimizer(exchange, futures,
         summary.loc[exchange.stablecoin, 'FundingBenchmark'] = futures.iloc[0]['quote_borrow'] / 365.25 / 3
         summary.loc[exchange.stablecoin, 'previousWeight'] = equity - sum(previous_weights.values)
         summary.loc[exchange.stablecoin, 'optimalWeight'] = equity - sum(res['x'])
-        summary.loc[exchange.stablecoin, 'ExpectedCarry'] = np.min([0, equity - sum(res['x'])]) * E_intUSDborrow
-        summary.loc[exchange.stablecoin, 'RealizedCarry'] = min([equity + summary.loc[exchange.stablecoin, 'previousWeight'], 0]) * summary['quote_borrow'].mean()
+        summary.loc[exchange.stablecoin, 'ExpectedCarry'] = min([sum(res['x']), equity]) * E_intUSDborrow
+        summary.loc[exchange.stablecoin, 'RealizedCarry'] = min([sum(previous_weights.values), equity]) * summary['quote_borrow'].mean()
         summary.loc[exchange.stablecoin, 'excessIM'] = excess_margin.shockedEstimate(res['x'])['totalIM'] - summary[
             'excessIM'].sum()
         summary.loc[exchange.stablecoin, 'excessMM'] = excess_margin.shockedEstimate(res['x'])['totalMM'] - summary[
