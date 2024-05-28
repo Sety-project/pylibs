@@ -238,6 +238,11 @@ async def perp_vs_cash(
             holding_period,  # to convert slippage into rate
             signal_horizon, filename=log_file if 'verbose' in optional_params else ''
         )  # historical window for expectations
+    point_in_time = max(point_in_time,
+                        E_long.dropna().index.min(),
+                        E_short.dropna().index.min(),
+                        E_intUSDborrow.dropna().index.min(),
+                        E_intBorrow.dropna().index.min())
     updated = update(enriched, point_in_time, hy_history, equity,
                      intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow,
                      minimum_carry=-1)  # Do not remove futures using minimum_carry
@@ -447,8 +452,7 @@ async def strategy_wrapper(**kwargs):
         slippage_override=slippage_override,
         backtest_start=kwargs['backtest_start'],
         backtest_end=kwargs['backtest_end'],
-        optional_params=['warn_start'] + (
-            ['verbose'] if __debug__ else []))
+        optional_params=kwargs['optional_params'])
         for concentration_limit in kwargs['concentration_limit']
         for mktshare_limit in kwargs['mktshare_limit']
         for minimum_carry in kwargs['minimum_carry']
@@ -511,7 +515,8 @@ def main(*args, **kwargs):
             holding_period=[parse_time_param(config['HOLDING_PERIOD']['value'])],
             slippage_override=[config["SLIPPAGE_OVERRIDE"]["value"]],
             backtest_start=None,
-            backtest_end=None))
+            backtest_end=None,
+            optional_params=config["OPTIONAL_PARAMS"]["value"]))
         res = res_list[0]
     elif run_type == 'depth':
         global UNIVERSE
@@ -528,7 +533,8 @@ def main(*args, **kwargs):
             holding_period=[parse_time_param(config['HOLDING_PERIOD']['value'])],
             slippage_override=[config["SLIPPAGE_OVERRIDE"]["value"]],
             backtest_start=None,
-            backtest_end=None))
+            backtest_end=None,
+            optional_params=config["OPTIONAL_PARAMS"]["value"]))
         with pd.ExcelWriter('Runtime/logs/portfolio_optimizer/depth.xlsx', engine='xlsxwriter') as writer:
             for res, equity in zip(res, equities):
                 res.to_excel(writer, sheet_name=str(equity))
@@ -553,12 +559,13 @@ def main(*args, **kwargs):
                                         signal_horizon=sig_horizon,
                                         holding_period=hol_period,
                                         slippage_override=slippage_override,
-                                        backtest_start=datetime(2023, 9, 10).replace(tzinfo=timezone.utc),
+                                        backtest_start=datetime(2023, 9, 30).replace(tzinfo=timezone.utc),
                                         # .replace(minute=0, second=0, microsecond=0)-timedelta(days=2),# live start was datetime(2022,6,21,19),
                                         backtest_end=datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0,
                                                                                                             second=0,
                                                                                                             microsecond=0) - timedelta(
-                                            hours=8)))
+                                            hours=8),
+                                        optional_params=config["OPTIONAL_PARAMS"]["value"]))
         return pd.DataFrame()
     elif run_type in ['unwind', 'flatten', 'spread']:
         res = asyncio.run(get_exec_request(run_type, exchange_name, **kwargs))
