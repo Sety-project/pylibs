@@ -18,7 +18,6 @@ ENV HISTFEED_PATH=$PYLIBS_PATH/histfeed
 ENV UTILS_PATH=$PYLIBS_PATH/utils
 ENV TRADEEXECUTOR_PATH=$PYLIBS_PATH/tradeexecutor
 ENV LOGS_PATH=/tmp/histfeed
-ENV CCXTPRO_PATH=$PYLIBS_PATH/ccxtpro
 
 ENV PYTHONPATH=$PYLIBS_PATH:$HOME
 
@@ -26,7 +25,6 @@ RUN mkdir -p $PYLIBS_PATH
 RUN mkdir -p $HISTFEED_PATH
 RUN mkdir -p $UTILS_PATH
 RUN mkdir -p $TRADEEXECUTOR_PATH
-RUN mkdir -p $CCXTPRO_PATH
 RUN mkdir -p $HOME/mktdata
 RUN mkdir -p $HOME/config
 RUN mkdir -p $LOGS_PATH
@@ -35,7 +33,6 @@ RUN chown -R $USER $PYLIBS_PATH
 RUN chown -R $USER $HISTFEED_PATH
 RUN chown -R $USER $UTILS_PATH
 RUN chown -R $USER $TRADEEXECUTOR_PATH
-RUN chown -R $USER $CCXTPRO_PATH
 RUN chown -R $USER $HOME/mktdata
 RUN chown -R $USER $HOME/config
 RUN chown -R $USER $LOGS_PATH
@@ -57,7 +54,6 @@ RUN pip3 install -Ur $TRADEEXECUTOR_PATH/requirements.txt
 COPY --chown=$USER:$USER /utils $UTILS_PATH
 COPY --chown=$USER:$USER /histfeed $HISTFEED_PATH
 COPY --chown=$USER:$USER /tradeexecutor $TRADEEXECUTOR_PATH
-COPY --chown=$USER:$USER /ccxtpro $CCXTPRO_PATH
 RUN chmod +x $HISTFEED_PATH/run.sh
 
 # Run container as root to be able to create and write in folders

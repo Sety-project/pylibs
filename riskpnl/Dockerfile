@@ -18,7 +18,6 @@ ENV RISKPNL_PATH=$PYLIBS_PATH/riskpnl
 ENV HISTFEED_PATH=$PYLIBS_PATH/histfeed
 ENV UTILS_PATH=$PYLIBS_PATH/utils
 ENV TRADEEXECUTOR_PATH=$PYLIBS_PATH/tradeexecutor
-ENV CCXTPRO_PATH=$PYLIBS_PATH/ccxtpro
 ENV LOGS_PATH=/tmp/pnl
 
 ENV PYTHONPATH=$PYLIBS_PATH:$HOME
@@ -28,14 +27,12 @@ RUN mkdir -p $UTILS_PATH
 RUN mkdir -p $LOGS_PATH
 RUN mkdir -p $HISTFEED_PATH
 RUN mkdir -p $TRADEEXECUTOR_PATH
-RUN mkdir -p $CCXTPRO_PATH
 
 RUN chown -R $USER $PYLIBS_PATH
 RUN chown -R $USER $UTILS_PATH
 RUN chown -R $USER $LOGS_PATH
 RUN chown -R $USER $HISTFEED_PATH
 RUN chown -R $USER $TRADEEXECUTOR_PATH
-RUN chown -R $USER $CCXTPRO_PATH
 
 WORKDIR $RISKPNL_PATH
 
@@ -45,7 +42,6 @@ COPY --chown=$USER:$USER /riskpnl/requirements.txt $RISKPNL_PATH
 COPY --chown=$USER:$USER /utils/requirements.txt $UTILS_PATH
 COPY --chown=$USER:$USER /histfeed/requirements.txt $HISTFEED_PATH
 COPY --chown=$USER:$USER /tradeexecutor/requirements.txt $TRADEEXECUTOR_PATH
-COPY --chown=$USER:$USER /ccxtpro $CCXTPRO_PATH
 
 # Install Pip dependencies --> Need to install as root
 RUN pip3 install -Ur $RISKPNL_PATH/requirements.txt
