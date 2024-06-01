@@ -5,7 +5,7 @@ RUN apt-get update
 RUN DEBIAN_FRONTEND="noninteractive" apt-get install -y python3-pip
 RUN pip3 install --upgrade pip
 
-ENV USER=ec2-user
+ENV USER=ubuntu
 RUN adduser -u 1026 $USER
 RUN usermod -a --group users $USER     # Adding user to group $USER
 
@@ -41,14 +41,10 @@ WORKDIR $HISTFEED_PATH
 
 # Copy pip requirements before copying full project
 USER $USER
-COPY --chown=$USER:$USER /histfeed/requirements.txt $HISTFEED_PATH
-COPY --chown=$USER:$USER /utils/requirements.txt $UTILS_PATH
-COPY --chown=$USER:$USER /tradeexecutor/requirements.txt $TRADEEXECUTOR_PATH
+COPY --chown=$USER:$USER /requirements.txt $UTILS_PATH
 
 # Install Pip dependencies --> Need to install as root
-RUN pip3 install -Ur $HISTFEED_PATH/requirements.txt
 RUN pip3 install -Ur $UTILS_PATH/requirements.txt
-RUN pip3 install -Ur $TRADEEXECUTOR_PATH/requirements.txt
 
 # Now copy full project
 COPY --chown=$USER:$USER /utils $UTILS_PATH

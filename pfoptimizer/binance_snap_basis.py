@@ -1,4 +1,3 @@
-import pandas as pd
 import scipy.optimize as opt
 from pandas import DataFrame
 
@@ -8,7 +7,7 @@ from tradeexecutor.binance.api import BinanceAPI
 from utils.ccxt_utilities import calc_basis
 
 finite_diff_rel_step = 1e-4
-ftol = 1e-4
+ftol = 1e-4 # and then ftol *=  n^1.5
 
 def market_capacity(futures, hy_history, universe_filter_window=[]):
     if len(universe_filter_window) == 0:
@@ -191,8 +190,8 @@ def update(futures, point_in_time, history, equity,
     futures['carry_mid'] = 0
     futures.loc[(futures['carryShort'] + futures['carryLong'] < 0) & (futures['carryShort'] < 0), 'direction_mid'] = -1
     futures.loc[(futures['carryShort'] + futures['carryLong'] > 0) & (futures['carryLong'] > 0), 'direction_mid'] = 1
-    futures.loc[futures['direction_mid'] == -1, 'carry_mid'] = futures['carryShort']
-    futures.loc[futures['direction_mid'] == 1, 'carry_mid'] = futures['carryLong']
+    futures.loc[futures['direction_mid'] == -1, 'carry_mid'] = futures.loc[futures['direction_mid'] == -1, 'carryShort']
+    futures.loc[futures['direction_mid'] == 1, 'carry_mid'] = futures.loc[futures['direction_mid'] == 1, 'carryLong']
 
     ####### expectations. This is what optimizer uses.
 
@@ -550,7 +549,7 @@ def cash_carry_optimizer(exchange, futures,
                            bounds=bounds,
                            callback=(lambda x: callbackF(x, progress_display,
                                                          'interim' if 'verbose' in optional_params else None)),
-                           options={'ftol': ftol, 'disp': False, 'finite_diff_rel_step': finite_diff_rel_step,
+                           options={'ftol': ftol * np.power(len(x1), 1.5), 'disp': False, 'finite_diff_rel_step': finite_diff_rel_step,
                                     'maxiter': 50 * len(x1)})
         if not res['success']:
             # cheeky ignore that exception:

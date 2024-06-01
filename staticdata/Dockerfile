@@ -4,7 +4,7 @@ FROM ubuntu:focal
 RUN apt-get update
 RUN DEBIAN_FRONTEND="noninteractive" apt-get install -y python3 python3-pip
 
-ENV USER=ec2-user
+ENV USER=ubuntu
 RUN adduser -u 1026 $USER
 RUN usermod -a --group users $USER
 ENV PYLIBS_PATH=/home/$USER/pylibs
