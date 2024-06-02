@@ -40,10 +40,10 @@ RUN chown -R $USER $LOGS_PATH
 WORKDIR $HISTFEED_PATH
 
 # Copy pip requirements before copying full project
-USER $USER
 COPY --chown=$USER:users /requirements.txt $PYLIBS_PATH
 
 # Install Pip dependencies --> Need to install as root
+USER root
 RUN pip3 install -Ur $PYLIBS_PATH/requirements.txt
 
 # Now copy full project
