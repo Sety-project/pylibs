@@ -39,7 +39,7 @@ WORKDIR $HISTFEED_PATH
 
 # Copy pip requirements before copying full project
 USER $USER
-COPY --chown=$USER:$USER /requirements.txt $UTILS_PATH
+COPY --chown=$USER:$USER /requirements.txt $PYLIBS_PATH
 
 # Install Pip dependencies --> Need to install as root
 RUN pip3 install -Ur $PYLIBS_PATH/requirements.txt
