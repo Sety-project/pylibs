@@ -10,10 +10,10 @@ RUN adduser -u 1026 $USER
 RUN usermod -a --group users $USER     # Adding user to group $USER
 
 #Enriching PATH
-ENV HOME=/home/$USER/Sety-project
-ENV PATH=$PATH:/home/$USER/.local/bin
+ENV HOME=/home/$USER
+ENV PATH=$PATH:$HOME/.local/bin
 
-ENV PYLIBS_PATH=$HOME/pylibs
+ENV PYLIBS_PATH=$HOME/Sety-project/pylibs
 # APPS PATHS
 ENV HISTFEED_PATH=$PYLIBS_PATH/histfeed
 ENV PFOPTIMIZER_PATH=$PYLIBS_PATH/pfoptimizer
@@ -29,8 +29,8 @@ RUN mkdir -p $PFOPTIMIZER_PATH
 RUN mkdir -p $RISKPNL_PATH
 RUN mkdir -p $UTILS_PATH
 RUN mkdir -p $TRADEEXECUTOR_PATH
-RUN mkdir -p $HOME/mktdata
-RUN mkdir -p $HOME/config
+RUN mkdir -p $HOME/Sety-project/mktdata
+RUN mkdir -p $HOME/Sety-project/config
 RUN mkdir -p $LOGS_PATH
 
 RUN chown -R $USER $PYLIBS_PATH
@@ -39,8 +39,8 @@ RUN chown -R $USER $PFOPTIMIZER_PATH
 RUN chown -R $USER $RISKPNL_PATH
 RUN chown -R $USER $UTILS_PATH
 RUN chown -R $USER $TRADEEXECUTOR_PATH
-RUN chown -R $USER $HOME/mktdata
-RUN chown -R $USER $HOME/config
+RUN chown -R $USER $HOME/Sety-project/mktdata
+RUN chown -R $USER $HOME/Sety-project/config
 RUN chown -R $USER $LOGS_PATH
 
 WORKDIR $PFOPTIMIZER_PATH
