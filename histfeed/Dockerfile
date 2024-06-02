@@ -19,6 +19,8 @@ ENV UTILS_PATH=$PYLIBS_PATH/utils
 ENV TRADEEXECUTOR_PATH=$PYLIBS_PATH/tradeexecutor
 ENV LOGS_PATH=/tmp/histfeed
 
+ENV PYTHONPATH=$PYLIBS_PATH:$HOME
+
 RUN mkdir -p $PYLIBS_PATH
 RUN mkdir -p $HISTFEED_PATH
 RUN mkdir -p $UTILS_PATH
@@ -39,15 +41,15 @@ WORKDIR $HISTFEED_PATH
 
 # Copy pip requirements before copying full project
 USER $USER
-COPY --chown=$USER:$USER /requirements.txt $PYLIBS_PATH
+COPY --chown=$USER:users /requirements.txt $PYLIBS_PATH
 
 # Install Pip dependencies --> Need to install as root
 RUN pip3 install -Ur $PYLIBS_PATH/requirements.txt
 
 # Now copy full project
-COPY --chown=$USER:$USER /utils $UTILS_PATH
-COPY --chown=$USER:$USER /histfeed $HISTFEED_PATH
-COPY --chown=$USER:$USER /tradeexecutor $TRADEEXECUTOR_PATH
+COPY --chown=$USER:users /utils $UTILS_PATH
+COPY --chown=$USER:users /histfeed $HISTFEED_PATH
+COPY --chown=$USER:users /tradeexecutor $TRADEEXECUTOR_PATH
 RUN chmod +x $HISTFEED_PATH/run.sh
 
 # Run container as root to be able to create and write in folders

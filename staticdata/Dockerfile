@@ -23,8 +23,8 @@ WORKDIR $STATICDATA_PATH
 
 ENV PYTHONPATH=$PYLIBS_PATH:/home/$USER
 
-COPY --chown=$USER:$USER /utils $UTILS_PATH
-COPY --chown=$USER:$USER /staticdata $STATICDATA_PATH
+COPY --chown=$USER:users /utils $UTILS_PATH
+COPY --chown=$USER:users /staticdata $STATICDATA_PATH
 
 RUN pip3 install -Ur $STATICDATA_PATH/requirements.txt
 
