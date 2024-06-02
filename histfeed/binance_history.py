@@ -13,13 +13,13 @@ async def get_history(dirname,
                       end=datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0, second=0, microsecond=0),
                       resample='8h'):
     data = pd.concat(await safe_gather((
-            [async_read_csv(dirname + os.sep + f + '_funding.csv', index_col=0, parse_dates=True)
+            [async_read_csv(dirname + os.sep + f + '_funding.csv', index_col=0, date_parser=pd.to_datetime)
              for f in futures[futures['type'] == 'perpetual'].index] +
-            [async_read_csv(dirname + os.sep + f + '_futures.csv', index_col=0, parse_dates=True)
+            [async_read_csv(dirname + os.sep + f + '_futures.csv', index_col=0, date_parser=pd.to_datetime)
              for f in futures.index] +
-            [async_read_csv(dirname + os.sep + f + '_price.csv', index_col=0, parse_dates=True)
+            [async_read_csv(dirname + os.sep + f + '_price.csv', index_col=0, date_parser=pd.to_datetime)
              for f in futures['spot_ticker'].unique()] +
-            [async_read_csv(dirname + os.sep + f + '_borrow.csv', index_col=0, parse_dates=True)
+            [async_read_csv(dirname + os.sep + f + '_borrow.csv', index_col=0, date_parser=pd.to_datetime)
              for f in set(list(futures['underlying'].unique()) + ['USDT', 'USDC', 'FDUSD'])]
     )), join='outer', axis=1)
 
@@ -42,15 +42,15 @@ async def build_history(futures,
     coroutines = []
     for _, f in futures[futures['type'] == 'perpetual'].iterrows():
         csv_name = os.path.join(dirname, f'{f.name}_funding.csv')
-        csv = pd.read_csv(csv_name, index_col=0, parse_dates=True) if os.path.isfile(csv_name) else None
-        start = max(csv.index).replace(tzinfo=timezone.utc) + timedelta(hours=8) if csv is not None else history_start
+        csv = pd.read_csv(csv_name, index_col=0, date_parser=pd.to_datetime) if os.path.isfile(csv_name) else None
+        start = max(csv.index).replace(tzinfo=timezone.utc) + timedelta(hours=f['fundingIntervalHours']) if csv is not None else history_start
         if start < end:
             logger.info(f"Adding coroutine {csv_name}")
             coroutines.append(exchange.funding_history(f, start, end, dirname))
 
     for _, f in futures.iterrows():
         csv_name = os.path.join(dirname, f'{f.name}_futures.csv')
-        csv = pd.read_csv(csv_name, index_col=0, parse_dates=True) if os.path.isfile(csv_name) else None
+        csv = pd.read_csv(csv_name, index_col=0, date_parser=pd.to_datetime) if os.path.isfile(csv_name) else None
         start = max(csv.index).replace(tzinfo=timezone.utc) + pd.Timedelta(
             frequency) if csv is not None else history_start
         if start < end:
@@ -59,7 +59,7 @@ async def build_history(futures,
 
     for f in futures['spot_ticker'].unique():
         csv_name = os.path.join(dirname, f'{f}_price.csv')
-        csv = pd.read_csv(csv_name, index_col=0, parse_dates=True) if os.path.isfile(csv_name) else None
+        csv = pd.read_csv(csv_name, index_col=0, date_parser=pd.to_datetime) if os.path.isfile(csv_name) else None
         start = max(csv.index).replace(tzinfo=timezone.utc) + pd.Timedelta(
             frequency) if csv is not None else history_start
         if start < end:
@@ -68,8 +68,8 @@ async def build_history(futures,
 
     for f in set(list(futures['underlying'].unique()) + ['USDT', 'FDUSD']):
         csv_name = os.path.join(dirname, f'{f}_borrow.csv')
-        csv = pd.read_csv(csv_name, index_col=0, parse_dates=True) if os.path.isfile(csv_name) else None
-        start = max(csv.index).replace(tzinfo=timezone.utc) + timedelta(hours=8) if csv is not None else history_start
+        csv = pd.read_csv(csv_name, index_col=0, date_parser=pd.to_datetime) if os.path.isfile(csv_name) else None
+        start = max(csv.index).replace(tzinfo=timezone.utc) + timedelta(hours=4) if csv is not None else history_start
         if start < end:
             logger.info(f"Adding coroutine {csv_name}")
             coroutines.append(exchange.borrow_history(f, end, start, dirname))
@@ -82,11 +82,11 @@ async def build_history(futures,
         logger.info("0 coroutines gathered, nothing to do")
 
     # static values for non spot Margin underlyings
-    otc_file = configLoader.get_static_params_used()
-    for f in list(futures.loc[futures['spotMargin'] == False, 'spot_ticker'].unique()):
-        try:
+    try:
+        otc_file = configLoader.get_static_params_used()
+        for f in list(futures.loc[futures['spotMargin'] == False, 'spot_ticker'].unique()):
             spot_csv = pd.read_csv(os.path.join(dirname, f.replace('/', '') + '_price.csv'), index_col=0,
-                                   parse_dates=True)
+                                   date_parser=pd.to_datetime)
             coin = f.split('/')[0]
             to_csv(pd.DataFrame(index=spot_csv.index,
                                 columns=[coin + '_rate_borrow'],
@@ -94,8 +94,8 @@ async def build_history(futures,
                                 ),
                    os.path.join(dirname, coin + '_borrow.csv'),
                    mode='a', header=False)
-        except Exception as e:
-            logger.warning(e, exc_info=True)
+    except Exception as e:
+        logger.warning(e, exc_info=True)
 
 
 async def correct_history(futures, exchange, hy_history, dirname=configLoader.get_mktdata_folder_path()):
