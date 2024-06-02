@@ -43,7 +43,7 @@ def help(update, context):
         if mod_name != 'ux':
             for test in data.testbed:
                 update.message.reply_text(f'{mod_name} '+str(test))
-    update.message.reply_text('docker ps \n docker stop <tradeexecutor_glp>\nbash: get <filepath>\nbash: ls <home ec2-user mktdata gmx_tickdata> ')
+    update.message.reply_text('docker ps \n docker stop <tradeexecutor_glp>\nbash: get <filepath>\nbash: ls <home ubuntu mktdata gmx_tickdata> ')
 
 def echo(update, context):
     try:
@@ -85,7 +85,7 @@ def echo(update, context):
             order = split_message[1]
             exchange_name = split_message[2]
             sub_account = split_message[3]
-            command = f"docker run -d -e USERNAME=\"$USERNAME\" --network host \"$PYTHON_REGISTRY/tradeexecutor:latest\" --restart=on-failure --name=tradeexecutor_worker_\"{order}\" -e ORDER=\"{order}\" -e EXCHANGE_NAME=\"{exchange_name}\" -e SUB_ACCOUNT=\"{sub_account}\" -v ~/.cache/setyvault:/home/ec2-user/.cache/setyvault -v ~/config/prod:/home/ec2-user/config -v /tmp:/tmp"
+            command = f"docker run -d -e USERNAME=\"$USERNAME\" --network host \"$PYTHON_REGISTRY/tradeexecutor:latest\" --restart=on-failure --name=tradeexecutor_worker_\"{order}\" -e ORDER=\"{order}\" -e EXCHANGE_NAME=\"{exchange_name}\" -e SUB_ACCOUNT=\"{sub_account}\" -v ~/.cache/setyvault:/home/ubuntu/.cache/setyvault -v ~/config/prod:/home/ubuntu/config -v /tmp:/tmp"
             response = bash_run(command)
             update.message.reply_text(''.join([f'{key} ----->\n {value}\n' for key, value in response.items()]))
             data = None

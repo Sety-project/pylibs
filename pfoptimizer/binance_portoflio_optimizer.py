@@ -243,14 +243,9 @@ async def perp_vs_cash(
                         E_short.dropna().index.min(),
                         E_intUSDborrow.dropna().index.min(),
                         E_intBorrow.dropna().index.min())
-    updated = update(enriched, point_in_time, hy_history, equity,
+    filtered = update(enriched, point_in_time, hy_history, equity,
                      intLongCarry, intShortCarry, intUSDborrow, intBorrow, E_long, E_short, E_intUSDborrow, E_intBorrow,
                      minimum_carry=-1)  # Do not remove futures using minimum_carry
-
-    # final filter, needs some history and good avg volumes
-    filtered = updated.loc[~np.isnan(updated['E_intCarry'])]
-    filtered = filtered.sort_values(by='E_intCarry', ascending=False)
-    updated = None  # safety
 
     if backtest_start == backtest_end:
         initial_weight = previous_weights_input
@@ -490,7 +485,7 @@ def main(*args, **kwargs):
     # dirname = "/home/user/Sety-project/mktdata/binance"
     # for file in os.listdir(dirname):
     #     if file.endswith(".csv"):
-    #         df = pd.read_csv(os.path.join(dirname, file), index_col=0, parse_dates=True, infer_datetime_format=True)
+    #         df = pd.read_csv(os.path.join(dirname, file), index_col=0, date_parser=pd.to_datetime, infer_datetime_format=True)
     #         for col in df.columns:
     #             if 'volume' in col:
     #                 df[col] = df[col]/df[col.replace('volume','c')]

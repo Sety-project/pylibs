@@ -4,7 +4,7 @@ import pandas as pd
 from pathlib import Path
 
 class configLoader():
-    _home = Path.home() # but docker run -v ~/config/prod:/home/ec2-user/config
+    _home = Path.home() # but docker run -v ~/config/prod:/home/ubuntu/config
     _config_folder_path = os.path.join(os.sep, _home, "Sety-project", "config")
     _mktdata_folder_path = os.path.join(os.sep, _home, "Sety-project", "mktdata")
 
