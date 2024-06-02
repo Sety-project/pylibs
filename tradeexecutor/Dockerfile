@@ -10,8 +10,8 @@ RUN adduser -u 1026 $USER
 RUN usermod -a --group users $USER     # Adding user to group $USER
 
 #Enriching PATH
-ENV HOME=/home/$USER
-ENV PATH=$PATH:$HOME/.local/bin
+ENV HOME=/home/$USER/Sety-project
+ENV PATH=$PATH:/home/$USER/.local/bin
 
 ENV PYLIBS_PATH=$HOME/pylibs
 # APPS PATHS
@@ -48,7 +48,7 @@ USER $USER
 COPY --chown=$USER:$USER /requirements.txt $UTILS_PATH
 
 # Install Pip dependencies --> Need to install as root
-RUN pip3 install -Ur $UTILS_PATH/requirements.txt
+RUN pip3 install -Ur $PYLIBS_PATH/requirements.txt
 
 # Now copy full project
 COPY --chown=$USER:$USER /utils $UTILS_PATH

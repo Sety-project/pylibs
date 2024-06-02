@@ -7,7 +7,7 @@ RUN DEBIAN_FRONTEND="noninteractive" apt-get install -y python3 python3-pip
 ENV USER=ubuntu
 RUN adduser -u 1026 $USER
 RUN usermod -a --group users $USER
-ENV PYLIBS_PATH=/home/$USER/pylibs
+ENV PYLIBS_PATH=/home/$USER/Sety-project/pylibs
 ENV STATICDATA_PATH=$PYLIBS_PATH/staticdata
 ENV UTILS_PATH=$PYLIBS_PATH/utils
 RUN mkdir -p $PYLIBS_PATH
