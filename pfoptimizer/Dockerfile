@@ -10,8 +10,8 @@ RUN adduser -u 1026 $USER
 RUN usermod -a --group users $USER     # Adding user to group $USER
 
 #Enriching PATH
-ENV HOME=/home/$USER
-ENV PATH=$PATH:$HOME/.local/bin
+ENV HOME=/home/$USER/Sety-project
+ENV PATH=$PATH:/home/$USER/.local/bin
 
 ENV PYLIBS_PATH=$HOME/pylibs
 # APPS PATHS
@@ -22,8 +22,6 @@ ENV UTILS_PATH=$PYLIBS_PATH/utils
 ENV TRADEEXECUTOR_PATH=$PYLIBS_PATH/tradeexecutor
 # LOG PATHS
 ENV LOGS_PATH=/tmp/pfoptimizer
-
-ENV PYTHONPATH=$PYLIBS_PATH:$HOME
 
 RUN mkdir -p $PYLIBS_PATH
 RUN mkdir -p $HISTFEED_PATH
