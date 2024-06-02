@@ -82,20 +82,20 @@ async def build_history(futures,
         logger.info("0 coroutines gathered, nothing to do")
 
     # static values for non spot Margin underlyings
-    try:
-        otc_file = configLoader.get_static_params_used()
-        for f in list(futures.loc[futures['spotMargin'] == False, 'spot_ticker'].unique()):
-            spot_csv = pd.read_csv(os.path.join(dirname, f.replace('/', '') + '_price.csv'), index_col=0,
-                                   date_parser=pd.to_datetime)
-            coin = f.split('/')[0]
-            to_csv(pd.DataFrame(index=spot_csv.index,
-                                columns=[coin + '_rate_borrow'],
-                                data=otc_file.loc[coin, 'borrow'] if futures.loc[f, 'spotMargin'] == 'OTC' else 999
-                                ),
-                   os.path.join(dirname, coin + '_borrow.csv'),
-                   mode='a', header=False)
-    except Exception as e:
-        logger.warning(e, exc_info=True)
+    # try:
+    #     otc_file = configLoader.get_static_params_used()
+    #     for f in list(futures.loc[futures['spotMargin'] == False, 'spot_ticker'].unique()):
+    #         spot_csv = pd.read_csv(os.path.join(dirname, f.replace('/', '') + '_price.csv'), index_col=0,
+    #                                date_parser=pd.to_datetime)
+    #         coin = f.split('/')[0]
+    #         to_csv(pd.DataFrame(index=spot_csv.index,
+    #                             columns=[coin + '_rate_borrow'],
+    #                             data=otc_file.loc[coin, 'borrow'] if futures.loc[f, 'spotMargin'] == 'OTC' else 999
+    #                             ),
+    #                os.path.join(dirname, coin + '_borrow.csv'),
+    #                mode='a', header=False)
+    # except Exception as e:
+    #     logger.warning(e, exc_info=True)
 
 
 async def correct_history(futures, exchange, hy_history, dirname=configLoader.get_mktdata_folder_path()):
