@@ -124,8 +124,6 @@ class BinanceAPI(CeFiAPI, ccxtpro.binance):
                                                         f"{'f' if f['linear'] else 'd' if f['inverse'] else None}apiPublicGetOpenInterest")(
                 {'symbol': f['id']}) for f in lev_perp_markets], return_exceptions=True)
 
-            otc_file = configLoader.get_static_params_used()
-
             '''
             extract margin parameters
             
