@@ -15,18 +15,18 @@ async def get_history(dirname,
                       end=datetime.utcnow().replace(tzinfo=timezone.utc).replace(minute=0, second=0, microsecond=0),
                       resample='8h'):
     data = pd.concat(await safe_gather((
-            [async_read_csv(dirname + os.sep + f + '_funding.csv', index_col=0, date_parser=pd.to_datetime)
+            [async_read_csv(dirname + os.sep + f + '_funding.csv', index_col=0)
              for f in futures[futures['type'] == 'perpetual'].index] +
-            [async_read_csv(dirname + os.sep + f + '_futures.csv', index_col=0, date_parser=pd.to_datetime)
+            [async_read_csv(dirname + os.sep + f + '_futures.csv', index_col=0)
              for f in futures.index] +
-            [async_read_csv(dirname + os.sep + f + '_price.csv', index_col=0, date_parser=pd.to_datetime)
+            [async_read_csv(dirname + os.sep + f + '_price.csv', index_col=0)
              for f in futures['spot_ticker'].unique()] +
-            [async_read_csv(dirname + os.sep + f + '_borrow.csv', index_col=0, date_parser=pd.to_datetime)
+            [async_read_csv(dirname + os.sep + f + '_borrow.csv', index_col=0)
              for f in set(list(futures['underlying'].unique()) + ['USDT', 'USDC', 'FDUSD'])]
     )), join='outer', axis=1)
 
     start = end - timedelta(hours=start_or_nb_hours) if isinstance(start_or_nb_hours, int) else start_or_nb_hours
-    data.index = [t.replace(tzinfo=timezone.utc) for t in data.index]
+    data.index = [pd.to_datetime(t).replace(tzinfo=timezone.utc) for t in data.index]
     data = data[~data.index.duplicated()].sort_index()[start:end]
     data = data.ffill().resample(resample).last()
     return data
