@@ -1,3 +1,5 @@
+import pandas as pd
+
 from tradeexecutor.binance.api import BinanceAPI
 from tradeexecutor.interface.builders import build_VenueAPI
 from utils.io_utils import *
@@ -42,34 +44,48 @@ async def build_history(futures,
     coroutines = []
     for _, f in futures[futures['type'] == 'perpetual'].iterrows():
         csv_name = os.path.join(dirname, f'{f.name}_funding.csv')
-        csv = pd.read_csv(csv_name, index_col=0, date_parser=pd.to_datetime) if os.path.isfile(csv_name) else None
-        start = max(csv.index).replace(tzinfo=timezone.utc) + timedelta(hours=f['fundingIntervalHours']) if csv is not None else history_start
+        if os.path.isfile(csv_name):
+            csv = pd.read_csv(csv_name, index_col=0)
+            csv.index = [pd.to_datetime(t) for t in csv.index]
+            start = max(csv.index).replace(tzinfo=timezone.utc) + timedelta(hours=f['fundingIntervalHours'])
+        else :
+            start = history_start
         if start < end:
             logger.info(f"Adding coroutine {csv_name}")
             coroutines.append(exchange.funding_history(f, start, end, dirname))
 
     for _, f in futures.iterrows():
         csv_name = os.path.join(dirname, f'{f.name}_futures.csv')
-        csv = pd.read_csv(csv_name, index_col=0, date_parser=pd.to_datetime) if os.path.isfile(csv_name) else None
-        start = max(csv.index).replace(tzinfo=timezone.utc) + pd.Timedelta(
-            frequency) if csv is not None else history_start
+        if os.path.isfile(csv_name):
+            csv = pd.read_csv(csv_name, index_col=0)
+            csv.index = [pd.to_datetime(t) for t in csv.index]
+            start = max(csv.index).replace(tzinfo=timezone.utc) + pd.Timedelta(frequency)
+        else :
+            start = history_start
         if start < end:
             logger.info(f"Adding coroutine {csv_name}")
             coroutines.append(exchange.rate_history(f, end, start, frequency, dirname))
 
     for f in futures['spot_ticker'].unique():
         csv_name = os.path.join(dirname, f'{f}_price.csv')
-        csv = pd.read_csv(csv_name, index_col=0, date_parser=pd.to_datetime) if os.path.isfile(csv_name) else None
-        start = max(csv.index).replace(tzinfo=timezone.utc) + pd.Timedelta(
-            frequency) if csv is not None else history_start
+        if os.path.isfile(csv_name):
+            csv = pd.read_csv(csv_name, index_col=0)
+            csv.index = [pd.to_datetime(t) for t in csv.index]
+            start = max(csv.index).replace(tzinfo=timezone.utc) + pd.Timedelta(frequency)
+        else :
+            start = history_start
         if start < end:
             logger.info(f"Adding coroutine {csv_name}")
             coroutines.append(exchange.spot_history(f, end, start, frequency, dirname))
 
     for f in set(list(futures['underlying'].unique()) + ['USDT', 'FDUSD']):
         csv_name = os.path.join(dirname, f'{f}_borrow.csv')
-        csv = pd.read_csv(csv_name, index_col=0, date_parser=pd.to_datetime) if os.path.isfile(csv_name) else None
-        start = max(csv.index).replace(tzinfo=timezone.utc) + timedelta(hours=4) if csv is not None else history_start
+        if os.path.isfile(csv_name):
+            csv = pd.read_csv(csv_name, index_col=0)
+            csv.index = [pd.to_datetime(t) for t in csv.index]
+            start = max(csv.index).replace(tzinfo=timezone.utc) + timedelta(hours=4)
+        else :
+            start = history_start
         if start < end:
             logger.info(f"Adding coroutine {csv_name}")
             coroutines.append(exchange.borrow_history(f, end, start, dirname))
